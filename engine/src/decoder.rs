@@ -256,6 +256,7 @@ struct FfmpegAudioDecoderState {
     resampler: Option<ffmpeg_the_third::software::resampling::Context>,
     time_base_num: i32,
     time_base_den: i32,
+    stream_index: usize,
     next_pts: f64,
 }
 
@@ -306,6 +307,7 @@ impl AudioDecoder {
                 resampler: None,
                 time_base_num: time_base.numerator(),
                 time_base_den: time_base.denominator(),
+                stream_index,
                 next_pts: 0.0,
             }),
         })
@@ -328,6 +330,9 @@ impl AudioDecoder {
         let backend = self.backend.as_mut().ok_or_else(|| {
             "AudioDecoder was not initialised with AudioDecoder::open_ffmpeg".to_string()
         })?;
+        if tagged_packet.item.stream_index != backend.stream_index {
+            return Ok(true);
+        }
         let mut packet = ffmpeg::Packet::copy(&tagged_packet.item.data);
         packet.set_pts(tagged_packet.item.pts);
         packet.set_dts(tagged_packet.item.dts);
@@ -500,11 +505,12 @@ impl AudioDecoder {
                 .expect("resampler delay requires a resampler")
                 .flush(&mut converted)
                 .map_err(|error| format!("Could not flush audio resampler: {error}"))?;
+            let pts = backend.next_pts;
             Self::queue_converted_frame(
                 backend,
                 frame_queue,
                 &converted,
-                backend.next_pts,
+                pts,
                 serial,
             )?;
             if remaining.is_none() {
