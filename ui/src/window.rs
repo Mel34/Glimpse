@@ -49,6 +49,11 @@ impl GlimpseWindow {
         let player: Rc<RefCell<Option<Player>>> = Rc::new(RefCell::new(None));
         let media_file: Rc<RefCell<Option<MediaFile>>> = Rc::new(RefCell::new(None));
         let video_playback: Rc<RefCell<Option<VideoPlaybackHandle>>> = Rc::new(RefCell::new(None));
+        let video_playback_on_close = Rc::clone(&video_playback);
+        window.connect_close_request(move |_| {
+            video_playback_on_close.borrow_mut().take();
+            glib::Propagation::Proceed
+        });
 
         // Root Overlay: Contains Stack as base child and the Drop Hover Overlay on top
         let root_overlay = Overlay::new();
