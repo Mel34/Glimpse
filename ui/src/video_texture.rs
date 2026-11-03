@@ -57,8 +57,8 @@ pub fn present_continuous_frames(
 ) -> Option<VideoPlaybackHandle> {
     #[cfg(feature = "experimental-engine")]
     {
-        let video_track = match tracks.video_tracks.first() {
-            Some(track) => track,
+        let video_stream_index = match tracks.video_tracks.first() {
+            Some(track) => track.id.0,
             None => {
                 tracing::warn!("Experimental video path skipped: no video stream");
                 return None;
@@ -72,7 +72,7 @@ pub fn present_continuous_frames(
         spawn_decoder_worker(
             path.to_owned(),
             tracks,
-            video_track.id.0,
+            video_stream_index,
             queues.clone(),
             worker_cancelled,
             sender,
@@ -154,7 +154,7 @@ fn decode_continuously(
             return Err(error);
         }
 
-        if !forward_decoded_frames(&frame_queue, sender)? {
+        if !forward_decoded_frames(&frame_queue, sender) {
             queues.abort();
             let _ = demux_worker.join();
             return Ok(());
@@ -172,9 +172,7 @@ fn decode_continuously(
             demux_result.map_err(|error| format!("Media demux failed: {error}"))?;
 
             decoder.finish(serial)?;
-            if !forward_decoded_frames(&frame_queue, sender)? {
-                return Ok(());
-            }
+            let _ = forward_decoded_frames(&frame_queue, sender);
             return Ok(());
         }
     }
@@ -184,13 +182,13 @@ fn decode_continuously(
 fn forward_decoded_frames(
     frame_queue: &VideoFrameQueue,
     sender: &Sender<Result<VideoFrameData, String>>,
-) -> Result<bool, String> {
+) -> bool {
     while let Some(frame) = frame_queue.pop_timeout(Duration::ZERO) {
         if sender.send(Ok(frame.item)).is_err() {
-            return Ok(false);
+            return false;
         }
     }
-    Ok(true)
+    true
 }
 
 #[cfg(feature = "experimental-engine")]
