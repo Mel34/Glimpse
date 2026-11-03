@@ -1,0 +1,6 @@
+# Rust build output
+/target/
+
+# Arch package build artifacts
+/pkg/
+*.pkg.tar.*

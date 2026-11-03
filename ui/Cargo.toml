@@ -1,0 +1,21 @@
+[package]
+name = "glimpse"
+version = "0.1.0"
+edition = "2021"
+license = "LGPL-2.1-or-later"
+description = "Glimpse - Modern Linux video player with GTK4 and libadwaita"
+
+[[bin]]
+name = "glimpse"
+path = "src/main.rs"
+
+[dependencies]
+glimpse-engine = { path = "../engine" }
+gtk4 = { version = "0.8", features = ["v4_12"] }
+adw = { version = "0.6", package = "libadwaita", features = ["v1_5"] }
+crossbeam-channel = "0.5"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+gio = "0.19"
+glib = "0.19"
+gdk4 = "0.8"

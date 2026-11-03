@@ -1,0 +1,254 @@
+/* Glimpse Showtime-Style Theme */
+
+window.glimpse-window {
+    background-color: #1e1e1e;
+    color: #ffffff;
+}
+
+.loader-view {
+    background-color: #1e1e1e;
+}
+
+.loader-header {
+    padding: 12px 16px;
+}
+
+.loader-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: #dcdcdc;
+}
+
+.loader-icon {
+    color: #9a9996;
+    opacity: 0.85;
+}
+
+.loader-heading {
+    font-size: 28px;
+    font-weight: 800;
+    color: #ffffff;
+    margin-top: 24px;
+    margin-bottom: 6px;
+}
+
+.loader-subheading {
+    font-size: 14px;
+    color: #9a9996;
+    margin-bottom: 24px;
+}
+
+.loader-open-btn {
+    background-color: #3584e4;
+    color: #ffffff;
+    font-size: 14px;
+    font-weight: 700;
+    padding: 9px 36px;
+    border-radius: 9999px;
+    border: none;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+
+.loader-open-btn:hover {
+    background-color: #4b94ea;
+}
+
+.loader-open-btn:active {
+    background-color: #2270d4;
+}
+
+/* Drag-and-drop active hover state matching Showtime screenshot */
+.drop-overlay-container {
+    background-color: rgba(22, 30, 42, 0.96);
+    border: 2px dashed #4a8cdb;
+    border-radius: 16px;
+    margin: 16px;
+}
+
+.drop-overlay-icon {
+    color: #5197e8;
+}
+
+.drop-overlay-label {
+    font-size: 26px;
+    font-weight: 800;
+    color: #5197e8;
+    margin-top: 18px;
+}
+
+/* Header button refinements - compact Showtime sizing */
+.header-button {
+    min-width: 30px;
+    min-height: 30px;
+    padding: 4px 6px;
+    border-radius: 6px;
+    background-color: transparent;
+    color: #e0e0e0;
+    box-shadow: none;
+    border: none;
+}
+
+.header-button:hover {
+    background-color: rgba(255, 255, 255, 0.12);
+    color: #ffffff;
+}
+
+.header-button:active, .header-button:checked {
+    background-color: rgba(255, 255, 255, 0.2);
+    color: #ffffff;
+}
+
+/* Circular Close Button (Strict 24x24 px circular geometry) */
+button.header-close-button {
+    min-width: 24px;
+    min-height: 24px;
+    padding: 0;
+    margin: 0;
+    border-radius: 9999px;
+    background-color: rgba(255, 255, 255, 0.14);
+    color: #ffffff;
+    box-shadow: none;
+    border: none;
+}
+
+button.header-close-button:hover {
+    background-color: rgba(255, 255, 255, 0.28);
+    border-radius: 9999px;
+}
+
+button.header-close-button:active {
+    background-color: rgba(255, 255, 255, 0.42);
+    border-radius: 9999px;
+}
+
+button.header-close-button image {
+    padding: 0;
+    margin: 0;
+}
+
+/* Main Menu Popover Styling (Matching Showtime - Single Clean Container) */
+popover {
+    background-color: transparent;
+    border: none;
+    padding: 0;
+    box-shadow: none;
+}
+
+popover > contents,
+popover.menu-popover > contents {
+    background-color: #242424;
+    color: #ffffff;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 12px;
+    padding: 6px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+}
+
+popover > arrow {
+    background-color: #242424;
+    border-color: rgba(255, 255, 255, 0.14);
+}
+
+popover button,
+.menu-item-button {
+    border-radius: 8px;
+    padding: 6px 12px;
+    color: #ffffff;
+    background-color: transparent;
+    border: none;
+    font-size: 13px;
+    font-weight: 500;
+}
+
+popover button:hover,
+.menu-item-button:hover {
+    background-color: rgba(255, 255, 255, 0.12);
+}
+
+popover button:active,
+.menu-item-button:active {
+    background-color: rgba(255, 255, 255, 0.2);
+}
+
+popover label,
+.menu-item-button label {
+    color: #ffffff;
+}
+
+popover label.dim-label,
+.menu-item-button label.dim-label {
+    color: #9a9996;
+    font-size: 11px;
+}
+
+/* Floating OSD top & bottom bars */
+.floating-osd-top {
+    transition: opacity 250ms ease-in-out;
+}
+
+.floating-osd-bottom {
+    transition: opacity 250ms ease-in-out;
+}
+
+.osd-icon-button {
+    border-radius: 9999px;
+    min-width: 32px;
+    min-height: 32px;
+    padding: 4px;
+    background-color: rgba(30, 30, 30, 0.65);
+    color: #ffffff;
+    border: none;
+    box-shadow: none;
+}
+
+.osd-icon-button:hover {
+    background-color: rgba(60, 60, 60, 0.85);
+}
+
+.video-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: #ffffff;
+}
+
+.timestamp-label {
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    color: #c0c0c0;
+}
+
+.subtitles-overlay {
+    font-size: 18px;
+    font-weight: 600;
+    color: #ffffff;
+    background-color: rgba(0, 0, 0, 0.75);
+    padding: 6px 16px;
+    border-radius: 8px;
+}
+
+/* Vertical Volume Slider in Popover */
+scale.volume-scale {
+    min-height: 120px;
+    padding: 0 4px;
+}
+
+scale.volume-scale trough {
+    min-width: 6px;
+    background-color: rgba(255, 255, 255, 0.2);
+    border-radius: 9999px;
+}
+
+scale.volume-scale highlight {
+    background-color: #3584e4;
+    border-radius: 9999px;
+}
+
+scale.volume-scale slider {
+    min-width: 14px;
+    min-height: 14px;
+    border-radius: 9999px;
+    background-color: #ffffff;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+
+

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Glimpse
+Comment=Modern Linux Video Player
+Exec=glimpse %U
+Terminal=false
+Type=Application
+Icon=com.github.Mel34.Glimpse
+Categories=AudioVideo;Player;Recorder;
+MimeType=video/mp4;video/x-matroska;video/quicktime;video/webm;audio/mp4;audio/mpeg;

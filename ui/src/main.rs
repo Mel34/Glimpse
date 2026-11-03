@@ -1,0 +1,60 @@
+//! Glimpse Application Entry Point (GTK4 + libadwaita)
+
+mod controls;
+mod interaction;
+mod track_menu;
+mod window;
+
+use adw::prelude::*;
+use adw::Application;
+use gio::ApplicationFlags;
+use window::GlimpseWindow;
+
+const APP_ID: &str = "com.github.Mel34.Glimpse";
+
+fn main() -> glib::ExitCode {
+    // Initialize tracing logger
+    tracing_subscriber::fmt::init();
+
+    let app = Application::builder()
+        .application_id(APP_ID)
+        .flags(ApplicationFlags::HANDLES_OPEN)
+        .build();
+
+    app.connect_startup(|app| {
+        // Force Libadwaita Dark Theme so popovers, menus, and controls natively render dark
+        adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceDark);
+        gtk4::Window::set_default_icon_name("com.github.Mel34.Glimpse");
+
+        let provider = gtk4::CssProvider::new();
+        provider.load_from_string(include_str!("style.css"));
+        if let Some(display) = gdk4::Display::default() {
+            gtk4::style_context_add_provider_for_display(
+                &display,
+                &provider,
+                gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+        }
+
+        app.set_accels_for_action("win.open", &["<Control>o"]);
+        app.set_accels_for_action("win.new-window", &["<Control>n"]);
+        app.set_accels_for_action("win.shortcuts", &["<Control>question"]);
+    });
+
+    app.connect_activate(|app| {
+        let win = GlimpseWindow::new(app);
+        win.present();
+    });
+
+    app.connect_open(|app, files, _hint| {
+        let win = GlimpseWindow::new(app);
+        if let Some(file) = files.first() {
+            if let Some(path) = file.path() {
+                win.open_file(path.to_str().unwrap_or(""));
+            }
+        }
+        win.present();
+    });
+
+    app.run()
+}

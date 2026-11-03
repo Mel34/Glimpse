@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.github.Mel34.Glimpse</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>LGPL-2.1-or-later</project_license>
+  <name>Glimpse</name>
+  <summary>Modern, predictable Linux video player built with GTK4 and Rust</summary>
+  <description>
+    <p>
+      Glimpse is a fast, predictable media player for Linux desktop environments,
+      featuring hardware-accelerated playback, libadwaita styling, and a clean interface.
+    </p>
+  </description>
+  <launchable type="desktop-id">com.github.Mel34.Glimpse.desktop</launchable>
+  <url type="homepage">https://github.com/Mel34/Glimpse</url>
+  <provides>
+    <binary>glimpse</binary>
+  </provides>
+</component>
