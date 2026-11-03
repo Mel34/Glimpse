@@ -220,9 +220,9 @@ fn run_audio_decode_smoke(
         }
 
         while let Some(frame) = frame_queue.pop_timeout(Duration::from_millis(0)) {
-            first_pts.get_or_insert(frame.pts);
-            last_end_pts = frame.pts + frame.duration;
-            decoded_samples += (frame.samples.len() / 2) as u64;
+            first_pts.get_or_insert(frame.item.pts);
+            last_end_pts = frame.item.pts + frame.item.duration;
+            decoded_samples += (frame.item.samples.len() / 2) as u64;
             decoded_frames += 1;
         }
         // This diagnostic decodes only audio; drain other streams so they
@@ -242,9 +242,9 @@ fn run_audio_decode_smoke(
 
     decoder.finish(serial)?;
     while let Some(frame) = frame_queue.pop_timeout(Duration::from_millis(0)) {
-        first_pts.get_or_insert(frame.pts);
-        last_end_pts = frame.pts + frame.duration;
-        decoded_samples += (frame.samples.len() / 2) as u64;
+        first_pts.get_or_insert(frame.item.pts);
+        last_end_pts = frame.item.pts + frame.item.duration;
+        decoded_samples += (frame.item.samples.len() / 2) as u64;
         decoded_frames += 1;
     }
 
