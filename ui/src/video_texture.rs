@@ -12,7 +12,6 @@ use crossbeam_channel::{bounded, TryRecvError};
 use glimpse_engine::decoder::{VideoDecoder, VideoFrameQueue};
 use glimpse_engine::demuxer::{demux_file, PacketQueues};
 use glimpse_engine::{MasterClock, TrackList, VideoFrameData, Serial};
-use gtk4::prelude::*;
 use gtk4::Picture;
 
 pub fn present_first_decoded_frame(path: &str, tracks: TrackList, picture: &Picture) {
