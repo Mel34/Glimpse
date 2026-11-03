@@ -20,8 +20,8 @@ Glimpse 0.1.0 maintains a dual architecture to preserve the working desktop play
    - Uses the system `ffprobe` executable for real container duration and stream metadata.
    - The optional `ffmpeg-system` feature enables in-process FFmpeg 9 packet demuxing through `libavformat`.
    - Video, audio, and subtitle packets are routed into separate bounded queues with packet timestamps, stream time bases, keyframe flags, and serial tags.
-   - Demuxing is blocking and must run on a dedicated worker thread. Queue backpressure is bounded; decoding, audio output, and GTK presentation are not implemented yet.
-   - The existing synthetic decoder and mock audio sink remain scaffolding, not real playback components.
+   - The feature-gated software video decoder consumes queued packets with libavcodec, drains delayed frames, and converts decoded output to tightly packed RGBA with stream-timestamp-derived PTS.
+  - Demuxing and decoding are blocking operations intended for dedicated worker threads. The diagnostic decode mode exercises the real demux-to-decoder queue path; GTK presentation and real audio output are not implemented yet. The mock audio sink remains scaffolding.
 
 ---
 
@@ -42,8 +42,8 @@ Glimpse 0.1.0 maintains a dual architecture to preserve the working desktop play
 
 - **Milestone 0: Workspace & Toolchain** — `[Implemented]` Multi-crate Cargo workspace, LGPL-2.1 license compliance, Arch PKGBUILD, and desktop assets.
 - **Milestone 1: Real Container Probe** — `[Implemented]` Actual container duration and stream discovery via system `ffprobe`.
-- **Milestone 2: In-process Packet Demuxing** — `[Implemented: feature-gated]` FFmpeg 9/libavformat packet reading, per-stream-type bounded queues, timestamps, keyframe metadata, and serial tagging. Dedicated worker orchestration and decoder integration remain future work.
-- **Milestone 3: Software Video Decode** — `[Planned]` Decode queued video packets into frames.
+- **Milestone 2: In-process Packet Demuxing** — `[Implemented: feature-gated]` FFmpeg 9/libavformat packet reading, per-stream-type bounded queues, timestamps, keyframe metadata, and serial tagging.
+- **Milestone 3: Software Video Decode** — `[Implemented: feature-gated]` libavcodec software decoding, delayed-frame draining, timestamped frames, and RGBA conversion. The diagnostic CLI exercises the real-file demux/decode path; GTK presentation remains the next milestone.
 - **Milestone 4: Presentation Surface Bridge** — `[Planned]` Connect decoded frames to GTK4 without breaking the working `MediaFile` baseline.
 - **Milestone 5: Real Audio Decode and Output** — `[Planned]` Decode, resample, and output audio.
 - **Milestone 6: A/V Sync and Seeking** — `[Planned]` Coordinate clocks, seek the demuxer, and flush decoder state.
@@ -65,8 +65,11 @@ sudo pacman -S --needed ffmpeg gtk4 libadwaita cargo clang pkgconf alsa-lib libp
 # Default workspace tests (does not link the optional native FFmpeg backend)
 cargo test --workspace
 
-# Build and test the in-process FFmpeg 9 demuxer
+# Build and test the in-process FFmpeg 9 demuxer and software decoder
 cargo test --workspace --features glimpse-engine/ffmpeg-system
+
+# Smoke-test real packet demuxing and software video decoding
+cargo run -p glimpse-engine --features ffmpeg-system --bin glimpse_probe -- --decode sample.mp4
 
 # Run diagnostic container probe CLI
 cargo run --bin glimpse_probe -- sample.mp4
