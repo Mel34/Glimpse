@@ -4,7 +4,7 @@ pkgver=0.1.0
 pkgrel=1
 pkgdesc="Clean, predictable Linux media player in Rust using GTK4, libadwaita, and in-process FFmpeg (libav*)"
 arch=('x86_64' 'aarch64')
-url="https://github.com/glimpse-player/glimpse"
+url="https://github.com/Mel34/Glimpse"
 license=('LGPL-2.1-or-later')
 depends=(
   'ffmpeg'
@@ -40,14 +40,14 @@ build() {
   export RUSTUP_TOOLCHAIN=stable
   export CARGO_TARGET_DIR="$startdir/target"
   export BINDGEN_EXTRA_CLANG_ARGS="-I$PWD/include"
-  cargo build --release --all-targets
+  cargo build --release --all-targets --features ffmpeg-system,audio-cpal
 }
 
 check() {
   cd "$startdir"
   export RUSTUP_TOOLCHAIN=stable
   export BINDGEN_EXTRA_CLANG_ARGS="-I$PWD/include"
-  cargo test --release
+  cargo test --release --features ffmpeg-system,audio-cpal
 }
 
 package() {

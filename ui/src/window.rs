@@ -656,10 +656,10 @@ impl GlimpseWindow {
                 .modal(true)
                 .program_name("Glimpse")
                 .version("0.1.0")
-                .comments("Showtime-style minimalist video player with precise audio-sync.")
+                .comments("Clean, predictable Linux video player built with GTK4 and direct in-process FFmpeg (libav*) decoding.")
                 .website("https://github.com/Mel34/Glimpse")
                 .logo_icon_name("com.github.Mel34.Glimpse")
-                .license_type(gtk4::License::Gpl30)
+                .license_type(gtk4::License::Lgpl21)
                 .build();
             about.present();
         });
@@ -1271,10 +1271,10 @@ fn create_main_menu_popover(
             .modal(true)
             .program_name("Glimpse")
             .version("0.1.0")
-            .comments("Showtime-style minimalist video player with audio-sync engine.")
+            .comments("Clean, predictable Linux video player built with GTK4 and direct in-process FFmpeg (libav*) decoding.")
             .website("https://github.com/Mel34/Glimpse")
             .logo_icon_name("com.github.Mel34.Glimpse")
-            .license_type(gtk4::License::Gpl30)
+            .license_type(gtk4::License::Lgpl21)
             .build();
         about.present();
     });

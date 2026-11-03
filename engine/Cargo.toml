@@ -14,8 +14,8 @@ name = "glimpse_probe"
 path = "src/bin/glimpse_probe.rs"
 
 [features]
-default = []
-# Optional native audio and FFmpeg linking features
+default = ["ffmpeg-system", "audio-cpal"]
+# Native audio and FFmpeg linking features enabled by default
 audio-cpal = ["dep:cpal"]
 ffmpeg-system = ["dep:ffmpeg-the-third"]
 
