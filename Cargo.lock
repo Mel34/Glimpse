@@ -550,6 +550,7 @@ dependencies = [
  "cpal",
  "crossbeam-channel",
  "ffmpeg-the-third",
+ "libc",
  "parking_lot",
  "serde_json",
  "thiserror",
