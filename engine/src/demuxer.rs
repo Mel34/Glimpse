@@ -1,15 +1,17 @@
-//! Demuxer thread handling container parsing, stream discovery,
-//! packet queuing, and seek operations.
+//! Container probing and in-process packet demuxing.
 
+use std::collections::HashMap;
 use std::process::Command;
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::Value;
 use tracing::info;
 
+use crate::queue::BoundedQueue;
 use crate::types::{Serial, TrackId, TrackInfo, TrackList, TrackType};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct DemuxPacket {
     pub stream_index: usize,
     pub data: Vec<u8>,
@@ -23,7 +25,10 @@ pub struct DemuxPacket {
 
 impl DemuxPacket {
     pub fn pts_secs(&self) -> Option<f64> {
-        self.pts.map(|p| (p as f64 * self.time_base_num as f64) / (self.time_base_den as f64))
+        if self.time_base_den == 0 {
+            return None;
+        }
+        self.pts.map(|p| (p as f64 * self.time_base_num as f64) / self.time_base_den as f64)
     }
 }
 
@@ -38,6 +43,124 @@ pub struct DemuxerState {
     pub tracks: TrackList,
 }
 
+/// Three independently bounded packet queues, one per supported stream type.
+#[derive(Clone)]
+pub struct PacketQueues {
+    pub video: Arc<BoundedQueue<DemuxPacket>>,
+    pub audio: Arc<BoundedQueue<DemuxPacket>>,
+    pub subtitle: Arc<BoundedQueue<DemuxPacket>>,
+}
+
+impl PacketQueues {
+    pub fn new(max_packets_per_queue: usize, max_bytes_per_queue: usize) -> Self {
+        Self {
+            video: Arc::new(BoundedQueue::new(max_packets_per_queue, max_bytes_per_queue)),
+            audio: Arc::new(BoundedQueue::new(max_packets_per_queue, max_bytes_per_queue)),
+            subtitle: Arc::new(BoundedQueue::new(max_packets_per_queue, max_bytes_per_queue)),
+        }
+    }
+
+    pub fn flush(&self, serial: Serial) {
+        self.video.flush(serial);
+        self.audio.flush(serial);
+        self.subtitle.flush(serial);
+    }
+
+    pub fn abort(&self) {
+        self.video.abort();
+        self.audio.abort();
+        self.subtitle.abort();
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct DemuxStats {
+    pub video_packets: u64,
+    pub audio_packets: u64,
+    pub subtitle_packets: u64,
+    pub ignored_packets: u64,
+    pub bytes_read: u64,
+}
+
+/// Open a media source with libavformat and route its packets into bounded queues.
+///
+/// This function performs blocking I/O and queue backpressure. Call it from a
+/// dedicated worker thread, never from the GTK main thread. It returns after
+/// clean EOF or on the first demux/queue error. Decoding is intentionally not
+/// part of this milestone.
+#[cfg(feature = "ffmpeg-system")]
+pub fn demux_file(
+    path: &str,
+    tracks: &TrackList,
+    queues: &PacketQueues,
+    serial: Serial,
+) -> Result<DemuxStats, String> {
+    use ffmpeg_the_third as ffmpeg;
+
+    ffmpeg::init().map_err(|error| format!("Could not initialise FFmpeg: {error}"))?;
+    let mut input = ffmpeg::format::input(path)
+        .map_err(|error| format!("Could not open media with libavformat: {error}"))?;
+
+    let mut stream_types = HashMap::new();
+    for track in tracks.video_tracks.iter() {
+        stream_types.insert(track.id.0, TrackType::Video);
+    }
+    for track in tracks.audio_tracks.iter() {
+        stream_types.insert(track.id.0, TrackType::Audio);
+    }
+    for track in tracks.subtitle_tracks.iter() {
+        stream_types.insert(track.id.0, TrackType::Subtitle);
+    }
+
+    let mut stats = DemuxStats::default();
+
+    for (stream, packet) in input.packets() {
+        let stream_index = stream.index();
+        let Some(stream_type) = stream_types.get(&stream_index).copied() else {
+            stats.ignored_packets += 1;
+            continue;
+        };
+
+        let time_base = stream.time_base();
+        let data = packet.data().unwrap_or_default().to_vec();
+        let byte_size = data.len();
+        let demux_packet = DemuxPacket {
+            stream_index,
+            data,
+            pts: packet.pts(),
+            dts: packet.dts(),
+            duration: packet.duration(),
+            time_base_num: time_base.numerator(),
+            time_base_den: time_base.denominator(),
+            is_keyframe: packet.is_key(),
+        };
+
+        let queue = match stream_type {
+            TrackType::Video => {
+                stats.video_packets += 1;
+                &queues.video
+            }
+            TrackType::Audio => {
+                stats.audio_packets += 1;
+                &queues.audio
+            }
+            TrackType::Subtitle => {
+                stats.subtitle_packets += 1;
+                &queues.subtitle
+            }
+        };
+
+        queue.push(demux_packet, serial, byte_size).map_err(|_| {
+            format!(
+                "Packet queue for stream {stream_index} was aborted or packet size ({byte_size} bytes) exceeds its configured capacity"
+            )
+        })?;
+        stats.bytes_read = stats.bytes_read.saturating_add(byte_size as u64);
+    }
+
+    Ok(stats)
+}
+
 /// Metadata discovered from the actual media container.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MediaProbe {
@@ -46,9 +169,6 @@ pub struct MediaProbe {
 }
 
 /// Run the system ffprobe utility and return real container metadata.
-///
-/// The executable is supplied by the system FFmpeg package. This is an
-/// intentional first step; packet demuxing will move in-process later.
 pub fn probe_media(path: &str) -> Result<MediaProbe, String> {
     info!("Probing media container: {}", path);
 
@@ -167,15 +287,9 @@ fn parse_ffprobe_output(json: &str) -> Result<MediaProbe, String> {
         .find(|track| track.is_default)
         .or_else(|| tracks.audio_tracks.first())
         .map(|track| track.id);
-    // Subtitles are deliberately disabled until the user selects one.
     tracks.active_subtitle = None;
 
     Ok(MediaProbe { duration, tracks })
-}
-
-/// Compatibility helper for callers that only need the stream list.
-pub fn probe_file(path: &str) -> Result<TrackList, String> {
-    probe_media(path).map(|probe| probe.tracks)
 }
 
 fn value_as_f64(value: &Value) -> Option<f64> {
