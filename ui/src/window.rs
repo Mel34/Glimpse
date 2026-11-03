@@ -1043,6 +1043,9 @@ fn load_and_play_file(
             if let Some(ref current_p) = *player.borrow() {
                 let tracks = current_p.tracks();
 
+                #[cfg(feature = "experimental-engine")]
+                crate::video_texture::present_first_decoded_frame(path, tracks.clone(), picture);
+
                 // Check container stream video dimensions for immediate aspect ratio clamping
                 if let Some(vt) = tracks.video_tracks.first() {
                     if let (Some(w), Some(h)) = (vt.width, vt.height) {
