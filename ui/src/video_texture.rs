@@ -7,6 +7,9 @@
 use glimpse_engine::TrackList;
 
 #[cfg(feature = "experimental-engine")]
+use gtk4::prelude::MediaStreamExt;
+
+#[cfg(feature = "experimental-engine")]
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(feature = "experimental-engine")]
 use std::sync::Arc;
