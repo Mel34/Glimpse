@@ -21,7 +21,7 @@ Glimpse 0.1.0 maintains a dual architecture to preserve the working desktop play
    - The optional `ffmpeg-system` feature enables in-process FFmpeg 9 packet demuxing through `libavformat`.
    - Video, audio, and subtitle packets are routed into separate bounded queues with packet timestamps, stream time bases, keyframe flags, and serial tags.
    - The feature-gated software video decoder consumes queued packets with libavcodec, drains delayed frames, and converts decoded output to tightly packed RGBA with stream-timestamp-derived PTS.
-  - Demuxing and decoding are blocking operations intended for dedicated worker threads. The diagnostic decode mode exercises the real demux-to-decoder queue path; GTK presentation and real audio output are not implemented yet. The mock audio sink remains scaffolding.
+   - Demuxing and decoding are blocking operations intended for dedicated worker threads. The diagnostic decode mode exercises the real demux-to-decoder queue path; GTK presentation and real audio output are not implemented yet. The mock audio sink remains scaffolding.
 
 ---
 
