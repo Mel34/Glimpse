@@ -16,11 +16,13 @@ use glimpse_engine::{Player, PlayerState};
 use crate::controls::{create_floating_bottom_bar, ControlBarWidgets};
 use crate::interaction::{attach_seekbar_wheel, attach_window_volume_wheel, VideoClickStateMachine};
 use crate::track_menu::create_track_popover;
+use crate::video_texture::VideoPlaybackHandle;
 
 pub struct GlimpseWindow {
     window: ApplicationWindow,
     player: Rc<RefCell<Option<Player>>>,
     media_file: Rc<RefCell<Option<MediaFile>>>,
+    video_playback: Rc<RefCell<Option<VideoPlaybackHandle>>>,
     bottom_controls: ControlBarWidgets,
     picture: Picture,
     #[allow(dead_code)]
@@ -46,6 +48,7 @@ impl GlimpseWindow {
 
         let player: Rc<RefCell<Option<Player>>> = Rc::new(RefCell::new(None));
         let media_file: Rc<RefCell<Option<MediaFile>>> = Rc::new(RefCell::new(None));
+        let video_playback: Rc<RefCell<Option<VideoPlaybackHandle>>> = Rc::new(RefCell::new(None));
 
         // Root Overlay: Contains Stack as base child and the Drop Hover Overlay on top
         let root_overlay = Overlay::new();
@@ -548,6 +551,7 @@ impl GlimpseWindow {
         let stack_for_drop = stack.clone();
         let player_for_drop = Rc::clone(&player);
         let media_for_drop = Rc::clone(&media_file);
+        let video_for_drop = Rc::clone(&video_playback);
         let picture_for_drop = picture.clone();
         let bottom_for_drop = bottom_controls.clone();
 
@@ -562,6 +566,7 @@ impl GlimpseWindow {
                             &stack_for_drop,
                             &player_for_drop,
                             &media_for_drop,
+                            &video_for_drop,
                             &picture_for_drop,
                             &bottom_for_drop,
                         );
@@ -578,6 +583,7 @@ impl GlimpseWindow {
         let stack_for_dialog = stack.clone();
         let player_for_dialog = Rc::clone(&player);
         let media_for_dialog = Rc::clone(&media_file);
+        let video_for_dialog = Rc::clone(&video_playback);
         let picture_for_dialog = picture.clone();
         let bottom_for_dialog = bottom_controls.clone();
 
@@ -587,6 +593,7 @@ impl GlimpseWindow {
                 &stack_for_dialog,
                 &player_for_dialog,
                 &media_for_dialog,
+                &video_for_dialog,
                 &picture_for_dialog,
                 &bottom_for_dialog,
             );
@@ -598,6 +605,7 @@ impl GlimpseWindow {
             &stack,
             &player,
             &media_file,
+            &video_playback,
             &picture,
             &bottom_controls,
         );
@@ -608,6 +616,7 @@ impl GlimpseWindow {
             &stack,
             &player,
             &media_file,
+            &video_playback,
             &picture,
             &bottom_controls,
         );
@@ -619,6 +628,7 @@ impl GlimpseWindow {
         let stack_act = stack.clone();
         let player_act = Rc::clone(&player);
         let media_act = Rc::clone(&media_file);
+        let video_act = Rc::clone(&video_playback);
         let pic_act = picture.clone();
         let btm_act = bottom_controls.clone();
         action_open.connect_activate(move |_, _| {
@@ -627,6 +637,7 @@ impl GlimpseWindow {
                 &stack_act,
                 &player_act,
                 &media_act,
+                &video_act,
                 &pic_act,
                 &btm_act,
             );
@@ -675,6 +686,7 @@ impl GlimpseWindow {
         let stack_open_k = stack.clone();
         let p_open_k = Rc::clone(&player);
         let m_open_k = Rc::clone(&media_file);
+        let video_open_k = Rc::clone(&video_playback);
         let pic_open_k = picture.clone();
         let btm_open_k = bottom_controls.clone();
 
@@ -723,6 +735,7 @@ impl GlimpseWindow {
                         &stack_open_k,
                         &p_open_k,
                         &m_open_k,
+                        &video_open_k,
                         &pic_open_k,
                         &btm_open_k,
                     );
@@ -805,6 +818,7 @@ impl GlimpseWindow {
             window,
             player,
             media_file,
+            video_playback,
             bottom_controls,
             picture,
             top_controls,
@@ -822,6 +836,7 @@ impl GlimpseWindow {
             &self.stack,
             &self.player,
             &self.media_file,
+            &self.video_playback,
             &self.picture,
             &self.bottom_controls,
         );
@@ -830,6 +845,7 @@ impl GlimpseWindow {
     /// Stop playback and return to the empty state loader screen.
     #[allow(dead_code)]
     pub fn close_file(&self) {
+        self.video_playback.borrow_mut().take();
         if let Some(ref m) = *self.media_file.borrow() {
             m.pause();
         }
@@ -860,6 +876,7 @@ fn trigger_open_file_dialog(
     stack: &Stack,
     player: &Rc<RefCell<Option<Player>>>,
     media_holder: &Rc<RefCell<Option<MediaFile>>>,
+    video_playback: &Rc<RefCell<Option<VideoPlaybackHandle>>>,
     picture: &Picture,
     bottom_controls: &ControlBarWidgets,
 ) {
@@ -878,6 +895,7 @@ fn trigger_open_file_dialog(
     let stack_cb = stack.clone();
     let player_cb = Rc::clone(player);
     let media_cb = Rc::clone(media_holder);
+    let video_cb = Rc::clone(video_playback);
     let pic_cb = picture.clone();
     let bottom_cb = bottom_controls.clone();
 
@@ -891,6 +909,7 @@ fn trigger_open_file_dialog(
                         &stack_cb,
                         &player_cb,
                         &media_cb,
+                        &video_cb,
                         &pic_cb,
                         &bottom_cb,
                     );
@@ -907,6 +926,7 @@ fn load_and_play_file(
     stack: &Stack,
     player: &Rc<RefCell<Option<Player>>>,
     media_holder: &Rc<RefCell<Option<MediaFile>>>,
+    video_playback: &Rc<RefCell<Option<VideoPlaybackHandle>>>,
     picture: &Picture,
     bottom_controls: &ControlBarWidgets,
 ) {
@@ -917,6 +937,9 @@ fn load_and_play_file(
 
     window.set_title(Some(&format!("Glimpse - {}", file_name)));
     bottom_controls.title_label.set_text(file_name);
+
+    // Stop previous custom decoder before replacing the media source.
+    video_playback.borrow_mut().take();
 
     // Stop previous media if any
     if let Some(ref old_m) = *media_holder.borrow() {
@@ -1043,8 +1066,12 @@ fn load_and_play_file(
             if let Some(ref current_p) = *player.borrow() {
                 let tracks = current_p.tracks();
 
-                #[cfg(feature = "experimental-engine")]
-                crate::video_texture::present_first_decoded_frame(path, tracks.clone(), picture);
+                *video_playback.borrow_mut() = crate::video_texture::present_continuous_frames(
+                    path,
+                    tracks.clone(),
+                    picture,
+                    &media,
+                );
 
                 // Check container stream video dimensions for immediate aspect ratio clamping
                 if let Some(vt) = tracks.video_tracks.first() {
@@ -1157,6 +1184,7 @@ fn create_main_menu_popover(
     stack: &Stack,
     player: &Rc<RefCell<Option<Player>>>,
     media_file: &Rc<RefCell<Option<MediaFile>>>,
+    video_playback: &Rc<RefCell<Option<VideoPlaybackHandle>>>,
     picture: &Picture,
     bottom_controls: &ControlBarWidgets,
 ) -> gtk4::Popover {
@@ -1217,11 +1245,12 @@ fn create_main_menu_popover(
     let stack_op = stack.clone();
     let p_op = Rc::clone(player);
     let m_op = Rc::clone(media_file);
+    let video_op = Rc::clone(video_playback);
     let pic_op = picture.clone();
     let btm_op = bottom_controls.clone();
     btn_open.connect_clicked(move |_| {
         pop_close2.popdown();
-        trigger_open_file_dialog(&win_op, &stack_op, &p_op, &m_op, &pic_op, &btm_op);
+        trigger_open_file_dialog(&win_op, &stack_op, &p_op, &m_op, &video_op, &pic_op, &btm_op);
     });
     vbox.append(&btn_open);
 
