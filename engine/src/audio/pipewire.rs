@@ -504,6 +504,6 @@ mod tests {
         assert_eq!(underflow, 0);
         assert_eq!(flushed, 0);
         assert_eq!(output, [0; 8]);
-        assert_eq!(consumer.slots(), 7);
+        assert_eq!(consumer.slots(), 1);
     }
 }
