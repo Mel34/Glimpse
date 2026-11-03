@@ -4,7 +4,6 @@ mod controls;
 mod interaction;
 mod track_menu;
 mod window;
-#[cfg(feature = "experimental-engine")]
 mod video_texture;
 
 use adw::prelude::*;
