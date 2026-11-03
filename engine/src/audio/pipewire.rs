@@ -341,9 +341,9 @@ fn run_pipewire_thread(
                 let _ = ready_sender.send(Ok(()));
                 break;
             }
-            pw::stream::StreamState::Error => {
+            pw::stream::StreamState::Error(error) => {
                 thread_loop.stop();
-                return Err("PipeWire playback stream entered an error state".to_string());
+                return Err(format!("PipeWire playback stream entered an error state: {error}"));
             }
             _ if Instant::now() >= startup_deadline => {
                 thread_loop.stop();
@@ -362,7 +362,7 @@ fn run_pipewire_thread(
                     stream.state()
                 };
                 shared.stream_state.store(stream_state_code(state), Ordering::Release);
-                if state == pw::stream::StreamState::Error
+                if matches!(state, pw::stream::StreamState::Error(_))
                     || state == pw::stream::StreamState::Unconnected
                 {
                     break;
@@ -385,7 +385,7 @@ fn stream_state_code(state: pw::stream::StreamState) -> u8 {
         pw::stream::StreamState::Connecting => STREAM_CONNECTING,
         pw::stream::StreamState::Paused => STREAM_PAUSED,
         pw::stream::StreamState::Streaming => STREAM_STREAMING,
-        pw::stream::StreamState::Error => STREAM_ERROR,
+        pw::stream::StreamState::Error(_) => STREAM_ERROR,
     }
 }
 
