@@ -1,5 +1,6 @@
 //! Container probing and in-process packet demuxing.
 
+#[cfg(feature = "ffmpeg-system")]
 use std::collections::HashMap;
 use std::process::Command;
 use std::sync::Arc;
