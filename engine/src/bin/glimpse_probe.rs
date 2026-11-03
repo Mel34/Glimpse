@@ -136,7 +136,7 @@ fn run_decode_smoke(
 
         while let Some(frame) = frame_queue.pop_timeout(Duration::from_millis(0)) {
             if first_frame.is_none() {
-                first_frame = Some((frame.width, frame.height, frame.pts));
+                first_frame = Some((frame.item.width, frame.item.height, frame.item.pts));
             }
             decoded_frames += 1;
         }
@@ -156,7 +156,7 @@ fn run_decode_smoke(
     decoder.finish(serial)?;
     while let Some(frame) = frame_queue.pop_timeout(Duration::from_millis(0)) {
         if first_frame.is_none() {
-            first_frame = Some((frame.width, frame.height, frame.pts));
+            first_frame = Some((frame.item.width, frame.item.height, frame.item.pts));
         }
         decoded_frames += 1;
     }
