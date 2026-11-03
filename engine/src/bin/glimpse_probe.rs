@@ -2,8 +2,11 @@
 
 use std::env;
 use std::process;
+#[cfg(feature = "ffmpeg-system")]
 use std::sync::Arc;
+#[cfg(feature = "ffmpeg-system")]
 use std::thread;
+#[cfg(feature = "ffmpeg-system")]
 use std::time::Duration;
 
 use glimpse_engine::{demuxer, Player, TrackInfo};
