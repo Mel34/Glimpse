@@ -114,7 +114,9 @@ pub fn demux_file(
 
     let mut stats = DemuxStats::default();
 
-    for (stream, packet) in input.packets() {
+    for packet_result in input.packets() {
+        let (stream, packet) = packet_result
+            .map_err(|error| format!("FFmpeg packet read failed: {error}"))?;
         let stream_index = stream.index();
         let Some(stream_type) = stream_types.get(&stream_index).copied() else {
             stats.ignored_packets += 1;
