@@ -1059,7 +1059,7 @@ fn load_and_play_file(
         }
     });
 
-    *media_holder.borrow_mut() = Some(media);
+    *media_holder.borrow_mut() = Some(media.clone());
 
     // Initialize Glimpse engine for stream probing and audio master clock tracking
     match Player::open(path) {
