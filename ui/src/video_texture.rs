@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use crossbeam_channel::{bounded, TryRecvError, TrySendError};
+use crossbeam_channel::{bounded, TryRecvError};
 use glimpse_engine::decoder::{VideoDecoder, VideoFrameQueue};
 use glimpse_engine::demuxer::{demux_file, PacketQueues};
 use glimpse_engine::{MasterClock, TrackList, VideoFrameData, Serial};
