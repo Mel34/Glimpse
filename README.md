@@ -1,6 +1,6 @@
 # Glimpse
 
-A clean, predictable Linux video player written in Rust using GTK4, libadwaita, and an in-process FFmpeg (`libav*`) media engine. Inspired by GNOME Showtime, with the interaction design corrected according to the author's patches.
+A clean, predictable Linux video player written in Rust using GTK4, libadwaita, and an evolving in-process media engine. Inspired by GNOME Showtime, with the interaction design corrected according to the author's patches.
 
 - **Repository:** [https://github.com/Mel34/Glimpse](https://github.com/Mel34/Glimpse)
 - **Application ID:** `com.github.Mel34.Glimpse`
@@ -8,7 +8,23 @@ A clean, predictable Linux video player written in Rust using GTK4, libadwaita, 
 
 ---
 
-## Key Interaction Principles
+## Current Architecture & Implementation Reality
+
+Glimpse 0.1.0 maintains a dual architecture to guarantee a rock-solid user experience while architecting a custom playback engine from first principles:
+
+1. **Active Playback Path (GTK4 `MediaFile`):**
+   - Powers all visible playback, container demuxing, video presentation to GTK `Picture`, audio output, volume, timeline seeking, and fullscreen mode in `ui/src/window.rs`.
+   - Ensures an immediate, working, hardware-accelerated media player on modern Linux desktops.
+
+2. **Custom Playback Engine Scaffold (`glimpse-engine`):**
+   - Architectural foundation for an in-process media pipeline in pure Rust.
+   - Contains clean abstractions and algorithms: audio clock drift math, latency deduction, serial queue invalidation, and frame presentation scheduling.
+   - Demuxer and decoder currently return mock/synthetic frames and tracks while the presentation bridge to GTK4 is being designed.
+   - Native `ffmpeg-the-third` and `cpal` backends are maintained as optional features to avoid upstream build failures on modern rolling distributions (Arch Linux FFmpeg 7+/8+).
+
+---
+
+## Key Interaction Principles (Implemented)
 
 1. **No Center Overlay Buttons:** Clean, uninterrupted video frame. Play/pause is accessed via the bottom control bar or directly on the video viewport.
 2. **Video Click Arbitration:**
@@ -21,28 +37,16 @@ A clean, predictable Linux video player written in Rust using GTK4, libadwaita, 
 
 ---
 
-## Architecture & Migration Roadmap
+## Migration Roadmap (Implemented vs. Planned)
 
-Glimpse currently operates on a dual-architecture baseline designed for clean migration:
-
-1. **Active Playback Path (GTK4 `MediaFile`):**
-   - High-performance native GTK media backend powering the UI window, video viewport, volume, seeking, and timeline controls.
-2. **Custom Media Engine (`glimpse-engine`):**
-   - Direct FFmpeg `libav*` pipeline in pure Rust without GStreamer or libmpv.
-   - Demuxer thread with bounded packet/frame queues and serial invalidation on seeks.
-   - Hardware audio master clock with soundcard latency deduction.
-   - Presentation scheduler for zero-jitter frame delivery.
-
-### 8-Milestone Implementation Plan
-
-- **Milestone 0: Workspace & Toolchain** — Multi-crate Cargo workspace, LGPL-2.1 license compliance, Arch PKGBUILD.
-- **Milestone 1: Container Probe CLI (`glimpse_probe`)** — FFmpeg `avformat` demuxing on separate thread, monotonic PTS validation.
-- **Milestone 2: Audio Master Clock (`cpal`)** — Real-time audio rendering, latency deduction, and pause/resume precision.
-- **Milestone 3: Presentation Surface Bridge** — Connecting engine's `VideoScheduler` to GTK4 via `gdk4::MemoryTexture` / `gtk4::CustomPaintable`.
-- **Milestone 4: Interaction Engine** — State-machine click arbitration, 5s seek wheel, 5% window volume wheel, drag-move pass-through.
-- **Milestone 5: Dynamic Tracks & Subtitles** — Real container stream switching and subtitle overlay rendering.
-- **Milestone 6: Linux Desktop Polish** — MPRIS D-Bus integration, XDG desktop actions, and drag-and-drop file ingestion.
-- **Milestone 7: Hardware Acceleration (VA-API)** — Zero-copy DMA-BUF textures (`GdkDmabufTextureBuilder`) on AMD Radeon (Mesa) and Intel with automatic software fallback.
+- **Milestone 0: Workspace & Toolchain** — `[Implemented]` Multi-crate Cargo workspace, LGPL-2.1 license compliance, Arch PKGBUILD, inverted SVG assets, AppStream metadata.
+- **Milestone 1: Container Probe CLI (`glimpse_probe`)** — `[Scaffold]` Stream discovery CLI structure and monotonic PTS loop verification. Real `libavformat` integration in progress.
+- **Milestone 2: Audio Master Clock (`cpal`)** — `[Scaffold]` Master clock algorithm, latency offset math, and unit tests implemented. Real soundcard hardware sink planned.
+- **Milestone 3: Presentation Surface Bridge** — `[Planned]` Connecting engine's frame scheduler to GTK4 via `gdk4::MemoryTexture` / `gtk4::CustomPaintable` without breaking the working `MediaFile` baseline.
+- **Milestone 4: Interaction Engine** — `[Implemented]` State-machine click arbitration, 5s seekbar wheel, 5% window volume wheel, drag-move pass-through.
+- **Milestone 5: Dynamic Tracks & Subtitles** — `[Implemented in UI / Planned in Engine]` Track selector popover in GTK; engine container stream switching planned.
+- **Milestone 6: Linux Desktop Polish** — `[Implemented]` Drag-and-drop file ingestion, MIME type associations, desktop action shortcuts. MPRIS integration planned.
+- **Milestone 7: Hardware Acceleration (VA-API)** — `[Planned]` Zero-copy DMA-BUF textures (`GdkDmabufTextureBuilder`) for AMD Radeon (Mesa) and Intel with automatic software fallback.
 
 ---
 

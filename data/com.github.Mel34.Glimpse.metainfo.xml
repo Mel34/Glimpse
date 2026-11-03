@@ -8,7 +8,7 @@
   <description>
     <p>
       Glimpse is a fast, predictable media player for Linux desktop environments,
-      featuring in-process FFmpeg decoding with planned VA-API acceleration, libadwaita styling, and a clean interface.
+      featuring native GTK4 playback, libadwaita styling, and a clean interface, with an evolving in-process playback engine.
     </p>
   </description>
   <launchable type="desktop-id">com.github.Mel34.Glimpse.desktop</launchable>

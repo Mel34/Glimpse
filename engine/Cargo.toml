@@ -3,7 +3,7 @@ name = "glimpse-engine"
 version = "0.1.0"
 edition = "2021"
 license = "LGPL-2.1-or-later"
-description = "Core in-process FFmpeg (libav*) media playback engine for Glimpse"
+description = "Experimental in-process FFmpeg (libav*) media playback engine scaffold for Glimpse"
 
 [lib]
 name = "glimpse_engine"
@@ -14,8 +14,8 @@ name = "glimpse_probe"
 path = "src/bin/glimpse_probe.rs"
 
 [features]
-default = ["ffmpeg-system", "audio-cpal"]
-# Native audio and FFmpeg linking features enabled by default
+default = []
+# Optional native audio and FFmpeg linking features (kept optional to avoid header churn on modern Arch)
 audio-cpal = ["dep:cpal"]
 ffmpeg-system = ["dep:ffmpeg-the-third"]
 
