@@ -94,7 +94,7 @@ fn parse_ffprobe_output(json: &str) -> Result<MediaProbe, String> {
         .and_then(|format| format.get("duration"))
         .and_then(value_as_f64)
         .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
-        .map(Duration::from_secs_f64);
+        .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok());
 
     let mut tracks = TrackList::default();
     let streams = root
