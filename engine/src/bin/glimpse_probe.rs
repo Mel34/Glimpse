@@ -1,17 +1,21 @@
-//! Glimpse CLI container-probe diagnostic utility.
+//! Glimpse CLI container-probe and software-decoding diagnostic utility.
 
 use std::env;
 use std::process;
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 
 use glimpse_engine::{demuxer, Player, TrackInfo};
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     let play_audio = args.iter().any(|arg| arg == "--play");
+    let decode = args.iter().any(|arg| arg == "--decode");
     let file_path = args.iter().find(|arg| !arg.starts_with("--"));
 
     let Some(file_path) = file_path else {
-        eprintln!("Usage: glimpse_probe [--play] <file>");
+        eprintln!("Usage: glimpse_probe [--play] [--decode] <file>");
         process::exit(2);
     };
 
@@ -38,6 +42,20 @@ fn main() {
     print_tracks("Audio", &probe.tracks.audio_tracks);
     print_tracks("Subtitle", &probe.tracks.subtitle_tracks);
 
+    if decode {
+        #[cfg(feature = "ffmpeg-system")]
+        if let Err(error) = run_decode_smoke(file_path, &probe.tracks) {
+            eprintln!("Decode smoke test failed: {error}");
+            process::exit(1);
+        }
+
+        #[cfg(not(feature = "ffmpeg-system"))]
+        {
+            eprintln!("--decode requires --features glimpse-engine/ffmpeg-system");
+            process::exit(2);
+        }
+    }
+
     if play_audio {
         match Player::open(file_path) {
             Ok((player, _)) => {
@@ -53,6 +71,91 @@ fn main() {
             }
         }
     }
+}
+
+#[cfg(feature = "ffmpeg-system")]
+fn run_decode_smoke(
+    file_path: &str,
+    tracks: &glimpse_engine::TrackList,
+) -> Result<(), String> {
+    use glimpse_engine::decoder::{VideoDecoder, VideoFrameQueue};
+    use glimpse_engine::demuxer::{demux_file, PacketQueues};
+    use glimpse_engine::queue::BoundedQueue;
+    use glimpse_engine::{MasterClock, Serial};
+
+    let video_track = tracks
+        .video_tracks
+        .first()
+        .ok_or_else(|| "The file has no video stream to decode".to_string())?;
+    let serial = Serial(0);
+    let queues = PacketQueues::new(64, 64 * 1024 * 1024);
+    let frame_queue = Arc::new(VideoFrameQueue::new(32, 512 * 1024 * 1024));
+    let mut decoder = VideoDecoder::open_ffmpeg(
+        file_path,
+        video_track.id.0,
+        Arc::clone(&queues.video),
+        Arc::clone(&frame_queue),
+        Arc::new(MasterClock::new()),
+    )?;
+
+    let path = file_path.to_owned();
+    let worker_tracks = tracks.clone();
+    let worker_queues = queues.clone();
+    let worker = thread::spawn(move || {
+        demux_file(&path, &worker_tracks, &worker_queues, serial)
+    });
+
+    let mut decoded_frames = 0u64;
+    let mut first_frame = None;
+
+    // Drain all stream queues while demuxing. This keeps unrelated audio and
+    // subtitle streams from applying backpressure to this video-only smoke run.
+    loop {
+        if let Err(error) = decoder.decode_step(serial) {
+            queues.abort();
+            let _ = worker.join();
+            return Err(error);
+        }
+
+        while let Some(frame) = frame_queue.pop_timeout(Duration::from_millis(0)) {
+            if first_frame.is_none() {
+                first_frame = Some((frame.width, frame.height, frame.pts));
+            }
+            decoded_frames += 1;
+        }
+        while queues.audio.pop_timeout(Duration::from_millis(0)).is_some() {}
+        while queues.subtitle.pop_timeout(Duration::from_millis(0)).is_some() {}
+
+        if worker.is_finished() && queues.video.stats().0 == 0 {
+            break;
+        }
+    }
+
+    let demux_stats = worker
+        .join()
+        .map_err(|_| "Demux worker panicked".to_string())?
+        .map_err(|error| format!("Demux failed: {error}"))?;
+
+    decoder.finish(serial)?;
+    while let Some(frame) = frame_queue.pop_timeout(Duration::from_millis(0)) {
+        if first_frame.is_none() {
+            first_frame = Some((frame.width, frame.height, frame.pts));
+        }
+        decoded_frames += 1;
+    }
+
+    let _unused_queue_type_check: Option<BoundedQueue<u8>> = None;
+    println!(
+        "Demuxed {} video packets ({} bytes); decoded {} video frames",
+        demux_stats.video_packets, demux_stats.bytes_read, decoded_frames
+    );
+    if let Some((width, height, pts)) = first_frame {
+        println!("First decoded frame: {width}x{height} at {pts:.3}s (RGBA)");
+    }
+    if decoded_frames == 0 {
+        return Err("The video stream produced no decoded frames".to_string());
+    }
+    Ok(())
 }
 
 fn print_tracks(label: &str, tracks: &[TrackInfo]) {
