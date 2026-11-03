@@ -26,7 +26,7 @@ const STREAM_PAUSED: u8 = 2;
 const STREAM_STREAMING: u8 = 3;
 const STREAM_ERROR: u8 = 4;
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 struct PcmSample {
     value: f32,
     generation: u32,
@@ -478,6 +478,7 @@ mod tests {
         producer.push(PcmSample { value: 0.1, generation: 0 }).unwrap();
         shared.generation.store(1, Ordering::Release);
         producer.push(PcmSample { value: 0.75, generation: 1 }).unwrap();
+        producer.push(PcmSample { value: -0.25, generation: 1 }).unwrap();
 
         let mut output = [0; 8];
         let (written, underflow, flushed) = render_pcm(&mut consumer, &shared, &mut output);
@@ -486,7 +487,7 @@ mod tests {
         assert_eq!(underflow, 0);
         assert_eq!(flushed, 1);
         assert_eq!(f32::from_le_bytes(output[0..4].try_into().unwrap()), 0.75);
-        assert_eq!(f32::from_le_bytes(output[4..8].try_into().unwrap()), 0.0);
+        assert_eq!(f32::from_le_bytes(output[4..8].try_into().unwrap()), -0.25);
     }
 
     #[test]
