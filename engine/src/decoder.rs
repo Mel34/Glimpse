@@ -158,7 +158,7 @@ impl VideoDecoder {
                 Err(error) => return Err(format!("Video frame decoding failed: {error}")),
             }
 
-            let needs_scaler = backend.scaler.as_ref().is_none_or(|scaler| {
+            let needs_scaler = backend.scaler.as_ref().map_or(true, |scaler| {
                 scaler.input().format != decoded.format()
                     || scaler.input().width != decoded.width()
                     || scaler.input().height != decoded.height()
