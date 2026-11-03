@@ -80,7 +80,6 @@ fn run_decode_smoke(
 ) -> Result<(), String> {
     use glimpse_engine::decoder::{VideoDecoder, VideoFrameQueue};
     use glimpse_engine::demuxer::{demux_file, PacketQueues};
-    use glimpse_engine::queue::BoundedQueue;
     use glimpse_engine::{MasterClock, Serial};
 
     let video_track = tracks
@@ -144,9 +143,8 @@ fn run_decode_smoke(
         decoded_frames += 1;
     }
 
-    let _unused_queue_type_check: Option<BoundedQueue<u8>> = None;
     println!(
-        "Demuxed {} video packets ({} bytes); decoded {} video frames",
+        "Demuxed {} video packets ({} bytes across all streams); decoded {} video frames",
         demux_stats.video_packets, demux_stats.bytes_read, decoded_frames
     );
     if let Some((width, height, pts)) = first_frame {
