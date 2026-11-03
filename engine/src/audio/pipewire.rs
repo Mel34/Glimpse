@@ -334,7 +334,7 @@ fn run_pipewire_thread(
             let _guard = thread_loop.lock();
             stream.state()
         };
-        shared.stream_state.store(stream_state_code(state), Ordering::Release);
+        shared.stream_state.store(stream_state_code(&state), Ordering::Release);
 
         match state {
             pw::stream::StreamState::Paused | pw::stream::StreamState::Streaming => {
@@ -361,8 +361,8 @@ fn run_pipewire_thread(
                     let _guard = thread_loop.lock();
                     stream.state()
                 };
-                shared.stream_state.store(stream_state_code(state), Ordering::Release);
-                if matches!(state, pw::stream::StreamState::Error(_))
+                shared.stream_state.store(stream_state_code(&state), Ordering::Release);
+                if matches!(&state, pw::stream::StreamState::Error(_))
                     || state == pw::stream::StreamState::Unconnected
                 {
                     break;
@@ -379,7 +379,7 @@ fn run_pipewire_thread(
     Ok(())
 }
 
-fn stream_state_code(state: pw::stream::StreamState) -> u8 {
+fn stream_state_code(state: &pw::stream::StreamState) -> u8 {
     match state {
         pw::stream::StreamState::Unconnected => STREAM_UNCONNECTED,
         pw::stream::StreamState::Connecting => STREAM_CONNECTING,
