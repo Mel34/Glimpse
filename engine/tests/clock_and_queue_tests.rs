@@ -1,5 +1,5 @@
 use std::time::Duration;
-use glimpse_engine::{MasterClock, Player, Serial};
+use glimpse_engine::{MasterClock, Serial};
 use glimpse_engine::queue::BoundedQueue;
 
 #[test]
@@ -39,14 +39,4 @@ fn test_serial_invalidation_on_seek() {
     let item = queue.pop_timeout(Duration::from_millis(50)).expect("Should pop s1 packet");
     assert_eq!(item.item, "fresh_packet_after_seek");
     assert_eq!(item.serial, s1);
-}
-
-#[test]
-fn test_player_seek_clamping() {
-    let (player, _) = Player::open("test.mp4").expect("Failed to open player");
-    player.seek(Duration::from_secs(45));
-    assert_eq!(player.position(), Duration::from_secs(45));
-
-    player.seek(Duration::from_secs(500));
-    assert_eq!(player.position(), Duration::from_secs(124));
 }

@@ -35,8 +35,9 @@ pub struct Player {
 impl Player {
     pub fn open(path_or_uri: &str) -> Result<(Player, Receiver<Event>), String> {
         let (event_tx, event_rx) = bounded(256);
-        let discovered_tracks = demuxer::probe_file(path_or_uri)?;
-        let initial_duration = Some(Duration::from_secs(124));
+        let probe = demuxer::probe_media(path_or_uri)?;
+        let initial_duration = probe.duration;
+        let discovered_tracks = probe.tracks;
 
         let clock = Arc::new(MasterClock::new());
         let current_serial = Arc::new(Mutex::new(Serial(0)));
@@ -79,15 +80,12 @@ impl Player {
     }
 
     pub fn seek(&self, to: Duration) {
-        let target_secs = to.as_secs_f64();
         let mut serial = self.current_serial.lock();
         *serial = serial.next();
 
-        let max_dur = self.duration.lock().unwrap_or(Duration::from_secs(3600)).as_secs_f64();
-        let clamped_secs = target_secs.clamp(0.0, max_dur);
-
-        self.clock.reset(clamped_secs);
-        let _ = self.event_sender.send(Event::PositionChanged(Duration::from_secs_f64(clamped_secs)));
+        let clamped = clamp_seek_target(to, *self.duration.lock());
+        self.clock.reset(clamped.as_secs_f64());
+        let _ = self.event_sender.send(Event::PositionChanged(clamped));
     }
 
     pub fn set_volume(&self, volume: f32) {
@@ -126,5 +124,35 @@ impl Player {
 
     pub fn state(&self) -> PlayerState {
         *self.state.lock()
+    }
+}
+
+fn clamp_seek_target(target: Duration, duration: Option<Duration>) -> Duration {
+    let maximum = duration.unwrap_or(Duration::from_secs(3600));
+    target.min(maximum)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn seek_target_is_clamped_to_known_duration() {
+        assert_eq!(
+            clamp_seek_target(Duration::from_secs(500), Some(Duration::from_secs(124))),
+            Duration::from_secs(124)
+        );
+        assert_eq!(
+            clamp_seek_target(Duration::from_secs(45), Some(Duration::from_secs(124))),
+            Duration::from_secs(45)
+        );
+    }
+
+    #[test]
+    fn unknown_duration_uses_one_hour_seek_ceiling() {
+        assert_eq!(
+            clamp_seek_target(Duration::from_secs(5000), None),
+            Duration::from_secs(3600)
+        );
     }
 }
