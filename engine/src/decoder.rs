@@ -2,6 +2,7 @@
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+#[cfg(feature = "ffmpeg-system")]
 use std::time::Duration;
 
 use crate::clock::MasterClock;
@@ -199,7 +200,7 @@ impl VideoDecoder {
                     .copy_from_slice(&source[source_start..source_start + stride]);
             }
 
-            let timestamp = decoded.timestamp().or_else(|| decoded.pts());
+            let timestamp = decoded.pts().or_else(|| decoded.timestamp());
             let pts = timestamp
                 .map(|value| {
                     value as f64 * backend.time_base_num as f64
