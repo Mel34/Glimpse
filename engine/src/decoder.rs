@@ -1,4 +1,4 @@
-//! Software video decoding through the optional in-process FFmpeg backend.
+//! Software audio and video decoding through the optional in-process FFmpeg backend.
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
