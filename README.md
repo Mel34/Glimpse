@@ -10,18 +10,18 @@ A clean, predictable Linux video player written in Rust using GTK4, libadwaita, 
 
 ## Current Architecture & Implementation Reality
 
-Glimpse 0.1.0 maintains a dual architecture to guarantee a rock-solid user experience while architecting a custom playback engine from first principles:
+Glimpse 0.1.0 maintains a dual architecture to preserve the working desktop player while the custom playback engine is developed:
 
 1. **Active Playback Path (GTK4 `MediaFile`):**
-   - Powers all visible playback, container demuxing, video presentation to GTK `Picture`, audio output, volume, timeline seeking, and fullscreen mode in `ui/src/window.rs`.
-   - Ensures an immediate, working, hardware-accelerated media player on modern Linux desktops.
+   - Powers visible playback, audio output, volume, timeline seeking, and fullscreen mode in `ui/src/window.rs`.
+   - Remains the user-facing playback baseline throughout the engine migration.
 
-2. **Custom Playback Engine Scaffold (`glimpse-engine`):**
-   - Architectural foundation for an in-process media pipeline in pure Rust.
-   - Contains clean abstractions and algorithms: audio clock drift math, latency deduction, serial queue invalidation, and frame presentation scheduling.
-   - The diagnostic probe now uses the system `ffprobe` executable to read actual container duration and discover real video, audio, and subtitle streams, including common stream metadata.
-   - This is an external-process probe, not yet in-process `libavformat` demuxing. Packet reading, decoding, audio output, and GTK presentation remain future milestones.
-   - Native `ffmpeg-the-third` and `cpal` backends remain optional to avoid upstream build failures on modern rolling distributions (Arch Linux FFmpeg 7+/8+).
+2. **Custom Playback Engine (`glimpse-engine`):**
+   - Uses the system `ffprobe` executable for real container duration and stream metadata.
+   - The optional `ffmpeg-system` feature enables in-process FFmpeg 9 packet demuxing through `libavformat`.
+   - Video, audio, and subtitle packets are routed into separate bounded queues with packet timestamps, stream time bases, keyframe flags, and serial tags.
+   - Demuxing is blocking and must run on a dedicated worker thread. Queue backpressure is bounded; decoding, audio output, and GTK presentation are not implemented yet.
+   - The existing synthetic decoder and mock audio sink remain scaffolding, not real playback components.
 
 ---
 
@@ -40,14 +40,14 @@ Glimpse 0.1.0 maintains a dual architecture to guarantee a rock-solid user exper
 
 ## Migration Roadmap (Implemented vs. Planned)
 
-- **Milestone 0: Workspace & Toolchain** — `[Implemented]` Multi-crate Cargo workspace, LGPL-2.1 license compliance, Arch PKGBUILD, inverted SVG assets, AppStream metadata.
-- **Milestone 1: Real Container Probe (`glimpse_probe`)** — `[Implemented: ffprobe]` Actual container duration and stream discovery via the system FFmpeg probe utility. In-process `libavformat` packet demuxing remains planned.
-- **Milestone 2: Audio Master Clock (`cpal`)** — `[Scaffold]` Master clock algorithm, latency offset math, and unit tests implemented. Real soundcard hardware sink planned.
-- **Milestone 3: Presentation Surface Bridge** — `[Planned]` Connecting engine's frame scheduler to GTK4 via `gdk4::MemoryTexture` / `gtk4::CustomPaintable` without breaking the working `MediaFile` baseline.
-- **Milestone 4: Interaction Engine** — `[Implemented]` State-machine click arbitration, 5s seekbar wheel, 5% window volume wheel, drag-move pass-through.
-- **Milestone 5: Dynamic Tracks & Subtitles** — `[Implemented in UI / Planned in Engine]` Track selector popover in GTK; engine container stream switching planned.
-- **Milestone 6: Linux Desktop Polish** — `[Implemented]` Drag-and-drop file ingestion, MIME type associations, desktop action shortcuts. MPRIS integration planned.
-- **Milestone 7: Hardware Acceleration (VA-API)** — `[Planned]` Zero-copy DMA-BUF textures (`GdkDmabufTextureBuilder`) for AMD Radeon (Mesa) and Intel with automatic software fallback.
+- **Milestone 0: Workspace & Toolchain** — `[Implemented]` Multi-crate Cargo workspace, LGPL-2.1 license compliance, Arch PKGBUILD, and desktop assets.
+- **Milestone 1: Real Container Probe** — `[Implemented]` Actual container duration and stream discovery via system `ffprobe`.
+- **Milestone 2: In-process Packet Demuxing** — `[Implemented: feature-gated]` FFmpeg 9/libavformat packet reading, per-stream-type bounded queues, timestamps, keyframe metadata, and serial tagging. Dedicated worker orchestration and decoder integration remain future work.
+- **Milestone 3: Software Video Decode** — `[Planned]` Decode queued video packets into frames.
+- **Milestone 4: Presentation Surface Bridge** — `[Planned]` Connect decoded frames to GTK4 without breaking the working `MediaFile` baseline.
+- **Milestone 5: Real Audio Decode and Output** — `[Planned]` Decode, resample, and output audio.
+- **Milestone 6: A/V Sync and Seeking** — `[Planned]` Coordinate clocks, seek the demuxer, and flush decoder state.
+- **Milestone 7: Hardware Acceleration** — `[Planned]` VA-API and DMA-BUF with software fallback.
 
 ---
 
@@ -62,14 +62,14 @@ sudo pacman -S --needed ffmpeg gtk4 libadwaita cargo clang pkgconf alsa-lib libp
 ### Build & Test
 
 ```bash
-# Test pure logic (clock, queues, seek clamping, and ffprobe JSON parsing)
+# Default workspace tests (does not link the optional native FFmpeg backend)
 cargo test --workspace
+
+# Build and test the in-process FFmpeg 9 demuxer
+cargo test --workspace --features glimpse-engine/ffmpeg-system
 
 # Run diagnostic container probe CLI
 cargo run --bin glimpse_probe -- sample.mp4
-
-# Run the engine-state demonstration (not actual decoding or playback)
-cargo run --bin glimpse_probe -- --play sample.mp4
 
 # Run desktop GTK4 player
 cargo run --bin glimpse -- sample.mp4
