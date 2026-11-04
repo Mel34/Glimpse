@@ -71,7 +71,7 @@ struct ProcessData {
     shared: Arc<SharedState>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PipeWireAudioSinkStats {
     /// Individual f32 samples rejected because the producer ring was full.
     pub dropped_samples: u64,
