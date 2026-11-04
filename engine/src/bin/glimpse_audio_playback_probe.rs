@@ -122,7 +122,7 @@ fn play_file(path: &str) -> Result<(), String> {
     let playback_sink = Arc::clone(&sink);
     let playback_queue = Arc::clone(&frame_queue);
     let playback_finished_worker = Arc::clone(&playback_finished);
-    let playback_worker = thread::Builder::new()
+    let playback_worker = match thread::Builder::new()
         .name("glimpse-audio-playback".to_string())
         .spawn(move || {
             loop {
@@ -136,7 +136,13 @@ fn play_file(path: &str) -> Result<(), String> {
             }
             playback
         })
-        .map_err(|error| format!("Could not start audio playback worker: {error}"))?;
+    {
+        Ok(worker) => worker,
+        Err(error) => {
+            abort_demux(&queues, &mut demux_worker);
+            return Err(format!("Could not start audio playback worker: {error}"));
+        }
+    };
 
     let decode_result = if let Some(stats) = demux_stats {
         Ok(stats)
@@ -170,8 +176,9 @@ fn play_file(path: &str) -> Result<(), String> {
         .map_err(|_| "Audio playback worker panicked".to_string())?;
     let demux_stats = decode_result?;
 
-    // Let the final queued samples reach the device before reporting counters.
-    thread::sleep(Duration::from_millis(250));
+    // The producer may finish with up to the ring's 500 ms capacity queued.
+    // Allow that final audio to drain before reading the output counters.
+    thread::sleep(Duration::from_millis(600));
     let output = sink.stats();
     let stats = demux_stats;
     println!(
