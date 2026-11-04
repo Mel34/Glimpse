@@ -211,6 +211,14 @@ fn play_file(path: &str) -> Result<(), String> {
         output.underflow_samples,
         output.flushed_samples
     );
+    println!(
+        "PipeWire timing: requested={} frames, device_delay={:.3} ms, resampler_buffered={} frames, graph_ticks={}, time_query_failures={}",
+        output.last_requested_frames,
+        output.device_delay_ms,
+        output.resampler_buffered_frames,
+        output.graph_ticks,
+        output.time_query_failures
+    );
 
     if playback.sample_frames == 0 {
         return Err("No decoded PCM samples reached the PipeWire sink".to_string());
