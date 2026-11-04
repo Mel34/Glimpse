@@ -133,6 +133,14 @@ impl PipeWireAudioSink {
         }
     }
 
+    /// Number of interleaved stereo sample frames currently queued for playback.
+    ///
+    /// This is a producer-side diagnostic used for non-real-time buffer pacing.
+    pub fn buffered_sample_frames(&self) -> usize {
+        let producer = self.producer.lock();
+        (PCM_RING_CAPACITY - producer.slots()) / AUDIO_OUTPUT_CHANNELS
+    }
+
     pub fn stats(&self) -> PipeWireAudioSinkStats {
         let state = self.shared.stream_state.load(Ordering::Acquire);
         PipeWireAudioSinkStats {

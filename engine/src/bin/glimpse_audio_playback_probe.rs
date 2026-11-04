@@ -20,6 +20,7 @@ const PACKET_QUEUE_BYTES: usize = 64 * 1024 * 1024;
 const AUDIO_FRAME_QUEUE_BYTES: usize = 32 * 1024 * 1024;
 const PREBUFFER_SECONDS: f64 = 0.20;
 const OUTPUT_CHUNK_FRAMES: usize = 480;
+const OUTPUT_BUFFER_TARGET_FRAMES: usize = AUDIO_OUTPUT_RATE as usize / 5;
 
 fn main() -> ExitCode {
     let mut args = env::args().skip(1);
@@ -176,10 +177,12 @@ fn play_file(path: &str) -> Result<(), String> {
         .map_err(|_| "Audio playback worker panicked".to_string())?;
     let demux_stats = decode_result?;
 
-    // The producer may finish with up to the ring's 500 ms capacity queued.
-    // Allow that final audio to drain before reading the output counters.
-    thread::sleep(Duration::from_millis(600));
+    // Snapshot while the final PCM is still queued. Once it drains, PipeWire
+    // naturally requests silence; that post-EOF silence is not a playback underrun.
     let output = sink.stats();
+
+    // Let the final queued samples reach the device before exiting.
+    thread::sleep(Duration::from_millis(600));
     let stats = demux_stats;
     println!(
         "Demuxed {} audio packets ({} bytes across all streams)",
@@ -314,10 +317,15 @@ fn output_frame(sink: &PipeWireAudioSink, frame: AudioFrameData, stats: &mut Pla
         let start = offset * AUDIO_OUTPUT_CHANNELS;
         let end = (offset + chunk_frames) * AUDIO_OUTPUT_CHANNELS;
         let chunk_pts = frame.pts + offset as f64 / AUDIO_OUTPUT_RATE as f64;
+
+        // Keep a substantial lead in the lock-free ring. Pacing each 10 ms
+        // chunk with a 10 ms sleep lets scheduler jitter accumulate directly
+        // into device underruns.
+        while sink.buffered_sample_frames() >= OUTPUT_BUFFER_TARGET_FRAMES {
+            thread::sleep(Duration::from_millis(2));
+        }
+
         sink.push_samples(&samples[start..end], chunk_pts);
-        thread::sleep(Duration::from_secs_f64(
-            chunk_frames as f64 / AUDIO_OUTPUT_RATE as f64,
-        ));
         offset += chunk_frames;
     }
 }
