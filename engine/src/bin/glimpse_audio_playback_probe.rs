@@ -87,11 +87,9 @@ fn play_file(path: &str) -> Result<(), String> {
     }
 
     let mut demux_stats = None;
-    let mut decoder_finished = false;
     if demux_finished(&demux_worker, &queues) {
         demux_stats = Some(join_demux(&mut demux_worker)?);
         decoder.finish(serial)?;
-        decoder_finished = true;
         collect_frames(&frame_queue, &mut prebuffer, &mut prebuffered_seconds);
     }
 
@@ -140,24 +138,28 @@ fn play_file(path: &str) -> Result<(), String> {
         })
         .map_err(|error| format!("Could not start audio playback worker: {error}"))?;
 
-    let decode_result = (|| {
-        while demux_worker.is_some() {
-            let received_packet = decoder.decode_step(serial)?;
-            drain_non_audio_packets(&queues);
+    let decode_result = if let Some(stats) = demux_stats {
+        Ok(stats)
+    } else {
+        (|| {
+            while demux_worker.is_some() {
+                let received_packet = decoder.decode_step(serial)?;
+                drain_non_audio_packets(&queues);
 
-            if demux_finished(&demux_worker, &queues) {
-                let stats = join_demux(&mut demux_worker)?;
-                decoder.finish(serial)?;
-                return Ok(stats);
+                if demux_finished(&demux_worker, &queues) {
+                    let stats = join_demux(&mut demux_worker)?;
+                    decoder.finish(serial)?;
+                    return Ok(stats);
+                }
+
+                if !received_packet {
+                    thread::yield_now();
+                }
             }
 
-            if !received_packet {
-                thread::yield_now();
-            }
-        }
-
-        Err("Demux worker stopped before audio decoding completed".to_string())
-    })();
+            Err("Demux worker stopped before audio decoding completed".to_string())
+        })()
+    };
 
     if decode_result.is_err() {
         abort_demux(&queues, &mut demux_worker);
