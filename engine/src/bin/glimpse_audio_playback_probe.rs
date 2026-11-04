@@ -5,6 +5,7 @@
 
 use std::env;
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -111,48 +112,66 @@ fn play_file(path: &str) -> Result<(), String> {
         AUDIO_OUTPUT_RATE
     );
 
+    let sink = Arc::new(sink);
     let mut playback = PlaybackStats::default();
     for frame in prebuffer {
-        output_frame(&sink, frame, &mut playback);
+        prime_output_frame(&sink, frame, &mut playback);
     }
 
-    while demux_worker.is_some() {
-        let received_packet = match decoder.decode_step(serial) {
-            Ok(received) => received,
-            Err(error) => {
-                abort_demux(&queues, &mut demux_worker);
-                return Err(error);
+    // Decode and playback must run independently: packet decoding can briefly
+    // stall, while the PipeWire producer needs to keep feeding PCM at 1x speed.
+    let playback_finished = Arc::new(AtomicBool::new(false));
+    let playback_sink = Arc::clone(&sink);
+    let playback_queue = Arc::clone(&frame_queue);
+    let playback_finished_worker = Arc::clone(&playback_finished);
+    let playback_worker = thread::Builder::new()
+        .name("glimpse-audio-playback".to_string())
+        .spawn(move || {
+            loop {
+                if let Some(frame) = playback_queue.pop_timeout(Duration::from_millis(20)) {
+                    output_frame(&playback_sink, frame.item, &mut playback);
+                } else if playback_finished_worker.load(Ordering::Acquire)
+                    && playback_queue.stats().0 == 0
+                {
+                    break;
+                }
             }
-        };
+            playback
+        })
+        .map_err(|error| format!("Could not start audio playback worker: {error}"))?;
 
-        let mut received_frame = false;
-        while let Some(frame) = frame_queue.pop_timeout(Duration::ZERO) {
-            received_frame = true;
-            output_frame(&sink, frame.item, &mut playback);
-        }
-        drain_non_audio_packets(&queues);
+    let decode_result = (|| {
+        while demux_worker.is_some() {
+            let received_packet = decoder.decode_step(serial)?;
+            drain_non_audio_packets(&queues);
 
-        if demux_finished(&demux_worker, &queues) {
-            demux_stats = Some(join_demux(&mut demux_worker)?);
-            if !decoder_finished {
+            if demux_finished(&demux_worker, &queues) {
+                let stats = join_demux(&mut demux_worker)?;
                 decoder.finish(serial)?;
-                decoder_finished = true;
+                return Ok(stats);
             }
-            while let Some(frame) = frame_queue.pop_timeout(Duration::ZERO) {
-                output_frame(&sink, frame.item, &mut playback);
+
+            if !received_packet {
+                thread::yield_now();
             }
-            break;
         }
 
-        if !received_packet && !received_frame {
-            thread::yield_now();
-        }
+        Err("Demux worker stopped before audio decoding completed".to_string())
+    })();
+
+    if decode_result.is_err() {
+        abort_demux(&queues, &mut demux_worker);
     }
+    playback_finished.store(true, Ordering::Release);
+    let playback = playback_worker
+        .join()
+        .map_err(|_| "Audio playback worker panicked".to_string())?;
+    let demux_stats = decode_result?;
 
     // Let the final queued samples reach the device before reporting counters.
     thread::sleep(Duration::from_millis(250));
     let output = sink.stats();
-    let stats = demux_stats.unwrap_or_default();
+    let stats = demux_stats;
     println!(
         "Demuxed {} audio packets ({} bytes across all streams)",
         stats.audio_packets, stats.bytes_read
@@ -247,17 +266,38 @@ struct PlaybackStats {
     last_end_pts: Option<f64>,
 }
 
-fn output_frame(sink: &PipeWireAudioSink, frame: AudioFrameData, stats: &mut PlaybackStats) {
-    let samples = frame.samples.as_slice();
-    let sample_frames = samples.len() / AUDIO_OUTPUT_CHANNELS;
+fn record_frame(stats: &mut PlaybackStats, frame: &AudioFrameData) -> usize {
+    let sample_frames = frame.samples.len() / AUDIO_OUTPUT_CHANNELS;
     if sample_frames == 0 {
-        return;
+        return 0;
     }
 
     stats.blocks += 1;
     stats.sample_frames += sample_frames as u64;
     stats.first_pts.get_or_insert(frame.pts);
     stats.last_end_pts = Some(frame.pts + frame.duration);
+    sample_frames
+}
+
+// The initial lead-in is already buffered before the device starts consuming.
+// Queue it in one burst so PipeWire begins with a useful amount of PCM available.
+fn prime_output_frame(
+    sink: &PipeWireAudioSink,
+    frame: AudioFrameData,
+    stats: &mut PlaybackStats,
+) {
+    if record_frame(stats, &frame) == 0 {
+        return;
+    }
+    sink.push_samples(frame.samples.as_slice(), frame.pts);
+}
+
+fn output_frame(sink: &PipeWireAudioSink, frame: AudioFrameData, stats: &mut PlaybackStats) {
+    let samples = frame.samples.as_slice();
+    let sample_frames = record_frame(stats, &frame);
+    if sample_frames == 0 {
+        return;
+    }
 
     let mut offset = 0;
     while offset < sample_frames {
