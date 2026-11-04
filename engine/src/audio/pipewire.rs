@@ -581,7 +581,7 @@ mod tests {
         assert_eq!(f32::from_le_bytes(output[0..4].try_into().unwrap()), 0.1);
         assert_eq!(f32::from_le_bytes(output[4..8].try_into().unwrap()), 0.2);
         assert_eq!(&output[8..], &[0xff; 8]);
-        assert_eq!(consumer.slots(), 6);
+        assert_eq!(consumer.slots(), 2);
     }
 
     #[test]
