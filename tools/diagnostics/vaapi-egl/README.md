@@ -17,10 +17,16 @@ zero-copy playback path.
 
 ## Scope and limitations
 
-This is a Stage 1 proof of concept, not the production renderer. It currently
-expects:
+This is a diagnostic proof of concept, not the production renderer. Decoder
+selection prefers FFmpeg's default decoder when it supports VAAPI; otherwise,
+it searches the available decoders for one exposing VAAPI device-context
+support. This allows codecs such as AV1 to use the native decoder when the
+default decoder (for example, `libdav1d`) cannot produce VAAPI frames.
 
-- A VAAPI-capable FFmpeg decoder.
+The diagnostic can inspect VAAPI-to-DRM PRIME mapping for additional formats,
+but its EGL import and shader-rendering test still expects:
+
+- An FFmpeg decoder exposing VAAPI device-context support for the input codec.
 - The render node `/dev/dri/renderD128`.
 - A DRM PRIME descriptor with one object and two layers.
 - NV12 represented by `R8` and `GR88` layers, each with one plane.
@@ -29,9 +35,12 @@ expects:
 - BT.709 limited-range input.
 
 The shader currently uses fixed BT.709 limited-range conversion constants.
-Format discovery, additional layouts, dynamic color metadata, fallback
-handling, synchronization, sustained-playback lifetime testing, and
-performance measurement are later work.
+When a decoded frame maps successfully but its DRM layout is not the supported
+NV12 layout, the diagnostic prints the descriptor and skips EGL import rather
+than treating the decode and mapping results as failures. Additional EGL
+layouts, 10-bit shader handling, dynamic color metadata, fallback handling,
+synchronization, sustained-playback lifetime testing, and performance
+measurement remain later work.
 
 ## Arch Linux prerequisites
 
@@ -53,7 +62,7 @@ From the Glimpse repository root:
 ```bash
 cc -Wall -Wextra -Werror -O2 \
     tools/diagnostics/vaapi-egl/inspect.c \
-    -o /tmp/glimpse-stage1-inspect \
+    -o /tmp/glimpse-stage2-inspect \
     $(pkg-config --cflags --libs libavformat libavcodec libavutil egl gl libdrm)
 ```
 
@@ -62,13 +71,14 @@ cc -Wall -Wextra -Werror -O2 \
 Pass a video file and, optionally, the destination for the raw RGBA capture:
 
 ```bash
-/tmp/glimpse-stage1-inspect \
+/tmp/glimpse-stage2-inspect \
     "$HOME/Videos/Clips/Gungun.mp4" \
     /tmp/glimpse-stage1-gpu.rgba
 ```
 
 If the output path is omitted, the diagnostic writes to
-`/tmp/glimpse-stage1-gpu.rgba`.
+`/tmp/glimpse-stage1-gpu.rgba`. The output is produced only when the frame
+uses the currently supported NV12 EGL rendering path.
 
 The capture is tightly packed RGBA8 in the framebuffer's readback row order.
 Its expected size is `width × height × 4` bytes.
@@ -147,6 +157,7 @@ formats, color spaces, modifiers, GPUs, or drivers.
 
 ## Stage boundary
 
-Stage 1 validates image correctness for the initial NV12 path. Stage 2 will
-address format and metadata handling without destabilizing this known-good
-baseline.
+Stage 1 validated image correctness for the initial NV12 path. Stage 2 is
+expanding format and metadata inspection while preserving that known-good
+baseline. Successful decode and DRM PRIME mapping of a format do not yet imply
+that EGL import or shader rendering supports it.

@@ -44,6 +44,45 @@ static enum AVPixelFormat get_hw_format(
     return AV_PIX_FMT_NONE;
 }
 
+static int get_vaapi_format(
+    const AVCodec *codec,
+    enum AVPixelFormat *format)
+{
+    for (int i = 0; ; i++) {
+        const AVCodecHWConfig *config = avcodec_get_hw_config(codec, i);
+        if (!config)
+            break;
+
+        if (config->device_type == AV_HWDEVICE_TYPE_VAAPI &&
+            (config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX)) {
+            *format = config->pix_fmt;
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static const AVCodec *find_vaapi_decoder(
+    enum AVCodecID codec_id,
+    enum AVPixelFormat *format)
+{
+    const AVCodec *codec = avcodec_find_decoder(codec_id);
+    if (codec && get_vaapi_format(codec, format))
+        return codec;
+
+    void *opaque = NULL;
+    while ((codec = av_codec_iterate(&opaque))) {
+        if (!av_codec_is_decoder(codec) || codec->id != codec_id)
+            continue;
+
+        if (get_vaapi_format(codec, format))
+            return codec;
+    }
+
+    return NULL;
+}
+
 
 static int import_layer(
     EGLDisplay display,
@@ -382,6 +421,20 @@ static int render_nv12(GLuint y_texture, GLuint uv_texture,
     return 0;
 }
 
+static int is_nv12_drm_layout(const AVDRMFrameDescriptor *desc)
+{
+    return desc->nb_objects == 1 && desc->nb_layers == 2 &&
+           desc->layers[0].format == DRM_FORMAT_R8 &&
+           desc->layers[1].format == DRM_FORMAT_GR88;
+}
+
+static int is_10bit_drm_layout(const AVDRMFrameDescriptor *desc)
+{
+    return desc->nb_objects == 1 && desc->nb_layers == 2 &&
+           desc->layers[0].format == DRM_FORMAT_R16 &&
+           desc->layers[1].format == DRM_FORMAT_GR1616;
+}
+
 static int test_egl_import(const AVDRMFrameDescriptor *desc,
                            int frame_width, int frame_height,
                            const char *dump_path)
@@ -498,9 +551,10 @@ static int test_egl_import(const AVDRMFrameDescriptor *desc,
         return -1;
     }
 
-    if (desc->nb_objects != 1 || desc->nb_layers != 2 ||
-        desc->layers[0].format != DRM_FORMAT_R8 ||
-        desc->layers[1].format != DRM_FORMAT_GR88) {
+    int nv12_layout = is_nv12_drm_layout(desc);
+    int ten_bit_layout = is_10bit_drm_layout(desc);
+
+    if (!nv12_layout && !ten_bit_layout) {
         fprintf(stderr, "Unexpected DRM layout for this test\n");
         eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
         eglDestroyContext(display, context);
@@ -525,12 +579,16 @@ static int test_egl_import(const AVDRMFrameDescriptor *desc,
             &images[1], &textures[1]);
     }
 
-    if (result == 0) {
+    if (result == 0 && nv12_layout) {
         fprintf(stderr, "\nAttempting NV12 shader rendering...\n");
         result = render_nv12(
             textures[0], textures[1], frame_width, frame_height, dump_path);
         if (result == 0)
             printf("NV12 shader rendering and framebuffer verification succeeded\n");
+    } else if (result == 0) {
+        printf("\n10-bit R16 + GR32 EGL import and GL texture "
+               "creation succeeded\n");
+        printf("Shader rendering intentionally skipped\n");
     }
 
     for (int i = 0; i < 2; i++) {
@@ -557,6 +615,205 @@ static void print_fourcc(uint32_t f, char out[5])
     out[4] = '\0';
 }
 
+static int query_egl_dma_buf_support(
+    const AVDRMFrameDescriptor *desc)
+{
+    static const struct {
+        uint32_t format;
+        const char *name;
+    } targets[] = {
+        { DRM_FORMAT_R8, "R8" },
+        { DRM_FORMAT_GR88, "GR88" },
+        { DRM_FORMAT_R16, "R16" },
+        { DRM_FORMAT_GR1616, "GR32" },
+    };
+
+    EGLDisplay display = eglGetPlatformDisplay(
+        EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, NULL);
+
+    if (display == EGL_NO_DISPLAY) {
+        fprintf(stderr, "Could not get EGL display for format query: 0x%x\n",
+                eglGetError());
+        return -1;
+    }
+
+    EGLint major = 0;
+    EGLint minor = 0;
+    if (!eglInitialize(display, &major, &minor)) {
+        fprintf(stderr, "EGL initialization for format query failed: 0x%x\n",
+                eglGetError());
+        return -1;
+    }
+
+    const char *extensions = eglQueryString(display, EGL_EXTENSIONS);
+    if (!extensions ||
+        !strstr(extensions, "EGL_EXT_image_dma_buf_import") ||
+        !strstr(extensions, "EGL_EXT_image_dma_buf_import_modifiers")) {
+        fprintf(stderr,
+                "EGL DMA-BUF format/modifier query extensions unavailable\n");
+        eglTerminate(display);
+        return -1;
+    }
+
+    PFNEGLQUERYDMABUFFORMATSEXTPROC query_formats =
+        (PFNEGLQUERYDMABUFFORMATSEXTPROC)
+            eglGetProcAddress("eglQueryDmaBufFormatsEXT");
+    PFNEGLQUERYDMABUFMODIFIERSEXTPROC query_modifiers =
+        (PFNEGLQUERYDMABUFMODIFIERSEXTPROC)
+            eglGetProcAddress("eglQueryDmaBufModifiersEXT");
+
+    if (!query_formats || !query_modifiers) {
+        fprintf(stderr, "EGL DMA-BUF query entry points unavailable\n");
+        eglTerminate(display);
+        return -1;
+    }
+
+    EGLint format_count = 0;
+    if (!query_formats(display, 0, NULL, &format_count) ||
+        format_count <= 0) {
+        fprintf(stderr, "eglQueryDmaBufFormatsEXT failed: 0x%x\n",
+                eglGetError());
+        eglTerminate(display);
+        return -1;
+    }
+
+    EGLint *formats = malloc((size_t)format_count * sizeof(*formats));
+    if (!formats) {
+        fprintf(stderr, "Allocating EGL format list failed\n");
+        eglTerminate(display);
+        return -1;
+    }
+
+    EGLint returned_formats = 0;
+    if (!query_formats(display, format_count, formats, &returned_formats)) {
+        fprintf(stderr, "Reading EGL DMA-BUF formats failed: 0x%x\n",
+                eglGetError());
+        free(formats);
+        eglTerminate(display);
+        return -1;
+    }
+
+    printf("\nEGL DMA-BUF format and modifier support\n");
+    printf("Advertised DMA-BUF formats: %d\n", returned_formats);
+
+    for (size_t i = 0; i < sizeof(targets) / sizeof(targets[0]); i++) {
+        EGLint egl_format = (EGLint)targets[i].format;
+        int supported = 0;
+
+        for (EGLint j = 0; j < returned_formats; j++) {
+            if ((uint32_t)formats[j] == targets[i].format) {
+                supported = 1;
+                break;
+            }
+        }
+
+        printf("\n%s (0x%08x): %s\n",
+               targets[i].name, targets[i].format,
+               supported ? "advertised" : "not advertised");
+
+        if (!supported)
+            continue;
+
+        EGLint modifier_count = 0;
+        if (!query_modifiers(
+                display, egl_format, 0, NULL, NULL, &modifier_count)) {
+            fprintf(stderr,
+                    "  Modifier query failed for %s: 0x%x\n",
+                    targets[i].name, eglGetError());
+            continue;
+        }
+
+        if (modifier_count <= 0) {
+            printf("  No modifiers advertised\n");
+            continue;
+        }
+
+        EGLuint64KHR *modifiers =
+            malloc((size_t)modifier_count * sizeof(*modifiers));
+        EGLBoolean *external_only =
+            malloc((size_t)modifier_count * sizeof(*external_only));
+
+        if (!modifiers || !external_only) {
+            fprintf(stderr, "  Allocating modifier list failed\n");
+            free(modifiers);
+            free(external_only);
+            free(formats);
+            eglTerminate(display);
+            return -1;
+        }
+
+        EGLint returned_modifiers = 0;
+        if (!query_modifiers(
+                display, egl_format, modifier_count,
+                modifiers, external_only, &returned_modifiers)) {
+            fprintf(stderr,
+                    "  Reading modifiers for %s failed: 0x%x\n",
+                    targets[i].name, eglGetError());
+            free(modifiers);
+            free(external_only);
+            continue;
+        }
+
+        printf("  Advertised modifiers: %d\n", returned_modifiers);
+
+        for (EGLint j = 0; j < returned_modifiers; j++) {
+            printf("    0x%016" PRIx64 " external_only=%s\n",
+                   (uint64_t)modifiers[j],
+                   external_only[j] ? "yes" : "no");
+        }
+
+        for (int layer_index = 0;
+             layer_index < desc->nb_layers; layer_index++) {
+            const AVDRMLayerDescriptor *layer =
+                &desc->layers[layer_index];
+
+            if (layer->format != targets[i].format)
+                continue;
+
+            for (int plane_index = 0;
+                 plane_index < layer->nb_planes; plane_index++) {
+                const AVDRMPlaneDescriptor *plane =
+                    &layer->planes[plane_index];
+
+                if (plane->object_index < 0 ||
+                    plane->object_index >= desc->nb_objects)
+                    continue;
+
+                uint64_t frame_modifier =
+                    desc->objects[plane->object_index].format_modifier;
+                int modifier_supported = 0;
+                EGLBoolean frame_external_only = EGL_FALSE;
+
+                for (EGLint j = 0; j < returned_modifiers; j++) {
+                    if ((uint64_t)modifiers[j] == frame_modifier) {
+                        modifier_supported = 1;
+                        frame_external_only = external_only[j];
+                        break;
+                    }
+                }
+
+                printf("  Frame layer %d plane %d modifier "
+                       "0x%016" PRIx64 ": %s",
+                       layer_index, plane_index, frame_modifier,
+                       modifier_supported ? "supported" : "NOT supported");
+
+                if (modifier_supported)
+                    printf(" (external_only=%s)",
+                           frame_external_only ? "yes" : "no");
+
+                printf("\n");
+            }
+        }
+
+        free(modifiers);
+        free(external_only);
+    }
+
+    free(formats);
+    eglTerminate(display);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc != 2 && argc != 3) {
@@ -580,13 +837,14 @@ int main(int argc, char **argv)
     if (stream < 0) fail("Finding video stream", stream);
 
     const AVCodecParameters *par = fmt->streams[stream]->codecpar;
-    const AVCodec *codec = avcodec_find_decoder(par->codec_id);
+    const AVCodec *codec = find_vaapi_decoder(par->codec_id, &hw_format);
     if (!codec) {
-        fprintf(stderr, "No decoder found\n");
+        fprintf(stderr,
+                "No decoder with VAAPI device-context support found\n");
         return 1;
     }
 
-    printf("Decoder: %s\n", codec->name);
+    printf("VAAPI decoder: %s\n", codec->name);
 
     for (int i = 0; ; i++) {
         const AVCodecHWConfig *config = avcodec_get_hw_config(codec, i);
@@ -598,11 +856,6 @@ int main(int argc, char **argv)
                config->device_type,
                config->methods);
 
-        if (config->device_type == AV_HWDEVICE_TYPE_VAAPI &&
-            (config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX)) {
-            hw_format = config->pix_fmt;
-            break;
-        }
     }
 
     if (hw_format == AV_PIX_FMT_NONE) {
@@ -734,13 +987,23 @@ int main(int argc, char **argv)
         }
     }
 
-    fprintf(stderr, "\nAttempting EGL DMA-BUF import...\n");
-    if (test_egl_import(
-            desc, frame->width, frame->height, dump_path) < 0) {
-        fprintf(stderr, "EGL DMA-BUF import test failed\n");
+    if (query_egl_dma_buf_support(desc) < 0) {
+        fprintf(stderr, "EGL DMA-BUF capability query failed\n");
         return 1;
     }
-    printf("EGL DMA-BUF import and GL texture creation succeeded\n");
+
+    if (!is_nv12_drm_layout(desc) && !is_10bit_drm_layout(desc)) {
+        printf("\nSkipping EGL import: unsupported DRM layout\n");
+    } else {
+        fprintf(stderr, "\nAttempting EGL DMA-BUF import...\n");
+        if (test_egl_import(
+                desc, frame->width, frame->height, dump_path) < 0) {
+            fprintf(stderr, "EGL DMA-BUF import test failed\n");
+            return 1;
+        }
+        printf("%s EGL DMA-BUF import and GL texture creation succeeded\n",
+               is_nv12_drm_layout(desc) ? "NV12" : "10-bit R16 + GR32");
+    }
 
     av_frame_free(&drm);
     av_frame_free(&frame);
