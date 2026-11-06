@@ -1,5 +1,6 @@
 #include <inttypes.h>
 #include <limits.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -421,18 +422,381 @@ static int render_nv12(GLuint y_texture, GLuint uv_texture,
     return 0;
 }
 
+static int inspect_10bit_samples(GLuint y_texture, GLuint uv_texture,
+                                 int width, int height,
+                                 const char *dump_path)
+{
+    static const char *vertex_source =
+        "#version 330 core\n"
+        "void main() {\n"
+        "    vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);\n"
+        "    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);\n"
+        "}\n";
+
+    static const char *fragment_source =
+        "#version 330 core\n"
+        "uniform sampler2D y_texture;\n"
+        "uniform sampler2D uv_texture;\n"
+        "out vec4 output_samples;\n"
+        "void main() {\n"
+        "    ivec2 pixel = ivec2(gl_FragCoord.xy);\n"
+        "    float y = texelFetch(y_texture, pixel, 0).r;\n"
+        "    vec2 uv = texelFetch(uv_texture, pixel / 2, 0).rg;\n"
+        "    output_samples = vec4(y, uv.r, uv.g, 1.0);\n"
+        "}\n";
+
+    if (width <= 0 || height <= 0 ||
+        (width & 1) != 0 || (height & 1) != 0 ||
+        !dump_path ||
+        (size_t)width > SIZE_MAX / (size_t)height / (4 * sizeof(float))) {
+        fprintf(stderr, "Invalid or oversized 10-bit inspection dimensions\n");
+        return -1;
+    }
+
+    GLuint vertex = compile_shader(GL_VERTEX_SHADER, vertex_source);
+    GLuint fragment = compile_shader(GL_FRAGMENT_SHADER, fragment_source);
+
+    if (!vertex || !fragment) {
+        if (vertex)
+            glDeleteShader(vertex);
+        if (fragment)
+            glDeleteShader(fragment);
+        return -1;
+    }
+
+    GLuint program = glCreateProgram();
+    glAttachShader(program, vertex);
+    glAttachShader(program, fragment);
+    glLinkProgram(program);
+    glDeleteShader(vertex);
+    glDeleteShader(fragment);
+
+    GLint linked = GL_FALSE;
+    glGetProgramiv(program, GL_LINK_STATUS, &linked);
+
+    if (!linked) {
+        char log[4096];
+        GLsizei length = 0;
+        glGetProgramInfoLog(program, sizeof(log), &length, log);
+        fprintf(stderr, "10-bit inspection shader linking failed:\n%.*s\n",
+                (int)length, log);
+        glDeleteProgram(program);
+        return -1;
+    }
+
+    GLuint output_texture = 0;
+    GLuint framebuffer = 0;
+    GLuint vao = 0;
+
+    glGenTextures(1, &output_texture);
+    glBindTexture(GL_TEXTURE_2D, output_texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, width, height,
+                 0, GL_RGBA, GL_FLOAT, NULL);
+
+    glGenFramebuffers(1, &framebuffer);
+    glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, output_texture, 0);
+
+    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (status != GL_FRAMEBUFFER_COMPLETE) {
+        fprintf(stderr, "10-bit inspection framebuffer incomplete: 0x%x\n",
+                status);
+        glDeleteFramebuffers(1, &framebuffer);
+        glDeleteTextures(1, &output_texture);
+        glDeleteProgram(program);
+        return -1;
+    }
+
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glViewport(0, 0, width, height);
+    glDisable(GL_BLEND);
+    glDisable(GL_DEPTH_TEST);
+    glUseProgram(program);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, y_texture);
+    glUniform1i(glGetUniformLocation(program, "y_texture"), 0);
+
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, uv_texture);
+    glUniform1i(glGetUniformLocation(program, "uv_texture"), 1);
+
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+
+    GLenum gl_error = glGetError();
+    if (gl_error != GL_NO_ERROR) {
+        fprintf(stderr, "10-bit inspection rendering failed: GL error 0x%x\n",
+                gl_error);
+        glDeleteVertexArrays(1, &vao);
+        glDeleteFramebuffers(1, &framebuffer);
+        glDeleteTextures(1, &output_texture);
+        glDeleteProgram(program);
+        return -1;
+    }
+
+    size_t pixel_count = (size_t)width * (size_t)height;
+    float *pixels = malloc(pixel_count * 4 * sizeof(*pixels));
+
+    if (!pixels) {
+        fprintf(stderr, "Could not allocate 10-bit sample readback\n");
+        glDeleteVertexArrays(1, &vao);
+        glDeleteFramebuffers(1, &framebuffer);
+        glDeleteTextures(1, &output_texture);
+        glDeleteProgram(program);
+        return -1;
+    }
+
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, width, height, GL_RGBA, GL_FLOAT, pixels);
+
+    gl_error = glGetError();
+    if (gl_error != GL_NO_ERROR) {
+        fprintf(stderr, "10-bit sample readback failed: GL error 0x%x\n",
+                gl_error);
+        free(pixels);
+        glDeleteVertexArrays(1, &vao);
+        glDeleteFramebuffers(1, &framebuffer);
+        glDeleteTextures(1, &output_texture);
+        glDeleteProgram(program);
+        return -1;
+    }
+
+    const char *names[] = { "Y", "U", "V" };
+    uint32_t minimum[3] = { UINT32_MAX, UINT32_MAX, UINT32_MAX };
+    uint32_t maximum[3] = { 0, 0, 0 };
+    size_t counts[3] = { 0, 0, 0 };
+    size_t low_six_zero[3] = { 0, 0, 0 };
+    size_t above_10bit[3] = { 0, 0, 0 };
+    int valid = 1;
+
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            size_t pixel_index = ((size_t)y * (size_t)width + (size_t)x) * 4;
+            int sample_channels[] = { 0, 1, 2 };
+
+            for (int c = 0; c < 3; c++) {
+                if (c != 0 && ((x & 1) != 0 || (y & 1) != 0))
+                    continue;
+
+                float normalized = pixels[pixel_index + sample_channels[c]];
+                if (!(normalized >= 0.0f && normalized <= 1.0f)) {
+                    fprintf(stderr,
+                            "Invalid normalized %s sample at (%d,%d): %f\n",
+                            names[c], x, y, normalized);
+                    valid = 0;
+                    continue;
+                }
+
+                uint32_t value =
+                    (uint32_t)(normalized * 65535.0f + 0.5f);
+
+                if (value < minimum[c])
+                    minimum[c] = value;
+                if (value > maximum[c])
+                    maximum[c] = value;
+
+                counts[c]++;
+                if ((value & 0x3f) == 0)
+                    low_six_zero[c]++;
+                if (value > 1023)
+                    above_10bit[c]++;
+            }
+        }
+    }
+
+    printf("\n10-bit imported texture sample inspection\n");
+    printf("Samples reconstructed from normalized R16 texture values\n");
+    printf("Chroma samples counted once per 2x2 luma block\n");
+
+    for (int c = 0; c < 3; c++) {
+        if (counts[c] == 0) {
+            fprintf(stderr, "No %s samples inspected\n", names[c]);
+            valid = 0;
+            continue;
+        }
+
+        printf("%s: min=%u max=%u, low 6 bits zero=%.2f%%, "
+               "values >1023=%.2f%% (%zu samples)\n",
+               names[c], minimum[c], maximum[c],
+               100.0 * (double)low_six_zero[c] / (double)counts[c],
+               100.0 * (double)above_10bit[c] / (double)counts[c],
+               counts[c]);
+    }
+
+    /*
+     * Export canonical yuv420p10le samples. Imported R16 values are
+     * left-aligned, so shift right by six. Preserve GL readback row order;
+     * the comparison tool checks both vertical orientations.
+     */
+    size_t raw_size = pixel_count * 3;
+    uint8_t *raw = malloc(raw_size);
+    if (!raw) {
+        fprintf(stderr, "Could not allocate 10-bit sample dump\n");
+        valid = 0;
+    } else {
+        size_t offset = 0;
+
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                size_t index =
+                    ((size_t)y * (size_t)width + (size_t)x) * 4;
+                uint32_t value =
+                    (uint32_t)(pixels[index] * 65535.0f + 0.5f);
+                uint16_t sample = (uint16_t)(value >> 6);
+                raw[offset++] = (uint8_t)(sample & 0xff);
+                raw[offset++] = (uint8_t)(sample >> 8);
+            }
+        }
+
+        for (int plane = 1; plane <= 2; plane++) {
+            for (int y = 0; y < height; y += 2) {
+                for (int x = 0; x < width; x += 2) {
+                    size_t index =
+                        ((size_t)y * (size_t)width + (size_t)x) * 4;
+                    uint32_t value =
+                        (uint32_t)(pixels[index + plane] * 65535.0f + 0.5f);
+                    uint16_t sample = (uint16_t)(value >> 6);
+                    raw[offset++] = (uint8_t)(sample & 0xff);
+                    raw[offset++] = (uint8_t)(sample >> 8);
+                }
+            }
+        }
+
+        FILE *dump = fopen(dump_path, "wb");
+        if (!dump) {
+            perror("Opening 10-bit sample dump");
+            valid = 0;
+        } else {
+            size_t written = fwrite(raw, 1, raw_size, dump);
+            int close_result = fclose(dump);
+            if (written != raw_size || close_result != 0) {
+                fprintf(stderr, "Writing 10-bit sample dump failed\n");
+                valid = 0;
+            } else {
+                printf("10-bit yuv420p10le samples saved: %s (%zu bytes)\n",
+                       dump_path, raw_size);
+            }
+        }
+
+        free(raw);
+    }
+
+    printf("Interpretation: a high proportion of values with the low "
+           "six bits zero is consistent with left-aligned 10-bit samples; "
+           "values at or below 1023 are consistent with right alignment.\n");
+    printf("This is sample-layout inspection only, not a color-correctness "
+           "or 10-bit rendering validation.\n");
+
+    free(pixels);
+    glBindVertexArray(0);
+    glUseProgram(0);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteFramebuffers(1, &framebuffer);
+    glDeleteTextures(1, &output_texture);
+    glDeleteProgram(program);
+
+    return valid ? 0 : -1;
+}
+
+static void print_fourcc(uint32_t f, char out[5]);
+
 static int is_nv12_drm_layout(const AVDRMFrameDescriptor *desc)
 {
     return desc->nb_objects == 1 && desc->nb_layers == 2 &&
            desc->layers[0].format == DRM_FORMAT_R8 &&
-           desc->layers[1].format == DRM_FORMAT_GR88;
+           desc->layers[1].format == DRM_FORMAT_GR88 &&
+           desc->layers[0].nb_planes == 1 &&
+           desc->layers[1].nb_planes == 1;
 }
 
 static int is_10bit_drm_layout(const AVDRMFrameDescriptor *desc)
 {
     return desc->nb_objects == 1 && desc->nb_layers == 2 &&
            desc->layers[0].format == DRM_FORMAT_R16 &&
-           desc->layers[1].format == DRM_FORMAT_GR1616;
+           desc->layers[1].format == DRM_FORMAT_GR1616 &&
+           desc->layers[0].nb_planes == 1 &&
+           desc->layers[1].nb_planes == 1;
+}
+
+static int validate_drm_descriptor(const AVDRMFrameDescriptor *desc)
+{
+    if (desc->nb_objects < 1 ||
+        desc->nb_objects > AV_DRM_MAX_PLANES ||
+        desc->nb_layers < 1 ||
+        desc->nb_layers > AV_DRM_MAX_PLANES) {
+        fprintf(stderr, "Invalid DRM descriptor counts\n");
+        return -1;
+    }
+
+    for (int i = 0; i < desc->nb_objects; i++) {
+        const AVDRMObjectDescriptor *object = &desc->objects[i];
+
+        if (object->fd < 0 || object->size == 0) {
+            fprintf(stderr, "Invalid DRM object metadata in object %d\n", i);
+            return -1;
+        }
+    }
+
+    for (int i = 0; i < desc->nb_layers; i++) {
+        const AVDRMLayerDescriptor *layer = &desc->layers[i];
+
+        if (layer->nb_planes < 1 ||
+            layer->nb_planes > AV_DRM_MAX_PLANES) {
+            fprintf(stderr,
+                    "Invalid plane count in DRM layer %d: %d\n",
+                    i, layer->nb_planes);
+            return -1;
+        }
+
+        for (int p = 0; p < layer->nb_planes; p++) {
+            const AVDRMPlaneDescriptor *plane = &layer->planes[p];
+
+            if (plane->object_index < 0 ||
+                plane->object_index >= desc->nb_objects ||
+                plane->offset < 0 ||
+                plane->offset > INT_MAX ||
+                (uint64_t)plane->offset >=
+                    desc->objects[plane->object_index].size ||
+                plane->pitch <= 0 ||
+                plane->pitch > INT_MAX) {
+                fprintf(stderr,
+                        "Invalid DRM plane metadata in layer %d plane %d\n",
+                        i, p);
+                return -1;
+            }
+        }
+    }
+
+    return 0;
+}
+
+static int validate_supported_drm_layout(
+    const AVDRMFrameDescriptor *desc)
+{
+    if (desc->nb_objects != 1 || desc->nb_layers != 2) {
+        fprintf(stderr,
+                "Unsupported DRM descriptor shape: objects=%d layers=%d\n",
+                desc->nb_objects, desc->nb_layers);
+        return 0;
+    }
+
+    if (!is_nv12_drm_layout(desc) && !is_10bit_drm_layout(desc)) {
+        char first[5];
+        char second[5];
+        print_fourcc(desc->layers[0].format, first);
+        print_fourcc(desc->layers[1].format, second);
+        fprintf(stderr,
+                "Unsupported DRM layer formats: %s + %s\n",
+                first, second);
+        return 0;
+    }
+
+    return 1;
 }
 
 static int test_egl_import(const AVDRMFrameDescriptor *desc,
@@ -588,7 +952,8 @@ static int test_egl_import(const AVDRMFrameDescriptor *desc,
     } else if (result == 0) {
         printf("\n10-bit R16 + GR32 EGL import and GL texture "
                "creation succeeded\n");
-        printf("Shader rendering intentionally skipped\n");
+        result = inspect_10bit_samples(
+            textures[0], textures[1], frame_width, frame_height, dump_path);
     }
 
     for (int i = 0; i < 2; i++) {
@@ -816,14 +1181,31 @@ static int query_egl_dma_buf_support(
 
 int main(int argc, char **argv)
 {
-    if (argc != 2 && argc != 3) {
-        fprintf(stderr, "Usage: %s VIDEO [GPU_RGBA_OUTPUT]\n", argv[0]);
+    if (argc < 2 || argc > 4) {
+        fprintf(stderr,
+                "Usage: %s VIDEO [GPU_OUTPUT [FRAME_INDEX]]\n",
+                argv[0]);
         return 2;
     }
 
-    const char *dump_path = argc == 3
+    const char *dump_path = argc >= 3
         ? argv[2]
-        : "/tmp/glimpse-stage1-gpu.rgba";
+        : "/tmp/glimpse-stage-gpu-output.bin";
+
+    unsigned long long target_frame = 0;
+    if (argc == 4) {
+        char *end = NULL;
+        if (argv[3][0] == '-') {
+            fprintf(stderr, "FRAME_INDEX must be non-negative\n");
+            return 2;
+        }
+
+        target_frame = strtoull(argv[3], &end, 10);
+        if (end == argv[3] || *end != '\0') {
+            fprintf(stderr, "Invalid FRAME_INDEX: %s\n", argv[3]);
+            return 2;
+        }
+    }
 
     AVFormatContext *fmt = NULL;
     int ret = avformat_open_input(&fmt, argv[1], NULL, NULL);
@@ -831,6 +1213,13 @@ int main(int argc, char **argv)
 
     ret = avformat_find_stream_info(fmt, NULL);
     if (ret < 0) fail("Finding stream information", ret);
+
+    AVBufferRef *device = NULL;
+    AVCodecContext *dec = NULL;
+    AVPacket *pkt = NULL;
+    AVFrame *frame = NULL;
+    AVFrame *drm = NULL;
+    int exit_status = 1;
 
     int stream = av_find_best_stream(
         fmt, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
@@ -841,7 +1230,7 @@ int main(int argc, char **argv)
     if (!codec) {
         fprintf(stderr,
                 "No decoder with VAAPI device-context support found\n");
-        return 1;
+        goto cleanup;
     }
 
     printf("VAAPI decoder: %s\n", codec->name);
@@ -860,19 +1249,18 @@ int main(int argc, char **argv)
 
     if (hw_format == AV_PIX_FMT_NONE) {
         fprintf(stderr, "Decoder has no VAAPI device-context support\n");
-        return 1;
+        goto cleanup;
     }
 
-    AVBufferRef *device = NULL;
     ret = av_hwdevice_ctx_create(
         &device, AV_HWDEVICE_TYPE_VAAPI,
         "/dev/dri/renderD128", NULL, 0);
     if (ret < 0) fail("Creating VAAPI device", ret);
 
-    AVCodecContext *dec = avcodec_alloc_context3(codec);
+    dec = avcodec_alloc_context3(codec);
     if (!dec) {
         fprintf(stderr, "Allocating decoder failed\n");
-        return 1;
+        goto cleanup;
     }
 
     ret = avcodec_parameters_to_context(dec, par);
@@ -884,16 +1272,17 @@ int main(int argc, char **argv)
     ret = avcodec_open2(dec, codec, NULL);
     if (ret < 0) fail("Opening decoder", ret);
 
-    AVPacket *pkt = av_packet_alloc();
-    AVFrame *frame = av_frame_alloc();
-    AVFrame *drm = av_frame_alloc();
+    pkt = av_packet_alloc();
+    frame = av_frame_alloc();
+    drm = av_frame_alloc();
 
     if (!pkt || !frame || !drm) {
         fprintf(stderr, "Allocating packet/frame failed\n");
-        return 1;
+        goto cleanup;
     }
 
     int got_frame = 0;
+    unsigned long long decoded_frames = 0;
 
     while (!got_frame && (ret = av_read_frame(fmt, pkt)) >= 0) {
         if (pkt->stream_index == stream) {
@@ -902,8 +1291,12 @@ int main(int argc, char **argv)
                 fail("Sending packet", ret);
 
             while ((ret = avcodec_receive_frame(dec, frame)) >= 0) {
-                got_frame = 1;
-                break;
+                if (decoded_frames++ == target_frame) {
+                    got_frame = 1;
+                    break;
+                }
+
+                av_frame_unref(frame);
             }
 
             if (!got_frame && ret != AVERROR(EAGAIN))
@@ -914,10 +1307,11 @@ int main(int argc, char **argv)
     }
 
     if (!got_frame) {
-        fprintf(stderr, "No decoded frame received\n");
-        return 1;
+        fprintf(stderr, "Could not decode frame %llu\n", target_frame);
+        goto cleanup;
     }
 
+    printf("Selected decoded frame: %llu\n", target_frame);
     printf("\nDecoded frame: %dx%d format=%s\n",
            frame->width, frame->height,
            av_get_pix_fmt_name(frame->format));
@@ -927,7 +1321,7 @@ int main(int argc, char **argv)
 
     if (frame->format != hw_format) {
         fprintf(stderr, "Unexpected decoder output format\n");
-        return 1;
+        goto cleanup;
     }
 
     fprintf(stderr, "Attempting direct DRM PRIME mapping...\n");
@@ -940,19 +1334,18 @@ int main(int argc, char **argv)
 
     if (drm->format != AV_PIX_FMT_DRM_PRIME || !drm->data[0]) {
         fprintf(stderr, "Invalid DRM PRIME frame\n");
-        return 1;
+        goto cleanup;
     }
 
     AVDRMFrameDescriptor *desc =
         (AVDRMFrameDescriptor *)drm->data[0];
 
-    if (desc->nb_objects < 1 ||
-        desc->nb_objects > AV_DRM_MAX_PLANES ||
-        desc->nb_layers < 1 ||
-        desc->nb_layers > AV_DRM_MAX_PLANES) {
-        fprintf(stderr, "Invalid DRM descriptor counts\n");
-        return 1;
-    }
+    if (validate_drm_descriptor(desc) < 0)
+        goto cleanup;
+
+    int layout_status = validate_supported_drm_layout(desc);
+    if (layout_status < 0)
+        goto cleanup;
 
     printf("\nDRM PRIME descriptor\n");
     printf("Objects: %d\n", desc->nb_objects);
@@ -989,22 +1382,26 @@ int main(int argc, char **argv)
 
     if (query_egl_dma_buf_support(desc) < 0) {
         fprintf(stderr, "EGL DMA-BUF capability query failed\n");
-        return 1;
+        goto cleanup;
     }
 
-    if (!is_nv12_drm_layout(desc) && !is_10bit_drm_layout(desc)) {
-        printf("\nSkipping EGL import: unsupported DRM layout\n");
+    if (layout_status == 0) {
+        printf("\nSkipping EGL import: unsupported DRM layout "
+               "(no fallback attempted)\n");
+        exit_status = 2;
     } else {
         fprintf(stderr, "\nAttempting EGL DMA-BUF import...\n");
         if (test_egl_import(
                 desc, frame->width, frame->height, dump_path) < 0) {
             fprintf(stderr, "EGL DMA-BUF import test failed\n");
-            return 1;
+            goto cleanup;
         }
         printf("%s EGL DMA-BUF import and GL texture creation succeeded\n",
                is_nv12_drm_layout(desc) ? "NV12" : "10-bit R16 + GR32");
+        exit_status = 0;
     }
 
+cleanup:
     av_frame_free(&drm);
     av_frame_free(&frame);
     av_packet_free(&pkt);
@@ -1012,5 +1409,5 @@ int main(int argc, char **argv)
     av_buffer_unref(&device);
     avformat_close_input(&fmt);
 
-    return 0;
+    return exit_status;
 }

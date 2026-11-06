@@ -11,6 +11,8 @@ path independently of the Glimpse application:
 5. Sample the imported NV12 planes in a shader and render to an RGBA8
    framebuffer.
 6. Read the framebuffer back for diagnostic validation.
+7. For supported 10-bit 4:2:0 layouts, inspect imported texture samples to
+   determine their effective bit alignment.
 
 The readback is deliberately diagnostic-only. It is not part of the intended
 zero-copy playback path.
@@ -23,8 +25,8 @@ it searches the available decoders for one exposing VAAPI device-context
 support. This allows codecs such as AV1 to use the native decoder when the
 default decoder (for example, `libdav1d`) cannot produce VAAPI frames.
 
-The diagnostic can inspect VAAPI-to-DRM PRIME mapping for additional formats,
-but its EGL import and shader-rendering test still expects:
+The diagnostic can inspect VAAPI-to-DRM PRIME mapping and EGL import for
+additional formats. Its validated shader-rendering path currently expects:
 
 - An FFmpeg decoder exposing VAAPI device-context support for the input codec.
 - The render node `/dev/dri/renderD128`.
@@ -34,13 +36,19 @@ but its EGL import and shader-rendering test still expects:
 - An OpenGL 3.3 core context on a hardware renderer.
 - BT.709 limited-range input.
 
-The shader currently uses fixed BT.709 limited-range conversion constants.
-When a decoded frame maps successfully but its DRM layout is not the supported
-NV12 layout, the diagnostic prints the descriptor and skips EGL import rather
-than treating the decode and mapping results as failures. Additional EGL
-layouts, 10-bit shader handling, dynamic color metadata, fallback handling,
-synchronization, sustained-playback lifetime testing, and performance
-measurement remain later work.
+The diagnostic also recognizes 10-bit 4:2:0 frames represented by `R16` and
+`GR32` layers. It imports these layers as EGL images and OpenGL textures, then
+samples them into an `RGBA32F` framebuffer for diagnostic readback. The
+reported sample ranges and proportions of values with the low six bits zero
+help assess whether the decoded 10-bit samples are left- or right-aligned in
+their 16-bit storage.
+
+This 10-bit path validates import and sample inspection only. It does not yet
+perform 10-bit color conversion or validate rendered output. The NV12 shader
+still uses fixed BT.709 limited-range conversion constants. Dynamic color
+metadata, additional DRM layouts, fallback handling, synchronization,
+sustained-playback lifetime testing, and performance measurement remain later
+work.
 
 ## Arch Linux prerequisites
 
@@ -68,17 +76,21 @@ cc -Wall -Wextra -Werror -O2 \
 
 ## Run
 
-Pass a video file and, optionally, the destination for the raw RGBA capture:
+Pass a video file, an optional output path, and an optional decoded frame
+index:
 
 ```bash
 /tmp/glimpse-stage2-inspect \
     "$HOME/Videos/Clips/Gungun.mp4" \
-    /tmp/glimpse-stage1-gpu.rgba
+    /tmp/glimpse-stage2-gpu.rgba \
+    0
 ```
 
 If the output path is omitted, the diagnostic writes to
-`/tmp/glimpse-stage1-gpu.rgba`. The output is produced only when the frame
-uses the currently supported NV12 EGL rendering path.
+`/tmp/glimpse-stage1-gpu.rgba`. The RGBA8 capture is produced only when the
+frame uses the NV12 EGL rendering path. The 10-bit inspection path performs
+its own temporary `RGBA32F` framebuffer readback and reports sample statistics;
+it does not write an RGBA8 capture.
 
 The capture is tightly packed RGBA8 in the framebuffer's readback row order.
 Its expected size is `width × height × 4` bytes.
