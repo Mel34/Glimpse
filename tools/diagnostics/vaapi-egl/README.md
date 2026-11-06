@@ -74,6 +74,24 @@ cc -Wall -Wextra -Werror -O2 \
     $(pkg-config --cflags --libs libavformat libavcodec libavutil egl gl libdrm)
 ```
 
+## Layout validation self-test
+
+The diagnostic includes a self-test for DRM descriptor validation and
+supported-layout classification. It does not require a video file, an
+accessible render node, or a working EGL implementation:
+
+```bash
+/tmp/glimpse-stage2-inspect --self-test-layout-validation
+```
+
+It checks that NV12 (`R8` + `GR88`) and 10-bit (`R16` + `GR32`) layouts are
+recognized, an unsupported fourcc is rejected, and malformed plane metadata
+is rejected.
+
+Unsupported layouts are not passed to the EGL capability query or import
+path. The diagnostic reports the unsupported layout and exits with status
+`2`. This is deliberate rejection, not a software-decoding fallback.
+
 ## Run
 
 Pass a video file, an optional output path, and an optional decoded frame

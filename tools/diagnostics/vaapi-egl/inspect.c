@@ -799,6 +799,74 @@ static int validate_supported_drm_layout(
     return 1;
 }
 
+static int self_test_layout_validation(void)
+{
+    static const struct {
+        const char *name;
+        uint32_t first_format;
+        uint32_t second_format;
+        int expected;
+    } cases[] = {
+        { "NV12", DRM_FORMAT_R8, DRM_FORMAT_GR88, 1 },
+        { "10-bit", DRM_FORMAT_R16, DRM_FORMAT_GR1616, 1 },
+        { "unsupported XRGB8888", DRM_FORMAT_XRGB8888, DRM_FORMAT_GR88, 0 },
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        AVDRMFrameDescriptor desc = { 0 };
+        desc.nb_objects = 1;
+        desc.nb_layers = 2;
+        desc.objects[0].fd = 0;
+        desc.objects[0].size = 4096;
+
+        desc.layers[0].format = cases[i].first_format;
+        desc.layers[1].format = cases[i].second_format;
+
+        for (int layer = 0; layer < 2; layer++) {
+            desc.layers[layer].nb_planes = 1;
+            desc.layers[layer].planes[0].object_index = 0;
+            desc.layers[layer].planes[0].offset = layer * 2048;
+            desc.layers[layer].planes[0].pitch = 64;
+        }
+
+        if (validate_drm_descriptor(&desc) < 0) {
+            fprintf(stderr, "FAIL: %s descriptor validation\n",
+                    cases[i].name);
+            return 1;
+        }
+
+        int result = validate_supported_drm_layout(&desc);
+        if (result != cases[i].expected) {
+            fprintf(stderr,
+                    "FAIL: %s layout classification: expected %d, got %d\n",
+                    cases[i].name, cases[i].expected, result);
+            return 1;
+        }
+
+        printf("PASS: %s layout classification\n", cases[i].name);
+    }
+
+    AVDRMFrameDescriptor malformed = { 0 };
+    malformed.nb_objects = 1;
+    malformed.nb_layers = 1;
+    malformed.objects[0].fd = 0;
+    malformed.objects[0].size = 4096;
+    malformed.layers[0].format = DRM_FORMAT_R8;
+    malformed.layers[0].nb_planes = 1;
+    malformed.layers[0].planes[0].object_index = 1;
+    malformed.layers[0].planes[0].offset = 0;
+    malformed.layers[0].planes[0].pitch = 64;
+
+    if (validate_drm_descriptor(&malformed) == 0) {
+        fprintf(stderr, "FAIL: malformed descriptor was accepted\n");
+        return 1;
+    }
+
+    printf("PASS: malformed descriptor rejected\n");
+    printf("All DRM layout validation self-tests passed\n");
+    return 0;
+}
+
 static int test_egl_import(const AVDRMFrameDescriptor *desc,
                            int frame_width, int frame_height,
                            const char *dump_path)
@@ -1181,10 +1249,15 @@ static int query_egl_dma_buf_support(
 
 int main(int argc, char **argv)
 {
+    if (argc == 2 &&
+        strcmp(argv[1], "--self-test-layout-validation") == 0)
+        return self_test_layout_validation();
+
     if (argc < 2 || argc > 4) {
         fprintf(stderr,
-                "Usage: %s VIDEO [GPU_OUTPUT [FRAME_INDEX]]\n",
-                argv[0]);
+                "Usage: %s VIDEO [GPU_OUTPUT [FRAME_INDEX]]\n"
+                "       %s --self-test-layout-validation\n",
+                argv[0], argv[0]);
         return 2;
     }
 
@@ -1380,16 +1453,16 @@ int main(int argc, char **argv)
         }
     }
 
-    if (query_egl_dma_buf_support(desc) < 0) {
-        fprintf(stderr, "EGL DMA-BUF capability query failed\n");
-        goto cleanup;
-    }
-
     if (layout_status == 0) {
-        printf("\nSkipping EGL import: unsupported DRM layout "
-               "(no fallback attempted)\n");
+        printf("\nRejecting unsupported DRM layout: "
+               "skipping EGL capability query and import\n");
         exit_status = 2;
     } else {
+        if (query_egl_dma_buf_support(desc) < 0) {
+            fprintf(stderr, "EGL DMA-BUF capability query failed\n");
+            goto cleanup;
+        }
+
         fprintf(stderr, "\nAttempting EGL DMA-BUF import...\n");
         if (test_egl_import(
                 desc, frame->width, frame->height, dump_path) < 0) {
