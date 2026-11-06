@@ -158,7 +158,7 @@ The comparison script uses only the Python standard library:
 
 ```bash
 python3 tools/diagnostics/vaapi-egl/compare.py \
-    /tmp/glimpse-stage1-gpu.rgba \
+    /tmp/glimpse-stage2-gpu.rgba \
     /tmp/glimpse-stage1-reference.rgb24
 ```
 
@@ -254,7 +254,7 @@ Validated on the same AMD Radeon RX 6700 XT with Mesa radeonsi:
 | Codec / profile | Input format | DRM layers | Result |
 |---|---|---|---|
 | H.264 High | 8-bit 4:2:0 | `R8` + `GR88` | EGL import and NV12 shader rendering |
-| AV1 Main | 8-bit 4:2:0 | `R8` + `GR88` | EGL import and NV12 shader rendering |
+| AV1 Main | 8-bit 4:2:0 | `R8` + `GR88` | EGL import and NV12 shader smoke test (non-empty framebuffer; no color-accuracy comparison) |
 | HEVC Main10 | 10-bit 4:2:0 | `R16` + `GR32` | EGL import and sample inspection |
 | VP9 Profile 2 | 10-bit 4:2:0 | `R16` + `GR32` | EGL import and sample inspection |
 
