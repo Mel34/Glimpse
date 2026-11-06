@@ -3,16 +3,16 @@
 This standalone diagnostic proves the initial hardware-video presentation
 path independently of the Glimpse application:
 
-1. Decode a video frame using FFmpeg's VAAPI hardware decoder.
+1. Decode a video frame using an FFmpeg decoder with VAAPI support.
 2. Map the VAAPI frame directly to a DRM PRIME descriptor using
    `AV_HWFRAME_MAP_READ | AV_HWFRAME_MAP_DIRECT`.
-3. Import the descriptor's DMA-BUF layers as EGL images.
-4. Bind those images to OpenGL textures.
-5. Sample the imported NV12 planes in a shader and render to an RGBA8
-   framebuffer.
-6. Read the framebuffer back for diagnostic validation.
-7. For supported 10-bit 4:2:0 layouts, inspect imported texture samples to
-   determine their effective bit alignment.
+3. Validate the DRM descriptor and classify its layer formats.
+4. Query EGL DMA-BUF format and modifier support for recognized formats.
+5. Import supported DMA-BUF layers as EGL images and bind them to OpenGL
+   textures.
+6. Render NV12 through a shader to an RGBA8 framebuffer, or inspect 10-bit
+   texture samples through an RGBA32F framebuffer.
+7. Read framebuffer data back for diagnostic validation.
 
 The readback is deliberately diagnostic-only. It is not part of the intended
 zero-copy playback path.
@@ -25,30 +25,45 @@ it searches the available decoders for one exposing VAAPI device-context
 support. This allows codecs such as AV1 to use the native decoder when the
 default decoder (for example, `libdav1d`) cannot produce VAAPI frames.
 
-The diagnostic can inspect VAAPI-to-DRM PRIME mapping and EGL import for
-additional formats. Its validated shader-rendering path currently expects:
+The diagnostic currently recognizes two DRM descriptor layouts:
+
+- **8-bit NV12:** one object, two layers (`R8` and `GR88`), one plane per
+  layer. This layout is imported and passed through the NV12 shader.
+- **10-bit 4:2:0:** one object, two layers (`R16` and `GR32`), one plane per
+  layer. This layout is imported and its samples are inspected.
+
+The diagnostic requires:
 
 - An FFmpeg decoder exposing VAAPI device-context support for the input codec.
 - The render node `/dev/dri/renderD128`.
-- A DRM PRIME descriptor with one object and two layers.
-- NV12 represented by `R8` and `GR88` layers, each with one plane.
-- An EGL implementation supporting DMA-BUF import and modifiers.
+- EGL DMA-BUF import and modifier-query extensions.
 - An OpenGL 3.3 core context on a hardware renderer.
-- BT.709 limited-range input.
 
-The diagnostic also recognizes 10-bit 4:2:0 frames represented by `R16` and
-`GR32` layers. It imports these layers as EGL images and OpenGL textures, then
-samples them into an `RGBA32F` framebuffer for diagnostic readback. The
-reported sample ranges and proportions of values with the low six bits zero
-help assess whether the decoded 10-bit samples are left- or right-aligned in
-their 16-bit storage.
+Software renderers such as llvmpipe and softpipe are explicitly rejected.
 
-This 10-bit path validates import and sample inspection only. It does not yet
-perform 10-bit color conversion or validate rendered output. The NV12 shader
-still uses fixed BT.709 limited-range conversion constants. Dynamic color
-metadata, additional DRM layouts, fallback handling, synchronization,
-sustained-playback lifetime testing, and performance measurement remain later
-work.
+The EGL capability query reports whether the actual DRM modifier used by each
+frame layer is advertised for its format. The subsequent EGL import is the
+actual import test; an advertised format alone does not guarantee that a
+particular DMA-BUF can be imported.
+
+Descriptors with malformed object or plane metadata are rejected. Valid
+descriptors outside the two recognized layouts are rejected before the EGL
+capability query and import are attempted. There is currently no software
+decoding or pixel-conversion fallback for unsupported layouts.
+
+The 10-bit path imports the layers as EGL images and OpenGL textures, then
+samples them into an `RGBA32F` framebuffer. The diagnostic reconstructs
+16-bit sample values and reports their ranges and the proportion of values
+whose low six bits are zero. It also writes planar `yuv420p10le` samples for
+comparison with a software-decoded reference.
+
+This 10-bit path validates import and sample preservation, not color
+conversion or final rendered output. The NV12 shader still uses fixed BT.709
+limited-range conversion constants. Although the diagnostic prints each
+frame's colorspace, range, and chroma-location metadata, it does not yet use
+those values to configure the shader. Dynamic color metadata, additional DRM
+layouts, fallback handling, synchronization, sustained-playback lifetime
+testing, and performance measurement remain later work.
 
 ## Arch Linux prerequisites
 
@@ -105,13 +120,18 @@ index:
 ```
 
 If the output path is omitted, the diagnostic writes to
-`/tmp/glimpse-stage1-gpu.rgba`. The RGBA8 capture is produced only when the
-frame uses the NV12 EGL rendering path. The 10-bit inspection path performs
-its own temporary `RGBA32F` framebuffer readback and reports sample statistics;
-it does not write an RGBA8 capture.
+`/tmp/glimpse-stage-gpu-output.bin`.
 
-The capture is tightly packed RGBA8 in the framebuffer's readback row order.
-Its expected size is `width × height × 4` bytes.
+The contents depend on the detected layout:
+
+- NV12: tightly packed RGBA8 framebuffer capture (`width × height × 4`
+  bytes).
+- 10-bit: planar `yuv420p10le` samples, stored as 16-bit little-endian values
+  (`width × height × 3` bytes).
+
+The 10-bit output is not an RGBA image. Choose a filename that reflects the
+format when passing an explicit output path. Both output formats preserve
+OpenGL framebuffer readback row order.
 
 ## Generate a software reference
 
@@ -145,6 +165,48 @@ python3 tools/diagnostics/vaapi-egl/compare.py \
 Both framebuffer orientations are compared. This is important because
 OpenGL readback row order and the orientation of the sampled EGL textures
 must be established empirically for the actual pipeline.
+
+## Compare 10-bit samples
+
+For a 10-bit frame, generate a software-decoded `yuv420p10le` reference for
+the same frame index selected by the diagnostic. For example, to compare
+frame 1000:
+
+```bash
+VIDEO="$HOME/Videos/The Expanse/The Expanse S01/The Expanse S01E07 Windmills (1080p x265 10bit Joy).mkv"
+
+ffmpeg -hide_banner -loglevel error \
+    -hwaccel none \
+    -i "$VIDEO" \
+    -map 0:v:0 -an -sn -dn \
+    -vf "select=eq(n\\,1000),format=yuv420p10le" \
+    -fps_mode passthrough -frames:v 1 \
+    -f rawvideo -y /tmp/glimpse-stage2-reference.yuv
+```
+
+Run the diagnostic with the same frame index and an explicit output path:
+
+```bash
+/tmp/glimpse-stage2-inspect \
+    "$VIDEO" \
+    /tmp/glimpse-stage2-gpu.yuv \
+    1000
+```
+
+Compare the planar samples:
+
+```bash
+python3 tools/diagnostics/vaapi-egl/compare.py \
+    /tmp/glimpse-stage2-gpu.yuv \
+    /tmp/glimpse-stage2-reference.yuv \
+    --format yuv420p10le \
+    --width 1920 \
+    --height 1080
+```
+
+The 10-bit comparison reports per-plane MAE, maximum error, and exact-match
+percentage for both framebuffer orientations. It compares sample values,
+not RGB color conversion.
 
 ## Stage 1 validation record
 
@@ -185,9 +247,55 @@ These measurements establish close agreement for this particular format,
 GPU, driver, shader, and input. They do not establish correctness for other
 formats, color spaces, modifiers, GPUs, or drivers.
 
+## Stage 2 format and metadata validation record
+
+Validated on the same AMD Radeon RX 6700 XT with Mesa radeonsi:
+
+| Codec / profile | Input format | DRM layers | Result |
+|---|---|---|---|
+| H.264 High | 8-bit 4:2:0 | `R8` + `GR88` | EGL import and NV12 shader rendering |
+| AV1 Main | 8-bit 4:2:0 | `R8` + `GR88` | EGL import and NV12 shader rendering |
+| HEVC Main10 | 10-bit 4:2:0 | `R16` + `GR32` | EGL import and sample inspection |
+| VP9 Profile 2 | 10-bit 4:2:0 | `R16` + `GR32` | EGL import and sample inspection |
+
+All four tested layouts used one DRM object with two one-plane layers and
+the modifier `0x0200000018801b03`. EGL advertised that modifier for each
+corresponding layer format, with `external_only=no`, on this GPU and driver.
+
+The decoded frame metadata reported by FFmpeg was:
+
+| Test input | `colorspace` | `range` | `chroma_location` |
+|---|---:|---:|---:|
+| H.264 | 1 (BT.709) | 1 (limited) | 1 (left) |
+| AV1 | 1 (BT.709) | 1 (limited) | 0 (unspecified) |
+| HEVC Main10 | 2 (unspecified) | 1 (limited) | 1 (left) |
+| VP9 Profile 2 | 5 (BT.470BG) | 1 (limited) | 1 (left) |
+
+These are FFmpeg enum values. The diagnostic reports the metadata but does
+not yet apply it to color conversion.
+
+The HEVC Main10 frame 1000 and VP9 Profile 2 frame 0 both produced exact
+10-bit sample matches against their software-decoded references in the
+captured row order:
+
+| Test | Y samples | U samples | V samples |
+|---|---:|---:|---:|
+| HEVC Main10, frame 1000 | 100% exact | 100% exact | 100% exact |
+| VP9 Profile 2, frame 0 | 100% exact | 100% exact | 100% exact |
+
+The HEVC comparison covered 2,592,000 samples; the VP9 comparison covered
+259,200 samples. The vertically flipped comparisons did not match, confirming
+that the captured row order is the matching orientation for these tests.
+
+These results validate the tested decoder outputs, DRM layouts, modifier,
+EGL imports, and sample preservation on this specific hardware and software
+stack. They do not establish support for other layouts, modifiers, GPUs, or
+drivers, nor do they validate 10-bit color conversion.
+
 ## Stage boundary
 
-Stage 1 validated image correctness for the initial NV12 path. Stage 2 is
-expanding format and metadata inspection while preserving that known-good
-baseline. Successful decode and DRM PRIME mapping of a format do not yet imply
-that EGL import or shader rendering supports it.
+Stage 1 validated image correctness for the initial NV12 path. Stage 2
+validated the two recognized DRM layouts, their EGL imports, and the
+preservation of tested 10-bit samples while documenting frame metadata.
+Successful decode and DRM PRIME mapping of a format do not by themselves
+imply that EGL import or shader rendering supports it.
