@@ -463,3 +463,46 @@ multiple frames are executing concurrently on the GPU, and it does not
 integrate the pipeline into production playback. Sustained hardware testing,
 failure-path testing, and memory/file-descriptor leak checks remain required
 on the target AMD Radeon RX 6700 XT.
+
+
+### Stage 6 follow-up: black-frame and refreshed HEVC validation
+
+After the black-frame acceptance check was changed to use successful GL
+framebuffer readback and dump completion rather than requiring non-black or
+varying pixels, the diagnostic was rebuilt from the current branch and
+validated on the AMD Radeon RX 6700 XT with Mesa radeonsi:
+
+| Test | Result |
+|---|---|
+| HEVC Main10 frame 0 (black source frame) | 1/1 decoded, queued, rendered, read back, and GPU-completed |
+| HEVC Main10 frame 120 (normal picture) | 1/1 decoded, queued, rendered, read back, and GPU-completed |
+
+For frame 0, the imported 10-bit texture samples were constant
+(Y=4096, U=32768, V=32768 in the reconstructed normalized-texture sample
+representation), and the RGBA8 framebuffer was entirely black. The software
+decode also confirmed that the source frame was black. The diagnostic
+reported `Framebuffer readback: complete` and passed the pipeline test.
+This confirms that black and uniform frames are accepted as valid video
+content.
+
+A fresh RGB24 software-reference comparison was also run for HEVC Main10
+frame 120. The GPU capture in bottom-up OpenGL readback order produced:
+
+| Metric | Result |
+|---|---:|
+| Overall RGB MAE | 1.4247 / 255 |
+| Red MAE | 1.3030 |
+| Green MAE | 1.0129 |
+| Blue MAE | 1.9582 |
+| P95 channel error | 3 |
+| P99 channel error | 7 |
+| Channel samples differing by more than 5 | 1.8491% |
+| Channel samples differing by more than 10 | 0.3805% |
+| Channel samples differing by more than 20 | 0.0168% |
+
+The vertically flipped comparison produced an overall MAE of 23.4333,
+confirming that bottom-up readback order is the matching orientation for
+this capture. This fresh frame-120 comparison supersedes the earlier
+frame-120 measurement in the validation table above; frame 240 remains
+unchanged. The result establishes close agreement for this tested frame and
+hardware/software stack, not universal color correctness.
