@@ -2152,7 +2152,7 @@ int main(int argc, char **argv)
                     processed_frames, frame_count);
         } else if (!verbose_output) {
             fprintf(stdout,
-                    "Stage 5 pipeline: PASS\n"
+                    "VAAPI/EGL pipeline: PASS\n"
                     "Frames completed: %llu/%llu\n"
                     "Queue capacity: %d\n"
                     "GPU renderer: %s\n",
@@ -2164,7 +2164,7 @@ int main(int argc, char **argv)
                 processed_frames, frame_count);
     } else if (!verbose_output) {
         fprintf(stderr,
-                "Stage 5 pipeline: FAIL (%llu/%llu frames completed; "
+                "VAAPI/EGL pipeline: FAIL (%llu/%llu frames completed; "
                 "see diagnostics above)\n",
                 processed_frames, frame_count);
     }
