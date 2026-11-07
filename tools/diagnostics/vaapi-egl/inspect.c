@@ -215,10 +215,12 @@ static int wait_for_gpu_completion(void)
     }
     glFlush();
     GLenum status;
+    int waits = 0;
     do {
         status = glClientWaitSync(
             fence, GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000ULL);
-    } while (status == GL_TIMEOUT_EXPIRED);
+        waits++;
+    } while (status == GL_TIMEOUT_EXPIRED && waits < 30);
     glDeleteSync(fence);
     if (status != GL_ALREADY_SIGNALED && status != GL_CONDITION_SATISFIED) {
         fprintf(stderr, "Waiting for OpenGL completion fence failed (status=0x%x)\n", status);
