@@ -308,7 +308,7 @@ The renderer inserts an OpenGL 3.2 sync object immediately after each frame's dr
 To exercise repeated frame handoff, request a bounded sequence:
 
 ```bash
-/tmp/glimpse-stage-inspect \
+/tmp/glimpse-stage2-inspect \
     "$HOME/Videos/Clips/Gungun.mp4" \
     /tmp/glimpse-stage4-frame.rgba \
     0 \
