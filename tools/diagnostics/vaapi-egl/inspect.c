@@ -248,8 +248,10 @@ static int wait_for_gpu_completion(void)
     return 0;
 }
 
-static int render_nv12(GLuint y_texture, GLuint uv_texture,
-                       int width, int height, const char *dump_path)
+static int render_yuv(GLuint y_texture, GLuint uv_texture,
+                      int width, int height, int bit_depth,
+                      const GlimpseColorConversion *color,
+                      const char *dump_path)
 {
     static const char *vertex_source =
         "#version 330 core\n"
@@ -265,18 +267,28 @@ static int render_nv12(GLuint y_texture, GLuint uv_texture,
         "in vec2 texcoord;\n"
         "uniform sampler2D y_texture;\n"
         "uniform sampler2D uv_texture;\n"
+        "uniform float sample_scale;\n"
+        "uniform float y_offset;\n"
+        "uniform float y_scale;\n"
+        "uniform float chroma_offset;\n"
+        "uniform float chroma_scale;\n"
+        "uniform float kr;\n"
+        "uniform float kb;\n"
+        "uniform vec2 chroma_offset_uv;\n"
         "out vec4 output_color;\n"
         "void main() {\n"
-        "    float y = (texture(y_texture, texcoord).r - 0.0627451)"
-        " * 1.164383;\n"
-        "    vec2 uv = (texture(uv_texture, texcoord).rg"
-        " - vec2(0.5019608)) * 1.138393;\n"
-        "    float cb = uv.r;\n"
-        "    float cr = uv.g;\n"
+        "    float y_code = texture(y_texture, texcoord).r * sample_scale;\n"
+        "    vec2 c_code = texture(uv_texture, texcoord + chroma_offset_uv).rg"
+        " * sample_scale;\n"
+        "    float y = (y_code - y_offset) / y_scale;\n"
+        "    float cb = (c_code.r - chroma_offset) / chroma_scale;\n"
+        "    float cr = (c_code.g - chroma_offset) / chroma_scale;\n"
+        "    float kg = 1.0 - kr - kb;\n"
         "    vec3 rgb = vec3(\n"
-        "        y + 1.5748 * cr,\n"
-        "        y - 0.1873 * cb - 0.4681 * cr,\n"
-        "        y + 1.8556 * cb\n"
+        "        y + 2.0 * (1.0 - kr) * cr,\n"
+        "        y - 2.0 * kb * (1.0 - kb) / kg * cb"
+        " - 2.0 * kr * (1.0 - kr) / kg * cr,\n"
+        "        y + 2.0 * (1.0 - kb) * cb\n"
         "    );\n"
         "    output_color = vec4(clamp(rgb, 0.0, 1.0), 1.0);\n"
         "}\n";
@@ -354,6 +366,20 @@ static int render_nv12(GLuint y_texture, GLuint uv_texture,
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, uv_texture);
     glUniform1i(glGetUniformLocation(program, "uv_texture"), 1);
+
+    glUniform1f(glGetUniformLocation(program, "sample_scale"),
+                color->sample_scale);
+    glUniform1f(glGetUniformLocation(program, "y_offset"), color->y_offset);
+    glUniform1f(glGetUniformLocation(program, "y_scale"), color->y_scale);
+    glUniform1f(glGetUniformLocation(program, "chroma_offset"),
+                color->chroma_offset);
+    glUniform1f(glGetUniformLocation(program, "chroma_scale"),
+                color->chroma_scale);
+    glUniform1f(glGetUniformLocation(program, "kr"), color->kr);
+    glUniform1f(glGetUniformLocation(program, "kb"), color->kb);
+    glUniform2f(glGetUniformLocation(program, "chroma_offset_uv"),
+                color->chroma_x / (float)width,
+                (color->chroma_y - 0.5f) / (float)height);
 
     glDrawArrays(GL_TRIANGLES, 0, 3);
     if (wait_for_gpu_completion() < 0) {
@@ -922,6 +948,8 @@ static int self_test_layout_validation(void)
 
 static int test_egl_import(const AVDRMFrameDescriptor *desc,
                            int frame_width, int frame_height,
+                           int bit_depth,
+                           const GlimpseColorConversion *color,
                            const char *dump_path)
 {
     EGLDisplay display = eglGetPlatformDisplay(
@@ -1070,8 +1098,9 @@ static int test_egl_import(const AVDRMFrameDescriptor *desc,
     if (result == 0 && nv12_layout) {
         if (verbose_output)
             fprintf(stderr, "\nAttempting NV12 shader rendering...\n");
-        result = render_nv12(
-            textures[0], textures[1], frame_width, frame_height, dump_path);
+        result = render_yuv(
+            textures[0], textures[1], frame_width, frame_height,
+            bit_depth, color, dump_path);
         if (result == 0)
             diagnostic_printf("NV12 shader rendering and framebuffer verification succeeded\n");
     } else if (result == 0) {
@@ -1079,6 +1108,19 @@ static int test_egl_import(const AVDRMFrameDescriptor *desc,
                "creation succeeded\n");
         result = inspect_10bit_samples(
             textures[0], textures[1], frame_width, frame_height, dump_path);
+        if (result == 0) {
+            char rgba_path[PATH_MAX];
+            int written = snprintf(rgba_path, sizeof(rgba_path),
+                                   "%s.rgba", dump_path);
+            if (written < 0 || (size_t)written >= sizeof(rgba_path)) {
+                fprintf(stderr, "10-bit RGBA output path is too long\n");
+                result = -1;
+            } else {
+                result = render_yuv(
+                    textures[0], textures[1], frame_width, frame_height,
+                    bit_depth, color, rgba_path);
+            }
+        }
     }
 
     for (int i = 0; i < 2; i++) {
@@ -1419,6 +1461,21 @@ static int process_decoded_frame(AVFrame *frame,
     if (layout_status < 0)
         goto frame_cleanup;
 
+    int bit_depth = is_nv12_drm_layout(desc) ? 8 : 10;
+    GlimpseColorConversion color;
+    if (layout_status == 1 &&
+        glimpse_color_conversion_resolve(
+            frame->colorspace, frame->color_range, frame->chroma_location,
+            frame->width, frame->height, bit_depth, &color) < 0) {
+        fprintf(stderr,
+                "Unsupported color metadata: colorspace=%d range=%d "
+                "chroma_location=%d; software fallback required\n",
+                frame->colorspace, frame->color_range,
+                frame->chroma_location);
+        frame_status = 2;
+        goto frame_cleanup;
+    }
+
     diagnostic_printf("\nDRM PRIME descriptor\n");
     diagnostic_printf("Objects: %d\n", desc->nb_objects);
     diagnostic_printf("Layers:  %d\n", desc->nb_layers);
@@ -1465,8 +1522,9 @@ static int process_decoded_frame(AVFrame *frame,
         if (verbose_output)
             fprintf(stderr, "\nAttempting EGL DMA-BUF import...\n");
         if (test_egl_import(
-                desc, frame->width, frame->height, dump_path) < 0) {
-            fprintf(stderr, "EGL DMA-BUF import test failed\n");
+                desc, frame->width, frame->height, bit_depth,
+                &color, dump_path) < 0) {
+            fprintf(stderr, "EGL DMA-BUF import or color rendering test failed\n");
             goto frame_cleanup;
         }
         diagnostic_printf("%s EGL DMA-BUF import and GL texture creation succeeded\n",
