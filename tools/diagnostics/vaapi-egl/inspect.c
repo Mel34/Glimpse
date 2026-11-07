@@ -1394,6 +1394,60 @@ frame_cleanup:
 }
 
 
+static int receive_available_frames(
+    AVCodecContext *dec,
+    AVFrame *frame,
+    const char *dump_path,
+    unsigned long long target_frame,
+    unsigned long long frame_count,
+    unsigned long long *decoded_frames,
+    unsigned long long *processed_frames,
+    int *exit_status)
+{
+    int ret;
+
+    while ((ret = avcodec_receive_frame(dec, frame)) >= 0) {
+        unsigned long long frame_index = (*decoded_frames)++;
+
+        if (frame_index >= target_frame) {
+            char frame_dump_path[PATH_MAX];
+            const char *output_path = dump_path;
+
+            if (frame_count > 1) {
+                int written = snprintf(
+                    frame_dump_path, sizeof(frame_dump_path),
+                    "%s.frame-%llu", dump_path, frame_index);
+                if (written < 0 ||
+                    (size_t)written >= sizeof(frame_dump_path)) {
+                    fprintf(stderr, "Frame output path is too long\n");
+                    av_frame_unref(frame);
+                    return AVERROR(EINVAL);
+                }
+                output_path = frame_dump_path;
+            }
+
+            printf("\nProcessing frame %llu (%llu/%llu)\n",
+                   frame_index, *processed_frames + 1, frame_count);
+            int frame_result = process_decoded_frame(
+                frame, output_path, frame_index);
+            if (frame_result != 0) {
+                if (frame_result == 2)
+                    *exit_status = 2;
+                av_frame_unref(frame);
+                return AVERROR_EXTERNAL;
+            }
+            (*processed_frames)++;
+        }
+
+        av_frame_unref(frame);
+        if (*processed_frames >= frame_count)
+            return 0;
+    }
+
+    return ret;
+}
+
+
 int main(int argc, char **argv)
 {
     if (argc == 2 &&
@@ -1533,59 +1587,83 @@ int main(int argc, char **argv)
 
     unsigned long long decoded_frames = 0;
     unsigned long long processed_frames = 0;
-    int reached_eof = 0;
+    int flush_requested = 0;
+    int flush_sent = 0;
+    int decoder_eof = 0;
+    int packet_pending = 0;
 
-    while (processed_frames < frame_count && !reached_eof) {
-        ret = av_read_frame(fmt, pkt);
+    while (processed_frames < frame_count && !decoder_eof) {
+        if (!packet_pending && !flush_requested && !flush_sent) {
+            ret = av_read_frame(fmt, pkt);
+            if (ret == AVERROR_EOF) {
+                flush_requested = 1;
+            } else if (ret < 0) {
+                log_av_error("Reading input packet", ret);
+                goto cleanup;
+            } else if (pkt->stream_index == stream) {
+                packet_pending = 1;
+            } else {
+                av_packet_unref(pkt);
+            }
+        }
+
+        if (packet_pending || flush_requested) {
+            ret = avcodec_send_packet(dec, packet_pending ? pkt : NULL);
+            if (ret == AVERROR(EAGAIN)) {
+                unsigned long long frames_before_drain = decoded_frames;
+                ret = receive_available_frames(
+                    dec, frame, dump_path, target_frame, frame_count,
+                    &decoded_frames, &processed_frames, &exit_status);
+                if (processed_frames >= frame_count)
+                    break;
+                if (ret == AVERROR_EOF) {
+                    decoder_eof = 1;
+                    continue;
+                }
+                if (ret != AVERROR(EAGAIN)) {
+                    log_av_error("Draining decoder before retrying packet", ret);
+                    goto cleanup;
+                }
+                if (decoded_frames == frames_before_drain) {
+                    fprintf(stderr,
+                            "Decoder send/receive made no progress after EAGAIN\n");
+                    goto cleanup;
+                }
+                continue;
+            }
+            if (ret < 0 && !(flush_requested && ret == AVERROR_EOF)) {
+                log_av_error(packet_pending ? "Sending packet" : "Flushing decoder", ret);
+                goto cleanup;
+            }
+
+            if (packet_pending) {
+                av_packet_unref(pkt);
+                packet_pending = 0;
+            } else {
+                flush_sent = 1;
+                flush_requested = 0;
+                if (ret == AVERROR_EOF)
+                    decoder_eof = 1;
+            }
+        }
+
+        if (decoder_eof || processed_frames >= frame_count)
+            break;
+
+        ret = receive_available_frames(
+            dec, frame, dump_path, target_frame, frame_count,
+            &decoded_frames, &processed_frames, &exit_status);
+        if (processed_frames >= frame_count)
+            break;
         if (ret == AVERROR_EOF) {
-            reached_eof = 1;
-            ret = avcodec_send_packet(dec, NULL);
-            if (ret < 0 && ret != AVERROR_EOF) {
-                log_av_error("Flushing decoder", ret);
+            decoder_eof = 1;
+        } else if (ret == AVERROR(EAGAIN)) {
+            if (flush_sent) {
+                fprintf(stderr,
+                        "Decoder requested more input after flush was accepted\n");
                 goto cleanup;
             }
         } else if (ret < 0) {
-            log_av_error("Reading input packet", ret);
-            goto cleanup;
-        } else if (pkt->stream_index == stream) {
-            ret = avcodec_send_packet(dec, pkt);
-            if (ret < 0 && ret != AVERROR(EAGAIN)) {
-                log_av_error("Sending packet", ret);
-                goto cleanup;
-            }
-        }
-
-        av_packet_unref(pkt);
-
-        while ((ret = avcodec_receive_frame(dec, frame)) >= 0) {
-            unsigned long long frame_index = decoded_frames++;
-            if (frame_index >= target_frame) {
-                char frame_dump_path[PATH_MAX];
-                const char *output_path = dump_path;
-                if (frame_count > 1) {
-                    int written = snprintf(frame_dump_path, sizeof(frame_dump_path),
-                                           "%s.frame-%llu", dump_path, frame_index);
-                    if (written < 0 || (size_t)written >= sizeof(frame_dump_path)) {
-                        fprintf(stderr, "Frame output path is too long\n");
-                        goto cleanup;
-                    }
-                    output_path = frame_dump_path;
-                }
-                printf("\nProcessing frame %llu (%llu/%llu)\n",
-                       frame_index, processed_frames + 1, frame_count);
-                int frame_result = process_decoded_frame(frame, output_path, frame_index);
-                if (frame_result != 0) {
-                    if (frame_result == 2)
-                        exit_status = 2;
-                    goto cleanup;
-                }
-                processed_frames++;
-            }
-            av_frame_unref(frame);
-            if (processed_frames >= frame_count)
-                break;
-        }
-        if (ret != AVERROR(EAGAIN) && ret != AVERROR_EOF && ret < 0) {
             log_av_error("Receiving decoded frame", ret);
             goto cleanup;
         }
