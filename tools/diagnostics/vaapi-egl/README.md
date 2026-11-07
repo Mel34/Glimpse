@@ -49,23 +49,32 @@ actual import test; an advertised format alone does not guarantee that a
 particular DMA-BUF can be imported.
 
 Descriptors with malformed object or plane metadata are rejected. Valid
-descriptors outside the two recognized layouts are rejected before the EGL
-capability query and import are attempted. There is currently no software
-decoding or pixel-conversion fallback for unsupported layouts.
+descriptors outside the two recognized layouts are classified as requiring
+the software fallback before EGL import. The diagnostic does not itself
+perform software fallback; exit status 2 identifies a frame that the
+production playback path should route through its existing software path.
 
-The 10-bit path imports the layers as EGL images and OpenGL textures, then
-samples them into an `RGBA32F` framebuffer. The diagnostic reconstructs
-16-bit sample values and reports their ranges and the proportion of values
-whose low six bits are zero. It also writes planar `yuv420p10le` samples for
-comparison with a software-decoded reference.
+The 10-bit path imports the R16/GR32 layers as EGL images and OpenGL textures.
+It verifies sample preservation by writing planar `yuv420p10le` data, then
+renders the same frame to an additional RGBA8 image. The RGBA output is written
+to `OUTPUT.rgba`; the original output path continues to contain the planar
+10-bit samples for exact comparison.
 
-This 10-bit path validates import and sample preservation, not color
-conversion or final rendered output. The NV12 shader still uses fixed BT.709
-limited-range conversion constants. Although the diagnostic prints each
-frame's colorspace, range, and chroma-location metadata, it does not yet use
-those values to configure the shader. Dynamic color metadata, additional DRM
-layouts, fallback handling, synchronization, sustained-playback lifetime
-testing, and performance measurement remain later work.
+The color conversion shader now handles 8-bit NV12 and left-aligned 10-bit
+R16/GR32 samples. It resolves FFmpeg frame metadata for supported matrix
+coefficients (BT.601-family, BT.709, SMPTE 240M, and BT.2020 non-constant
+luminance), full or limited range, and 4:2:0 chroma location. Unspecified
+metadata uses documented defaults: BT.709 above 576 lines, BT.601 otherwise,
+limited range, and left-sited chroma. Unsupported matrix/range metadata is
+classified as requiring software fallback rather than rendered with guessed
+coefficients.
+
+The format/modifier capability query now classifies a frame as requiring
+software fallback when its DRM format or explicit modifier is not advertised
+for 2D texture import, including modifiers marked external-only. An actual
+EGL import or shader-render failure is also reported as fallback-required.
+The diagnostic remains a hardware-path validator, not the production
+fallback implementation.
 
 ## Arch Linux prerequisites
 
@@ -98,12 +107,16 @@ supported-layout classification. It does not require a video file, an
 accessible render node, or a working EGL implementation:
 
 ```bash
-/tmp/glimpse-stage2-inspect --self-test-layout-validation
+/tmp/glimpse-stage6-inspect --self-test-layout-validation
+/tmp/glimpse-stage6-inspect --self-test-color-conversion
 ```
 
-It checks that NV12 (`R8` + `GR88`) and 10-bit (`R16` + `GR32`) layouts are
-recognized, an unsupported fourcc is rejected, and malformed plane metadata
-is rejected.
+The layout test checks that NV12 (`R8` + `GR88`) and 10-bit
+(`R16` + `GR32`) layouts are recognized, an unsupported fourcc is rejected,
+and malformed plane metadata is rejected. The color test covers BT.709 and
+BT.2020 matrices, limited and full range, 8-bit and 10-bit code values,
+unspecified-metadata defaults, and rejection of unsupported constant-
+luminance BT.2020 metadata.
 
 Unsupported layouts are not passed to the EGL capability query or import
 path. The diagnostic reports the unsupported layout and exits with status
@@ -153,12 +166,13 @@ The contents depend on the detected layout:
 
 - NV12: tightly packed RGBA8 framebuffer capture (`width × height × 4`
   bytes).
-- 10-bit: planar `yuv420p10le` samples, stored as 16-bit little-endian values
-  (`width × height × 3` bytes).
+- 10-bit: planar `yuv420p10le` samples at the requested output path, plus an
+  RGBA8 render at `OUTPUT.rgba`.
 
-The 10-bit output is not an RGBA image. Choose a filename that reflects the
-format when passing an explicit output path. Both output formats preserve
-OpenGL framebuffer readback row order.
+The planar 10-bit output stores 16-bit little-endian samples
+(`width × height × 3` bytes). Both outputs preserve OpenGL framebuffer
+readback row order. Choose an explicit output filename that reflects the
+planar YUV format.
 
 ## Generate a software reference
 
@@ -345,6 +359,40 @@ To exercise repeated frame handoff, request a bounded sequence:
 This processes 30 consecutive decoded frames beginning at index 0. Each capture is written to a separate `.frame-N` file. The test reports success only when every requested frame has been decoded, mapped, imported, rendered, and GPU-completed.
 
 This is a sequential completion/lifetime test. It deliberately waits for each frame's GPU fence before advancing, so it does not establish safe concurrent decoder/GPU overlap or prove asynchronous multi-frame playback.
+
+## Stage 6 production format and color handling
+
+Stage 6 adds a reusable FFmpeg metadata resolver in
+`tools/diagnostics/vaapi-egl/color.h`. It maps supported matrix coefficients,
+range, bit depth, and chroma siting into shader parameters. The standalone
+diagnostic uses those parameters for both NV12 and 10-bit R16/GR32 rendering.
+
+Build, then run both pure metadata/layout self-tests:
+
+```bash
+/tmp/glimpse-stage6-inspect --self-test-layout-validation
+/tmp/glimpse-stage6-inspect --self-test-color-conversion
+```
+
+Hardware validation should cover:
+
+1. H.264 or AV1 NV12 with BT.709 limited range; compare the RGBA output with
+   an FFmpeg software reference using matching matrix, range, and chroma
+   location.
+2. HEVC Main10 with its reported metadata; compare both the planar 10-bit
+   sample dump and the new RGBA output against software decoding.
+3. VP9 Profile 2 with its reported metadata; repeat both comparisons.
+4. A frame with unspecified metadata, confirming the selected defaults are
+   reported and applied.
+5. A frame whose format/modifier cannot be imported as a 2D texture, confirming
+   that it is classified as fallback-required rather than treated as a fatal
+   format-conversion success.
+
+Stage 6 does not connect the hardware path to the application playback
+pipeline. It provides the reusable conversion policy and diagnostic evidence
+needed before Stage 7 integration. Color correctness must be established by
+software-reference comparisons on each supported format/metadata combination;
+successful shader execution alone is not sufficient.
 
 ## Stage 5 bounded decode/render pipeline
 
