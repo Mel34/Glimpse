@@ -12,7 +12,7 @@ path independently of the Glimpse application:
    textures.
 6. Render NV12 through a shader to an RGBA8 framebuffer, or inspect 10-bit
    texture samples through an RGBA32F framebuffer.
-7. Read framebuffer data back for diagnostic validation.
+7. Insert an OpenGL sync fence after rendering and wait for GPU completion\n   before readback or releasing imported frame resources.\n8. Read framebuffer data back for diagnostic validation.
 
 The readback is deliberately diagnostic-only. It is not part of the intended
 zero-copy playback path.
@@ -299,3 +299,22 @@ validated the two recognized DRM layouts, their EGL imports, and the
 preservation of tested 10-bit samples while documenting frame metadata.
 Successful decode and DRM PRIME mapping of a format do not by themselves
 imply that EGL import or shader rendering supports it.
+
+
+## Stage 4 synchronization check
+
+The renderer inserts an OpenGL 3.2 sync object immediately after each frame's draw call, flushes the command stream, and waits for that fence to signal before framebuffer readback and before the EGL images, GL textures, and mapped DRM frame are released. Fence creation or wait failures fail the frame.
+
+To exercise repeated frame handoff, request a bounded sequence:
+
+```bash
+/tmp/glimpse-stage-inspect \
+    "$HOME/Videos/Clips/Gungun.mp4" \
+    /tmp/glimpse-stage4-frame.rgba \
+    0 \
+    30
+```
+
+This processes 30 consecutive decoded frames beginning at index 0. Each capture is written to a separate `.frame-N` file. The test reports success only when every requested frame has been decoded, mapped, imported, rendered, and GPU-completed.
+
+This is a sequential completion/lifetime test. It deliberately waits for each frame's GPU fence before advancing, so it does not establish safe concurrent decoder/GPU overlap or prove asynchronous multi-frame playback.
