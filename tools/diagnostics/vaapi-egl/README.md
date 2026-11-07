@@ -85,7 +85,7 @@ The user running the diagnostic must have access to the DRM render node.
 From the Glimpse repository root:
 
 ```bash
-cc -Wall -Wextra -Werror -O2 \
+cc -Wall -Wextra -Werror -O2 -pthread \
     tools/diagnostics/vaapi-egl/inspect.c \
     -o /tmp/glimpse-stage2-inspect \
     $(pkg-config --cflags --libs libavformat libavcodec libavutil egl gl libdrm)
@@ -320,3 +320,43 @@ To exercise repeated frame handoff, request a bounded sequence:
 This processes 30 consecutive decoded frames beginning at index 0. Each capture is written to a separate `.frame-N` file. The test reports success only when every requested frame has been decoded, mapped, imported, rendered, and GPU-completed.
 
 This is a sequential completion/lifetime test. It deliberately waits for each frame's GPU fence before advancing, so it does not establish safe concurrent decoder/GPU overlap or prove asynchronous multi-frame playback.
+
+## Stage 5 bounded decode/render pipeline
+
+The diagnostic now runs decode and rendering on separate threads:
+
+- The producer thread exclusively owns the FFmpeg input, packet, decoder,
+  VAAPI device references, and decode frame.
+- The renderer thread owns all EGL/OpenGL work. It consumes cloned AVFrame
+  references from a three-frame bounded queue.
+- When the queue is full, the producer blocks until the renderer releases a
+  slot. This bounds the number of decoded surfaces retained ahead of rendering.
+- The renderer waits for each frame's OpenGL fence before releasing that
+  frame's mapped DRM PRIME descriptor, EGL images, GL textures, and queued
+  AVFrame reference.
+- A renderer or queue failure cancels the queue, wakes a producer blocked on
+  queue capacity, joins the producer thread, and releases queued frame
+  references. Decoder/input failures close the queue; the renderer drains
+  already queued frames and then reports the producer failure.
+
+Build with pthread support using the command above. Then run a sustained
+300-frame test:
+
+    /tmp/glimpse-stage2-inspect \
+        "$HOME/Videos/Clips/Gungun.mp4" \
+        /tmp/glimpse-stage5-frame.rgba \
+        0 \
+        300
+
+Each frame capture is written to a separate .frame-N file. The test passes
+only when all requested frames have been decoded, queued, rendered, and
+GPU-completed. If the input reaches end-of-stream before the requested count,
+the producer reports the shortfall and the overall test fails after queued
+frames have been released.
+
+This pipeline permits CPU decoding to overlap with renderer/GPU work while
+keeping at most three decoded frame references queued. It does not claim that
+multiple frames are executing concurrently on the GPU, and it does not
+integrate the pipeline into production playback. Sustained hardware testing,
+failure-path testing, and memory/file-descriptor leak checks remain required
+on the target AMD Radeon RX 6700 XT.
