@@ -57,3 +57,31 @@ active display at runtime.
 - No colour-state conversion is configured. Treat the displayed colours as
   diagnostic output, not as a colour-correct playback result.
 - This is an integration experiment, not production playback code.
+
+
+## Glimpse player integration preview
+
+The player has an opt-in first-frame integration path. It uses the Rust
+FFmpeg FFI to decode a VAAPI frame, maps it to DRM PRIME, validates the
+single-object NV12 layout, and imports it through gtk-rs' GDK DMA-BUF builder.
+The mapped FFmpeg frame remains alive until GDK releases the texture.
+
+Build and launch Glimpse with the feature enabled:
+
+```sh
+cargo run -p glimpse --features vaapi-dmabuf-preview
+```
+
+To activate the preview for files opened from the file dialog or drag-and-drop:
+
+```sh
+GLIMPSE_VAAPI_DMABUF_PREVIEW=1 \
+GLIMPSE_DRI_RENDER_NODE=/dev/dri/renderD128 \
+  cargo run -p glimpse --features vaapi-dmabuf-preview
+```
+
+This is intentionally a still-frame diagnostic, not continuous playback. The
+preview decodes synchronously and can temporarily block the GTK interface.
+When import fails, Glimpse falls back to its normal GTK MediaFile playback.
+On successful import, the picture displays the first frame and MediaFile
+playback remains paused. Colour accuracy is not yet validated.

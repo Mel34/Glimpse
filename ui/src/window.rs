@@ -3,7 +3,7 @@ use std::rc::Rc;
 use std::time::Duration;
 use adw::prelude::*;
 use adw::{Application, ApplicationWindow};
-use gdk4::prelude::PaintableExt;
+use gdk4::prelude::{DisplayExt, PaintableExt};
 use gdk4::DragAction;
 use gio::SimpleAction;
 use gtk4::{
