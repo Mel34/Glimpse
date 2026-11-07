@@ -1,5 +1,6 @@
 #include <inttypes.h>
 #include <limits.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1394,59 +1395,392 @@ frame_cleanup:
 }
 
 
-static int receive_available_frames(
+
+#define FRAME_QUEUE_CAPACITY 3
+
+typedef struct {
+    AVFrame *frame;
+    unsigned long long index;
+} FrameItem;
+
+typedef struct {
+    pthread_mutex_t mutex;
+    pthread_cond_t readable;
+    pthread_cond_t writable;
+    FrameItem items[FRAME_QUEUE_CAPACITY];
+    size_t head;
+    size_t count;
+    int done;
+    int cancelled;
+    int producer_status;
+} FrameQueue;
+
+typedef struct {
+    FrameQueue *queue;
+    const char *video_path;
+    unsigned long long target_frame;
+    unsigned long long frame_count;
+} ProducerArgs;
+
+static int frame_queue_init(FrameQueue *queue)
+{
+    memset(queue, 0, sizeof(*queue));
+    if (pthread_mutex_init(&queue->mutex, NULL) != 0)
+        return -1;
+    if (pthread_cond_init(&queue->readable, NULL) != 0) {
+        pthread_mutex_destroy(&queue->mutex);
+        return -1;
+    }
+    if (pthread_cond_init(&queue->writable, NULL) != 0) {
+        pthread_cond_destroy(&queue->readable);
+        pthread_mutex_destroy(&queue->mutex);
+        return -1;
+    }
+    return 0;
+}
+
+static int frame_queue_is_cancelled(FrameQueue *queue)
+{
+    int cancelled;
+    pthread_mutex_lock(&queue->mutex);
+    cancelled = queue->cancelled;
+    pthread_mutex_unlock(&queue->mutex);
+    return cancelled;
+}
+
+/* Takes ownership of frame only when it returns zero. */
+static int frame_queue_push(FrameQueue *queue, AVFrame *frame,
+                            unsigned long long index)
+{
+    if (pthread_mutex_lock(&queue->mutex) != 0)
+        return -1;
+
+    while (queue->count == FRAME_QUEUE_CAPACITY && !queue->cancelled) {
+        if (pthread_cond_wait(&queue->writable, &queue->mutex) != 0) {
+            pthread_mutex_unlock(&queue->mutex);
+            return -1;
+        }
+    }
+
+    if (queue->cancelled) {
+        pthread_mutex_unlock(&queue->mutex);
+        return 1;
+    }
+
+    size_t tail = (queue->head + queue->count) % FRAME_QUEUE_CAPACITY;
+    queue->items[tail].frame = frame;
+    queue->items[tail].index = index;
+    queue->count++;
+    pthread_cond_signal(&queue->readable);
+    pthread_mutex_unlock(&queue->mutex);
+    return 0;
+}
+
+/* Returns 1 for an item, 0 when complete/cancelled, or -1 on sync failure. */
+static int frame_queue_pop(FrameQueue *queue, FrameItem *item)
+{
+    if (pthread_mutex_lock(&queue->mutex) != 0)
+        return -1;
+
+    while (queue->count == 0 && !queue->done && !queue->cancelled) {
+        if (pthread_cond_wait(&queue->readable, &queue->mutex) != 0) {
+            pthread_mutex_unlock(&queue->mutex);
+            return -1;
+        }
+    }
+
+    if (queue->cancelled || queue->count == 0) {
+        pthread_mutex_unlock(&queue->mutex);
+        return 0;
+    }
+
+    *item = queue->items[queue->head];
+    queue->items[queue->head].frame = NULL;
+    queue->head = (queue->head + 1) % FRAME_QUEUE_CAPACITY;
+    queue->count--;
+    pthread_cond_signal(&queue->writable);
+    pthread_mutex_unlock(&queue->mutex);
+    return 1;
+}
+
+static void frame_queue_cancel(FrameQueue *queue)
+{
+    pthread_mutex_lock(&queue->mutex);
+    queue->cancelled = 1;
+    pthread_cond_broadcast(&queue->readable);
+    pthread_cond_broadcast(&queue->writable);
+    pthread_mutex_unlock(&queue->mutex);
+}
+
+static void frame_queue_finish(FrameQueue *queue, int producer_status)
+{
+    pthread_mutex_lock(&queue->mutex);
+    queue->producer_status = producer_status;
+    queue->done = 1;
+    pthread_cond_broadcast(&queue->readable);
+    pthread_cond_broadcast(&queue->writable);
+    pthread_mutex_unlock(&queue->mutex);
+}
+
+static void frame_queue_destroy(FrameQueue *queue)
+{
+    for (size_t i = 0; i < FRAME_QUEUE_CAPACITY; i++)
+        av_frame_free(&queue->items[i].frame);
+    pthread_cond_destroy(&queue->writable);
+    pthread_cond_destroy(&queue->readable);
+    pthread_mutex_destroy(&queue->mutex);
+}
+
+/*
+ * Selected frames are cloned so the producer can reuse its decode frame
+ * while the renderer owns an independent reference. Returns the FFmpeg
+ * receive result, or 1 when the queue is cancelled.
+ */
+static int queue_decoded_frames(
     AVCodecContext *dec,
     AVFrame *frame,
-    const char *dump_path,
+    FrameQueue *queue,
     unsigned long long target_frame,
     unsigned long long frame_count,
     unsigned long long *decoded_frames,
-    unsigned long long *processed_frames,
-    int *exit_status)
+    unsigned long long *queued_frames)
 {
     int ret;
-
     while ((ret = avcodec_receive_frame(dec, frame)) >= 0) {
         unsigned long long frame_index = (*decoded_frames)++;
 
         if (frame_index >= target_frame) {
-            char frame_dump_path[PATH_MAX];
-            const char *output_path = dump_path;
-
-            if (frame_count > 1) {
-                int written = snprintf(
-                    frame_dump_path, sizeof(frame_dump_path),
-                    "%s.frame-%llu", dump_path, frame_index);
-                if (written < 0 ||
-                    (size_t)written >= sizeof(frame_dump_path)) {
-                    fprintf(stderr, "Frame output path is too long\n");
-                    av_frame_unref(frame);
-                    return AVERROR(EINVAL);
-                }
-                output_path = frame_dump_path;
+            AVFrame *queued_frame = av_frame_clone(frame);
+            av_frame_unref(frame);
+            if (!queued_frame) {
+                fprintf(stderr, "Cloning decoded frame reference failed\n");
+                return AVERROR(ENOMEM);
             }
 
-            printf("\nProcessing frame %llu (%llu/%llu)\n",
-                   frame_index, *processed_frames + 1, frame_count);
-            int frame_result = process_decoded_frame(
-                frame, output_path, frame_index);
-            if (frame_result != 0) {
-                if (frame_result == 2)
-                    *exit_status = 2;
-                av_frame_unref(frame);
+            int push_result = frame_queue_push(queue, queued_frame, frame_index);
+            if (push_result != 0) {
+                av_frame_free(&queued_frame);
+                if (push_result > 0)
+                    return 1;
+                fprintf(stderr, "Pushing decoded frame to queue failed\n");
                 return AVERROR_EXTERNAL;
             }
-            (*processed_frames)++;
+
+            (*queued_frames)++;
+            if (*queued_frames >= frame_count)
+                return 0;
+        } else {
+            av_frame_unref(frame);
         }
 
-        av_frame_unref(frame);
-        if (*processed_frames >= frame_count)
-            return 0;
+        if (frame_queue_is_cancelled(queue))
+            return 1;
     }
-
     return ret;
 }
 
+static void *decode_producer_thread(void *opaque)
+{
+    ProducerArgs *args = opaque;
+    FrameQueue *queue = args->queue;
+    AVFormatContext *fmt = NULL;
+    AVBufferRef *device = NULL;
+    AVCodecContext *dec = NULL;
+    AVPacket *pkt = NULL;
+    AVFrame *frame = NULL;
+    int producer_status = 1;
+
+    int ret = avformat_open_input(&fmt, args->video_path, NULL, NULL);
+    if (ret < 0) {
+        log_av_error("Opening input", ret);
+        goto cleanup;
+    }
+    ret = avformat_find_stream_info(fmt, NULL);
+    if (ret < 0) {
+        log_av_error("Finding stream information", ret);
+        goto cleanup;
+    }
+
+    int stream = av_find_best_stream(
+        fmt, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
+    if (stream < 0) {
+        log_av_error("Finding video stream", stream);
+        goto cleanup;
+    }
+
+    const AVCodecParameters *par = fmt->streams[stream]->codecpar;
+    const AVCodec *codec = find_vaapi_decoder(par->codec_id, &hw_format);
+    if (!codec) {
+        fprintf(stderr,
+                "No decoder with VAAPI device-context support found\n");
+        goto cleanup;
+    }
+
+    printf("VAAPI decoder: %s\n", codec->name);
+    for (int i = 0; ; i++) {
+        const AVCodecHWConfig *config = avcodec_get_hw_config(codec, i);
+        if (!config)
+            break;
+        printf("Hardware config: format=%s device=%d methods=0x%x\n",
+               av_get_pix_fmt_name(config->pix_fmt),
+               config->device_type, config->methods);
+    }
+
+    if (hw_format == AV_PIX_FMT_NONE) {
+        fprintf(stderr, "Decoder has no VAAPI device-context support\n");
+        goto cleanup;
+    }
+
+    ret = av_hwdevice_ctx_create(
+        &device, AV_HWDEVICE_TYPE_VAAPI,
+        "/dev/dri/renderD128", NULL, 0);
+    if (ret < 0) {
+        log_av_error("Creating VAAPI device", ret);
+        goto cleanup;
+    }
+
+    dec = avcodec_alloc_context3(codec);
+    if (!dec) {
+        fprintf(stderr, "Allocating decoder failed\n");
+        goto cleanup;
+    }
+    ret = avcodec_parameters_to_context(dec, par);
+    if (ret < 0) {
+        log_av_error("Copying codec parameters", ret);
+        goto cleanup;
+    }
+
+    dec->hw_device_ctx = av_buffer_ref(device);
+    dec->get_format = get_hw_format;
+    ret = avcodec_open2(dec, codec, NULL);
+    if (ret < 0) {
+        log_av_error("Opening decoder", ret);
+        goto cleanup;
+    }
+
+    pkt = av_packet_alloc();
+    frame = av_frame_alloc();
+    if (!pkt || !frame) {
+        fprintf(stderr, "Allocating packet/frame failed\n");
+        goto cleanup;
+    }
+
+    unsigned long long decoded_frames = 0;
+    unsigned long long queued_frames = 0;
+    int flush_requested = 0;
+    int flush_sent = 0;
+    int decoder_eof = 0;
+    int packet_pending = 0;
+
+    while (!decoder_eof && queued_frames < args->frame_count) {
+        if (frame_queue_is_cancelled(queue)) {
+            producer_status = 0;
+            goto cleanup;
+        }
+
+        if (!packet_pending && !flush_requested && !flush_sent) {
+            ret = av_read_frame(fmt, pkt);
+            if (ret == AVERROR_EOF) {
+                flush_requested = 1;
+            } else if (ret < 0) {
+                log_av_error("Reading input packet", ret);
+                goto cleanup;
+            } else if (pkt->stream_index == stream) {
+                packet_pending = 1;
+            } else {
+                av_packet_unref(pkt);
+            }
+        }
+
+        if (packet_pending || flush_requested) {
+            ret = avcodec_send_packet(dec, packet_pending ? pkt : NULL);
+            if (ret == AVERROR(EAGAIN)) {
+                unsigned long long frames_before_drain = decoded_frames;
+                ret = queue_decoded_frames(
+                    dec, frame, queue, args->target_frame, args->frame_count,
+                    &decoded_frames, &queued_frames);
+
+                if (ret == 1) {
+                    producer_status = 0;
+                    goto cleanup;
+                }
+                if (queued_frames >= args->frame_count)
+                    break;
+                if (ret == AVERROR_EOF) {
+                    decoder_eof = 1;
+                    continue;
+                }
+                if (ret != AVERROR(EAGAIN)) {
+                    log_av_error("Draining decoder before retrying packet", ret);
+                    goto cleanup;
+                }
+                if (decoded_frames == frames_before_drain) {
+                    fprintf(stderr,
+                            "Decoder send/receive made no progress after EAGAIN\n");
+                    goto cleanup;
+                }
+                continue;
+            }
+
+            if (ret < 0 && !(flush_requested && ret == AVERROR_EOF)) {
+                log_av_error(packet_pending ? "Sending packet" : "Flushing decoder", ret);
+                goto cleanup;
+            }
+
+            if (packet_pending) {
+                av_packet_unref(pkt);
+                packet_pending = 0;
+            } else {
+                flush_sent = 1;
+                flush_requested = 0;
+                if (ret == AVERROR_EOF)
+                    decoder_eof = 1;
+            }
+        }
+
+        if (decoder_eof || queued_frames >= args->frame_count)
+            break;
+
+        ret = queue_decoded_frames(
+            dec, frame, queue, args->target_frame, args->frame_count,
+            &decoded_frames, &queued_frames);
+        if (ret == 1) {
+            producer_status = 0;
+            goto cleanup;
+        }
+        if (queued_frames >= args->frame_count)
+            break;
+        if (ret == AVERROR_EOF) {
+            decoder_eof = 1;
+        } else if (ret == AVERROR(EAGAIN)) {
+            if (flush_sent) {
+                fprintf(stderr,
+                        "Decoder requested more input after flush was accepted\n");
+                goto cleanup;
+            }
+        } else if (ret < 0) {
+            log_av_error("Receiving decoded frame", ret);
+            goto cleanup;
+        }
+    }
+
+    if (queued_frames != args->frame_count) {
+        fprintf(stderr,
+                "Requested %llu frames starting at %llu, but only %llu were available\n",
+                args->frame_count, args->target_frame, queued_frames);
+        goto cleanup;
+    }
+    producer_status = 0;
+
+cleanup:
+    av_frame_free(&frame);
+    av_packet_free(&pkt);
+    avcodec_free_context(&dec);
+    av_buffer_unref(&device);
+    avformat_close_input(&fmt);
+    frame_queue_finish(queue, producer_status);
+    return NULL;
+}
 
 int main(int argc, char **argv)
 {
@@ -1473,7 +1807,6 @@ int main(int argc, char **argv)
             fprintf(stderr, "FRAME_INDEX must be non-negative\n");
             return 2;
         }
-
         target_frame = strtoull(argv[3], &end, 10);
         if (end == argv[3] || *end != '\0') {
             fprintf(stderr, "Invalid FRAME_INDEX: %s\n", argv[3]);
@@ -1489,201 +1822,108 @@ int main(int argc, char **argv)
             return 2;
         }
         frame_count = strtoull(argv[4], &end, 10);
-        if (end == argv[4] || *end != '\0' || frame_count == 0 || frame_count > 300) {
+        if (end == argv[4] || *end != '\0' ||
+            frame_count == 0 || frame_count > 300) {
             fprintf(stderr, "FRAME_COUNT must be between 1 and 300\n");
             return 2;
         }
     }
 
-    AVFormatContext *fmt = NULL;
-    AVBufferRef *device = NULL;
-    AVCodecContext *dec = NULL;
-    AVPacket *pkt = NULL;
-    AVFrame *frame = NULL;
-    int exit_status = 1;
-
-    int ret = avformat_open_input(&fmt, argv[1], NULL, NULL);
-    if (ret < 0) {
-        log_av_error("Opening input", ret);
-        goto cleanup;
+    FrameQueue queue;
+    if (frame_queue_init(&queue) != 0) {
+        fprintf(stderr, "Initializing frame queue failed\n");
+        return 1;
     }
 
-    ret = avformat_find_stream_info(fmt, NULL);
-    if (ret < 0) {
-        log_av_error("Finding stream information", ret);
-        goto cleanup;
+    ProducerArgs producer_args = {
+        .queue = &queue,
+        .video_path = argv[1],
+        .target_frame = target_frame,
+        .frame_count = frame_count,
+    };
+
+    pthread_t producer;
+    int thread_result = pthread_create(
+        &producer, NULL, decode_producer_thread, &producer_args);
+    if (thread_result != 0) {
+        fprintf(stderr, "Starting decode producer thread failed: %d\n",
+                thread_result);
+        frame_queue_destroy(&queue);
+        return 1;
     }
 
-    int stream = av_find_best_stream(
-        fmt, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
-    if (stream < 0) {
-        log_av_error("Finding video stream", stream);
-        goto cleanup;
-    }
-
-    const AVCodecParameters *par = fmt->streams[stream]->codecpar;
-    const AVCodec *codec = find_vaapi_decoder(par->codec_id, &hw_format);
-    if (!codec) {
-        fprintf(stderr,
-                "No decoder with VAAPI device-context support found\n");
-        goto cleanup;
-    }
-
-    printf("VAAPI decoder: %s\n", codec->name);
-
-    for (int i = 0; ; i++) {
-        const AVCodecHWConfig *config = avcodec_get_hw_config(codec, i);
-        if (!config)
-            break;
-
-        printf("Hardware config: format=%s device=%d methods=0x%x\n",
-               av_get_pix_fmt_name(config->pix_fmt),
-               config->device_type,
-               config->methods);
-
-    }
-
-    if (hw_format == AV_PIX_FMT_NONE) {
-        fprintf(stderr, "Decoder has no VAAPI device-context support\n");
-        goto cleanup;
-    }
-
-    ret = av_hwdevice_ctx_create(
-        &device, AV_HWDEVICE_TYPE_VAAPI,
-        "/dev/dri/renderD128", NULL, 0);
-    if (ret < 0) {
-        log_av_error("Creating VAAPI device", ret);
-        goto cleanup;
-    }
-
-    dec = avcodec_alloc_context3(codec);
-    if (!dec) {
-        fprintf(stderr, "Allocating decoder failed\n");
-        goto cleanup;
-    }
-
-    ret = avcodec_parameters_to_context(dec, par);
-    if (ret < 0) {
-        log_av_error("Copying codec parameters", ret);
-        goto cleanup;
-    }
-
-    dec->hw_device_ctx = av_buffer_ref(device);
-    dec->get_format = get_hw_format;
-
-    ret = avcodec_open2(dec, codec, NULL);
-    if (ret < 0) {
-        log_av_error("Opening decoder", ret);
-        goto cleanup;
-    }
-
-    pkt = av_packet_alloc();
-    frame = av_frame_alloc();
-
-    if (!pkt || !frame) {
-        fprintf(stderr, "Allocating packet/frame failed\n");
-        goto cleanup;
-    }
-
-    unsigned long long decoded_frames = 0;
     unsigned long long processed_frames = 0;
-    int flush_requested = 0;
-    int flush_sent = 0;
-    int decoder_eof = 0;
-    int packet_pending = 0;
+    int exit_status = 1;
+    int renderer_failed = 0;
 
-    while (processed_frames < frame_count && !decoder_eof) {
-        if (!packet_pending && !flush_requested && !flush_sent) {
-            ret = av_read_frame(fmt, pkt);
-            if (ret == AVERROR_EOF) {
-                flush_requested = 1;
-            } else if (ret < 0) {
-                log_av_error("Reading input packet", ret);
-                goto cleanup;
-            } else if (pkt->stream_index == stream) {
-                packet_pending = 1;
-            } else {
-                av_packet_unref(pkt);
-            }
+    for (;;) {
+        FrameItem item = { 0 };
+        int pop_result = frame_queue_pop(&queue, &item);
+        if (pop_result < 0) {
+            fprintf(stderr, "Waiting for decoded frame failed\n");
+            renderer_failed = 1;
+            frame_queue_cancel(&queue);
+            break;
         }
-
-        if (packet_pending || flush_requested) {
-            ret = avcodec_send_packet(dec, packet_pending ? pkt : NULL);
-            if (ret == AVERROR(EAGAIN)) {
-                unsigned long long frames_before_drain = decoded_frames;
-                ret = receive_available_frames(
-                    dec, frame, dump_path, target_frame, frame_count,
-                    &decoded_frames, &processed_frames, &exit_status);
-                if (processed_frames >= frame_count)
-                    break;
-                if (ret == AVERROR_EOF) {
-                    decoder_eof = 1;
-                    continue;
-                }
-                if (ret != AVERROR(EAGAIN)) {
-                    log_av_error("Draining decoder before retrying packet", ret);
-                    goto cleanup;
-                }
-                if (decoded_frames == frames_before_drain) {
-                    fprintf(stderr,
-                            "Decoder send/receive made no progress after EAGAIN\n");
-                    goto cleanup;
-                }
-                continue;
-            }
-            if (ret < 0 && !(flush_requested && ret == AVERROR_EOF)) {
-                log_av_error(packet_pending ? "Sending packet" : "Flushing decoder", ret);
-                goto cleanup;
-            }
-
-            if (packet_pending) {
-                av_packet_unref(pkt);
-                packet_pending = 0;
-            } else {
-                flush_sent = 1;
-                flush_requested = 0;
-                if (ret == AVERROR_EOF)
-                    decoder_eof = 1;
-            }
-        }
-
-        if (decoder_eof || processed_frames >= frame_count)
+        if (pop_result == 0)
             break;
 
-        ret = receive_available_frames(
-            dec, frame, dump_path, target_frame, frame_count,
-            &decoded_frames, &processed_frames, &exit_status);
-        if (processed_frames >= frame_count)
-            break;
-        if (ret == AVERROR_EOF) {
-            decoder_eof = 1;
-        } else if (ret == AVERROR(EAGAIN)) {
-            if (flush_sent) {
-                fprintf(stderr,
-                        "Decoder requested more input after flush was accepted\n");
-                goto cleanup;
+        char frame_dump_path[PATH_MAX];
+        const char *output_path = dump_path;
+        if (frame_count > 1) {
+            int written = snprintf(
+                frame_dump_path, sizeof(frame_dump_path),
+                "%s.frame-%llu", dump_path, item.index);
+            if (written < 0 || (size_t)written >= sizeof(frame_dump_path)) {
+                fprintf(stderr, "Frame output path is too long\n");
+                av_frame_free(&item.frame);
+                renderer_failed = 1;
+                frame_queue_cancel(&queue);
+                break;
             }
-        } else if (ret < 0) {
-            log_av_error("Receiving decoded frame", ret);
-            goto cleanup;
+            output_path = frame_dump_path;
         }
+
+        printf("\nRendering queued frame %llu (%llu/%llu)\n",
+               item.index, processed_frames + 1, frame_count);
+        int frame_result = process_decoded_frame(
+            item.frame, output_path, item.index);
+        av_frame_free(&item.frame);
+
+        if (frame_result != 0) {
+            if (frame_result == 2)
+                exit_status = 2;
+            renderer_failed = 1;
+            frame_queue_cancel(&queue);
+            break;
+        }
+        processed_frames++;
     }
 
-    if (processed_frames != frame_count) {
-        fprintf(stderr, "Requested %llu frames starting at %llu, but only %llu were available\n",
-                frame_count, target_frame, processed_frames);
-        goto cleanup;
+    if (renderer_failed)
+        frame_queue_cancel(&queue);
+
+    thread_result = pthread_join(producer, NULL);
+    if (thread_result != 0) {
+        fprintf(stderr, "Joining decode producer thread failed: %d\n",
+                thread_result);
+        frame_queue_cancel(&queue);
+        return 1;
     }
-    printf("\nSynchronization test passed: %llu/%llu frames imported, rendered, and completed\n",
-           processed_frames, frame_count);
-    exit_status = 0;
 
-cleanup:
-    av_frame_free(&frame);
-    av_packet_free(&pkt);
-    avcodec_free_context(&dec);
-    av_buffer_unref(&device);
-    avformat_close_input(&fmt);
+    if (!renderer_failed && queue.producer_status != 0) {
+        fprintf(stderr, "Decode producer failed\n");
+    } else if (!renderer_failed && processed_frames != frame_count) {
+        fprintf(stderr,
+                "Requested %llu frames, but rendered %llu\n",
+                frame_count, processed_frames);
+    } else if (!renderer_failed) {
+        printf("\nPipeline test passed: %llu/%llu frames decoded, queued, "
+               "rendered, and GPU-completed\n",
+               processed_frames, frame_count);
+        exit_status = 0;
+    }
 
+    frame_queue_destroy(&queue);
     return exit_status;
 }
