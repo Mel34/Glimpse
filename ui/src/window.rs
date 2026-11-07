@@ -981,12 +981,13 @@ fn load_and_play_file(
     let vaapi_preview_requested =
         std::env::var_os("GLIMPSE_VAAPI_DMABUF_PREVIEW").as_deref() == Some(std::ffi::OsStr::new("1"));
 
-    #[cfg(not(feature = "vaapi-dmabuf-preview"))]
-    let vaapi_preview_requested = false;
-
+    #[cfg(feature = "vaapi-dmabuf-preview")]
     if !vaapi_preview_requested {
         media.play();
     }
+
+    #[cfg(not(feature = "vaapi-dmabuf-preview"))]
+    media.play();
 
     // Duration update when container metadata arrives
     let seekbar_dur = bottom_controls.seekbar.clone();

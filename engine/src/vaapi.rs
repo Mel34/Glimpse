@@ -56,7 +56,7 @@ impl Drop for OwnedFrame {
 /// A validated NV12 DMA-BUF frame. The file descriptor remains valid while
 /// this value is alive because FFmpeg owns the mapped AVFrame reference.
 pub struct VaapiDmaBufFrame {
-    owner: OwnedFrame,
+    _owner: OwnedFrame,
     width: u32,
     height: u32,
     modifier: u64,
@@ -235,7 +235,7 @@ fn validate_and_describe(
             .map_err(|_| "DRM PRIME frame height is out of range".to_string())?;
 
         Ok(VaapiDmaBufFrame {
-            owner: mapped,
+            _owner: mapped,
             width,
             height,
             modifier: object.format_modifier,
@@ -252,6 +252,39 @@ fn validate_and_describe(
                 },
             ],
         })
+    }
+}
+
+fn codec_supports_vaapi(codec: *const ffi::AVCodec) -> bool {
+    let mut config_index = 0;
+    loop {
+        let config = unsafe { ffi::avcodec_get_hw_config(codec, config_index) };
+        if config.is_null() {
+            return false;
+        }
+        let config = unsafe { &*config };
+        if config.device_type == ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI
+            && (config.methods & ffi::AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) != 0
+        {
+            return true;
+        }
+        config_index += 1;
+    }
+}
+
+fn find_vaapi_decoder(codec_id: ffi::AVCodecID) -> *const ffi::AVCodec {
+    let mut iterator: *mut std::ffi::c_void = ptr::null_mut();
+    loop {
+        let codec = unsafe { ffi::av_codec_iterate(&mut iterator) };
+        if codec.is_null() {
+            return ptr::null();
+        }
+        let matches = unsafe {
+            ffi::av_codec_is_decoder(codec) != 0 && (*codec).id == codec_id
+        };
+        if matches && codec_supports_vaapi(codec) {
+            return codec;
+        }
     }
 }
 
@@ -307,31 +340,10 @@ pub fn decode_first_vaapi_dmabuf(
         return Err("Video stream has no codec parameters".into());
     }
 
-    let codec = unsafe {
-        ffi::avcodec_find_decoder((*(*stream).codecpar).codec_id)
-    };
+    let codec_id = unsafe { (*(*stream).codecpar).codec_id };
+    let codec = find_vaapi_decoder(codec_id);
     if codec.is_null() {
-        return Err("No FFmpeg decoder is available for this video codec".into());
-    }
-
-    let mut has_vaapi_device_config = false;
-    let mut config_index = 0;
-    loop {
-        let config = unsafe { ffi::avcodec_get_hw_config(codec, config_index) };
-        if config.is_null() {
-            break;
-        }
-        let config = unsafe { &*config };
-        if config.device_type == ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI
-            && (config.methods & ffi::AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) != 0
-        {
-            has_vaapi_device_config = true;
-            break;
-        }
-        config_index += 1;
-    }
-    if !has_vaapi_device_config {
-        return Err("The selected decoder does not support VAAPI device contexts".into());
+        return Err("No decoder with VAAPI device-context support is available for this codec".into());
     }
 
     let mut device_ptr = ptr::null_mut();
