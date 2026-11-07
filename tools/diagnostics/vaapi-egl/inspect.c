@@ -21,12 +21,11 @@
 
 static enum AVPixelFormat hw_format = AV_PIX_FMT_NONE;
 
-static void fail(const char *what, int err)
+static void log_av_error(const char *what, int err)
 {
     char msg[AV_ERROR_MAX_STRING_SIZE];
     av_strerror(err, msg, sizeof(msg));
     fprintf(stderr, "%s: %s\n", what, msg);
-    exit(1);
 }
 
 static enum AVPixelFormat get_hw_format(
@@ -1281,12 +1280,6 @@ int main(int argc, char **argv)
     }
 
     AVFormatContext *fmt = NULL;
-    int ret = avformat_open_input(&fmt, argv[1], NULL, NULL);
-    if (ret < 0) fail("Opening input", ret);
-
-    ret = avformat_find_stream_info(fmt, NULL);
-    if (ret < 0) fail("Finding stream information", ret);
-
     AVBufferRef *device = NULL;
     AVCodecContext *dec = NULL;
     AVPacket *pkt = NULL;
@@ -1294,9 +1287,24 @@ int main(int argc, char **argv)
     AVFrame *drm = NULL;
     int exit_status = 1;
 
+    int ret = avformat_open_input(&fmt, argv[1], NULL, NULL);
+    if (ret < 0) {
+        log_av_error("Opening input", ret);
+        goto cleanup;
+    }
+
+    ret = avformat_find_stream_info(fmt, NULL);
+    if (ret < 0) {
+        log_av_error("Finding stream information", ret);
+        goto cleanup;
+    }
+
     int stream = av_find_best_stream(
         fmt, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
-    if (stream < 0) fail("Finding video stream", stream);
+    if (stream < 0) {
+        log_av_error("Finding video stream", stream);
+        goto cleanup;
+    }
 
     const AVCodecParameters *par = fmt->streams[stream]->codecpar;
     const AVCodec *codec = find_vaapi_decoder(par->codec_id, &hw_format);
@@ -1328,7 +1336,10 @@ int main(int argc, char **argv)
     ret = av_hwdevice_ctx_create(
         &device, AV_HWDEVICE_TYPE_VAAPI,
         "/dev/dri/renderD128", NULL, 0);
-    if (ret < 0) fail("Creating VAAPI device", ret);
+    if (ret < 0) {
+        log_av_error("Creating VAAPI device", ret);
+        goto cleanup;
+    }
 
     dec = avcodec_alloc_context3(codec);
     if (!dec) {
@@ -1337,13 +1348,19 @@ int main(int argc, char **argv)
     }
 
     ret = avcodec_parameters_to_context(dec, par);
-    if (ret < 0) fail("Copying codec parameters", ret);
+    if (ret < 0) {
+        log_av_error("Copying codec parameters", ret);
+        goto cleanup;
+    }
 
     dec->hw_device_ctx = av_buffer_ref(device);
     dec->get_format = get_hw_format;
 
     ret = avcodec_open2(dec, codec, NULL);
-    if (ret < 0) fail("Opening decoder", ret);
+    if (ret < 0) {
+        log_av_error("Opening decoder", ret);
+        goto cleanup;
+    }
 
     pkt = av_packet_alloc();
     frame = av_frame_alloc();
@@ -1360,8 +1377,10 @@ int main(int argc, char **argv)
     while (!got_frame && (ret = av_read_frame(fmt, pkt)) >= 0) {
         if (pkt->stream_index == stream) {
             ret = avcodec_send_packet(dec, pkt);
-            if (ret < 0 && ret != AVERROR(EAGAIN))
-                fail("Sending packet", ret);
+            if (ret < 0 && ret != AVERROR(EAGAIN)) {
+                log_av_error("Sending packet", ret);
+                goto cleanup;
+            }
 
             while ((ret = avcodec_receive_frame(dec, frame)) >= 0) {
                 if (decoded_frames++ == target_frame) {
@@ -1372,8 +1391,10 @@ int main(int argc, char **argv)
                 av_frame_unref(frame);
             }
 
-            if (!got_frame && ret != AVERROR(EAGAIN))
-                fail("Receiving frame", ret);
+            if (!got_frame && ret != AVERROR(EAGAIN)) {
+                log_av_error("Receiving frame", ret);
+                goto cleanup;
+            }
         }
 
         av_packet_unref(pkt);
@@ -1403,7 +1424,10 @@ int main(int argc, char **argv)
 
     ret = av_hwframe_map(
         drm, frame, AV_HWFRAME_MAP_READ | AV_HWFRAME_MAP_DIRECT);
-    if (ret < 0) fail("Direct DRM PRIME mapping", ret);
+    if (ret < 0) {
+        log_av_error("Direct DRM PRIME mapping", ret);
+        goto cleanup;
+    }
 
     if (drm->format != AV_PIX_FMT_DRM_PRIME || !drm->data[0]) {
         fprintf(stderr, "Invalid DRM PRIME frame\n");
