@@ -21,6 +21,8 @@
 #include <libavutil/hwcontext_drm.h>
 #include <libavutil/pixdesc.h>
 
+#include "color.h"
+
 static enum AVPixelFormat hw_format = AV_PIX_FMT_NONE;
 static int verbose_output;
 static int quiet_output;
@@ -1302,6 +1304,68 @@ static int query_egl_dma_buf_support(
     return 0;
 }
 
+static int self_test_color_conversion(void)
+{
+    GlimpseColorConversion color;
+
+    if (glimpse_color_conversion_resolve(
+            AVCOL_SPC_BT709, AVCOL_RANGE_MPEG, AVCHROMA_LOC_LEFT,
+            1920, 1080, 8, &color) != 0 ||
+        color.kr < 0.2125f || color.kr > 0.2127f ||
+        color.kb < 0.0721f || color.kb > 0.0723f ||
+        color.y_offset != 16.0f || color.y_scale != 219.0f ||
+        color.chroma_offset != 128.0f || color.chroma_scale != 224.0f ||
+        color.sample_scale != 255.0f) {
+        fprintf(stderr, "FAIL: BT.709 limited-range 8-bit parameters\n");
+        return 1;
+    }
+    diagnostic_printf("PASS: BT.709 limited-range 8-bit parameters\n");
+
+    if (glimpse_color_conversion_resolve(
+            AVCOL_SPC_BT2020_NCL, AVCOL_RANGE_MPEG, AVCHROMA_LOC_CENTER,
+            3840, 2160, 10, &color) != 0 ||
+        color.y_offset != 64.0f || color.y_scale != 876.0f ||
+        color.chroma_offset != 512.0f || color.chroma_scale != 896.0f ||
+        color.bit_depth != 10 || color.chroma_x != 0.5f ||
+        color.chroma_y != 0.5f) {
+        fprintf(stderr, "FAIL: BT.2020 limited-range 10-bit parameters\n");
+        return 1;
+    }
+    diagnostic_printf("PASS: BT.2020 limited-range 10-bit parameters\n");
+
+    if (glimpse_color_conversion_resolve(
+            AVCOL_SPC_BT470BG, AVCOL_RANGE_JPEG, AVCHROMA_LOC_TOPLEFT,
+            640, 480, 10, &color) != 0 ||
+        color.y_offset != 0.0f || color.y_scale != 1023.0f ||
+        color.chroma_offset != 512.0f || color.chroma_scale != 1023.0f ||
+        color.chroma_x != 0.0f || color.chroma_y != 0.0f) {
+        fprintf(stderr, "FAIL: full-range 10-bit parameters\n");
+        return 1;
+    }
+    diagnostic_printf("PASS: full-range 10-bit parameters\n");
+
+    if (glimpse_color_conversion_resolve(
+            AVCOL_SPC_UNSPECIFIED, AVCOL_RANGE_UNSPECIFIED,
+            AVCHROMA_LOC_UNSPECIFIED, 1280, 720, 8, &color) != 0 ||
+        !color.used_default_colorspace || !color.used_default_range ||
+        !color.used_default_chroma_location ||
+        color.kr < 0.2125f || color.kr > 0.2127f) {
+        fprintf(stderr, "FAIL: unspecified metadata defaults\n");
+        return 1;
+    }
+    diagnostic_printf("PASS: unspecified metadata defaults\n");
+
+    if (glimpse_color_conversion_resolve(
+            AVCOL_SPC_BT2020_CL, AVCOL_RANGE_MPEG, AVCHROMA_LOC_LEFT,
+            1920, 1080, 10, &color) == 0) {
+        fprintf(stderr, "FAIL: unsupported constant-luminance matrix accepted\n");
+        return 1;
+    }
+    diagnostic_printf("PASS: unsupported matrix rejected\n");
+    diagnostic_printf("All color metadata resolver self-tests passed\n");
+    return 0;
+}
+
 static int process_decoded_frame(AVFrame *frame,
                                   const char *dump_path,
                                   unsigned long long frame_index)
@@ -1810,6 +1874,12 @@ int main(int argc, char **argv)
         strcmp(argv[1], "--self-test-layout-validation") == 0) {
         verbose_output = 1;
         return self_test_layout_validation();
+    }
+
+    if (argc == 2 &&
+        strcmp(argv[1], "--self-test-color-conversion") == 0) {
+        verbose_output = 1;
+        return self_test_color_conversion();
     }
 
     int arg_index = 1;
