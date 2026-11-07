@@ -10,6 +10,9 @@ use std::ptr::{self, NonNull};
 use ffmpeg_the_third::ffi;
 
 const AVERROR_EAGAIN: i32 = -11; // Linux EAGAIN; VAAPI is Linux-only.
+const HW_CONFIG_METHOD_DEVICE_CTX: i32 = 1;
+const HWFRAME_MAP_READ: i32 = 1 << 0;
+const HWFRAME_MAP_DIRECT: i32 = 1 << 3;
 const DRM_FORMAT_NV12: u32 = u32::from_le_bytes(*b"NV12");
 const DRM_FORMAT_R8: u32 = u32::from_le_bytes(*b"R8  ");
 const DRM_FORMAT_GR88: u32 = u32::from_le_bytes(*b"GR88");
@@ -264,7 +267,7 @@ fn codec_supports_vaapi(codec: *const ffi::AVCodec) -> bool {
         }
         let config = unsafe { &*config };
         if config.device_type == ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI
-            && (config.methods & ffi::AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) != 0
+            && (config.methods & HW_CONFIG_METHOD_DEVICE_CTX) != 0
         {
             return true;
         }
@@ -475,7 +478,7 @@ fn map_vaapi_frame(decoded: OwnedFrame) -> Result<VaapiDmaBufFrame, String> {
         ffi::av_hwframe_map(
             mapped.as_mut_ptr(),
             decoded.as_ptr(),
-            ffi::AV_HWFRAME_MAP_READ | ffi::AV_HWFRAME_MAP_DIRECT,
+            HWFRAME_MAP_READ | HWFRAME_MAP_DIRECT,
         )
     };
     if map_result < 0 {
