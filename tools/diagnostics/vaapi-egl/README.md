@@ -334,10 +334,10 @@ The diagnostic now runs decode and rendering on separate threads:
 - The renderer waits for each frame's OpenGL fence before releasing that
   frame's mapped DRM PRIME descriptor, EGL images, GL textures, and queued
   AVFrame reference.
-- A renderer or queue failure cancels the queue, wakes a producer blocked on
-  queue capacity, joins the producer thread, and releases queued frame
-  references. Decoder/input failures close the queue; the renderer drains
-  already queued frames and then reports the producer failure.
+- A renderer failure cancels the queue, wakes a producer blocked on queue
+  capacity, joins the producer thread, and releases queued frame references.
+  Decoder/input or queue synchronization failures close the queue; the renderer
+  drains already queued frames and then reports the producer failure.
 
 Build with pthread support using the command above. Then run a sustained
 300-frame test:
