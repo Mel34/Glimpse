@@ -1263,11 +1263,15 @@ static int query_egl_dma_buf_support(
             fprintf(stderr,
                     "  Modifier query failed for %s: 0x%x\n",
                     targets[i].name, eglGetError());
+            if (frame_uses_format)
+                frame_import_supported = 0;
             continue;
         }
 
         if (modifier_count <= 0) {
             diagnostic_printf("  No modifiers advertised\n");
+            if (frame_uses_format)
+                frame_import_supported = 0;
             continue;
         }
 
@@ -1292,6 +1296,8 @@ static int query_egl_dma_buf_support(
             fprintf(stderr,
                     "  Reading modifiers for %s failed: 0x%x\n",
                     targets[i].name, eglGetError());
+            if (frame_uses_format)
+                frame_import_supported = 0;
             free(modifiers);
             free(external_only);
             continue;
@@ -1488,6 +1494,22 @@ static int process_decoded_frame(AVFrame *frame,
                 frame->chroma_location);
         frame_status = 2;
         goto frame_cleanup;
+    }
+
+    diagnostic_printf(
+        "Resolved color: Kr=%.4f Kb=%.4f range Y=%.1f..%.1f "
+        "chroma_center=%.1f chroma_scale=%.1f bit_depth=%d\n",
+        color.kr, color.kb, color.y_offset,
+        color.y_offset + color.y_scale, color.chroma_offset,
+        color.chroma_scale, color.bit_depth);
+    if (color.used_default_colorspace ||
+        color.used_default_range ||
+        color.used_default_chroma_location) {
+        diagnostic_printf(
+            "Color metadata defaults used: matrix=%s range=%s chroma=%s\n",
+            color.used_default_colorspace ? "yes" : "no",
+            color.used_default_range ? "yes" : "no",
+            color.used_default_chroma_location ? "yes" : "no");
     }
 
     diagnostic_printf("\nDRM PRIME descriptor\n");
