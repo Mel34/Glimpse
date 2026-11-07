@@ -249,7 +249,7 @@ static int wait_for_gpu_completion(void)
 }
 
 static int render_yuv(GLuint y_texture, GLuint uv_texture,
-                      int width, int height, int bit_depth,
+                      int width, int height,
                       const GlimpseColorConversion *color,
                       const char *dump_path)
 {
@@ -1100,7 +1100,7 @@ static int test_egl_import(const AVDRMFrameDescriptor *desc,
             fprintf(stderr, "\nAttempting NV12 shader rendering...\n");
         result = render_yuv(
             textures[0], textures[1], frame_width, frame_height,
-            bit_depth, color, dump_path);
+            color, dump_path);
         if (result == 0)
             diagnostic_printf("NV12 shader rendering and framebuffer verification succeeded\n");
     } else if (result == 0) {
@@ -1118,7 +1118,7 @@ static int test_egl_import(const AVDRMFrameDescriptor *desc,
             } else {
                 result = render_yuv(
                     textures[0], textures[1], frame_width, frame_height,
-                    bit_depth, color, rgba_path);
+                    color, rgba_path);
             }
         }
     }
@@ -1227,6 +1227,7 @@ static int query_egl_dma_buf_support(
 
     diagnostic_printf("\nEGL DMA-BUF format and modifier support\n");
     diagnostic_printf("Advertised DMA-BUF formats: %d\n", returned_formats);
+    int frame_import_supported = 1;
 
     for (size_t i = 0; i < sizeof(targets) / sizeof(targets[0]); i++) {
         EGLint egl_format = (EGLint)targets[i].format;
@@ -1239,12 +1240,22 @@ static int query_egl_dma_buf_support(
             }
         }
 
+        int frame_uses_format = 0;
+        for (int layer_index = 0;
+             layer_index < desc->nb_layers; layer_index++) {
+            if (desc->layers[layer_index].format == targets[i].format)
+                frame_uses_format = 1;
+        }
+
         diagnostic_printf("\n%s (0x%08x): %s\n",
                targets[i].name, targets[i].format,
                supported ? "advertised" : "not advertised");
 
-        if (!supported)
+        if (!supported) {
+            if (frame_uses_format)
+                frame_import_supported = 0;
             continue;
+        }
 
         EGLint modifier_count = 0;
         if (!query_modifiers(
@@ -1333,6 +1344,9 @@ static int query_egl_dma_buf_support(
                     diagnostic_printf(" (external_only=%s)",
                            frame_external_only ? "yes" : "no");
 
+                if (!modifier_supported || frame_external_only)
+                    frame_import_supported = 0;
+
                 diagnostic_printf("\n");
             }
         }
@@ -1343,7 +1357,7 @@ static int query_egl_dma_buf_support(
 
     free(formats);
     eglTerminate(display);
-    return 0;
+    return frame_import_supported ? 0 : 1;
 }
 
 static int self_test_color_conversion(void)
@@ -1514,8 +1528,16 @@ static int process_decoded_frame(AVFrame *frame,
                "skipping EGL capability query and import\n");
         frame_status = 2;
     } else {
-        if (query_egl_dma_buf_support(desc) < 0) {
+        int capability_status = query_egl_dma_buf_support(desc);
+        if (capability_status < 0) {
             fprintf(stderr, "EGL DMA-BUF capability query failed\n");
+            goto frame_cleanup;
+        }
+        if (capability_status > 0) {
+            fprintf(stderr,
+                    "EGL format/modifier is unavailable for this frame; "
+                    "software fallback required\n");
+            frame_status = 2;
             goto frame_cleanup;
         }
 
@@ -1524,7 +1546,10 @@ static int process_decoded_frame(AVFrame *frame,
         if (test_egl_import(
                 desc, frame->width, frame->height, bit_depth,
                 &color, dump_path) < 0) {
-            fprintf(stderr, "EGL DMA-BUF import or color rendering test failed\n");
+            fprintf(stderr,
+                    "EGL DMA-BUF import or color rendering failed; "
+                    "software fallback required\n");
+            frame_status = 2;
             goto frame_cleanup;
         }
         diagnostic_printf("%s EGL DMA-BUF import and GL texture creation succeeded\n",
