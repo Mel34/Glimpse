@@ -1548,6 +1548,8 @@ static int process_decoded_frame(AVFrame *frame,
     }
 
     if (layout_status == 0) {
+        fprintf(stderr,
+                "Unsupported DRM layout; software fallback required\n");
         diagnostic_printf("\nRejecting unsupported DRM layout: "
                "skipping EGL capability query and import\n");
         frame_status = 2;
