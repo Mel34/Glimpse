@@ -16,6 +16,8 @@ use crossbeam_channel::{bounded, Receiver, Sender};
 use parking_lot::Mutex;
 
 pub use audio::{AudioSink, MockAudioSink};
+#[cfg(feature = "audio-pipewire")]
+pub use audio::{PipeWireAudioSink, PipeWireAudioSinkStats};
 pub use clock::MasterClock;
 pub use presenter::{ScheduleAction, VideoFrameData, VideoPresenter, VideoScheduler};
 pub use types::{DriftReport, Event, PlayerState, Serial, TrackId, TrackInfo, TrackList, TrackType};
