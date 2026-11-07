@@ -1,0 +1,2226 @@
+#include <inttypes.h>
+#include <limits.h>
+#include <pthread.h>
+#include <stdint.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+#define GL_GLEXT_PROTOTYPES 1
+#include <GL/gl.h>
+#include <GL/glext.h>
+#include <libdrm/drm_fourcc.h>
+
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/error.h>
+#include <libavutil/hwcontext.h>
+#include <libavutil/hwcontext_drm.h>
+#include <libavutil/pixdesc.h>
+
+#include "color.h"
+
+static enum AVPixelFormat hw_format = AV_PIX_FMT_NONE;
+static int verbose_output;
+static int quiet_output;
+static char renderer_name[256] = "unknown";
+
+static int diagnostic_printf(const char *format, ...)
+{
+    if (!verbose_output)
+        return 0;
+
+    va_list args;
+    va_start(args, format);
+    int result = vprintf(format, args);
+    va_end(args);
+    return result;
+}
+
+static void log_av_error(const char *what, int err)
+{
+    char msg[AV_ERROR_MAX_STRING_SIZE];
+    av_strerror(err, msg, sizeof(msg));
+    fprintf(stderr, "%s: %s\n", what, msg);
+}
+
+static enum AVPixelFormat get_hw_format(
+    AVCodecContext *ctx,
+    const enum AVPixelFormat *formats)
+{
+    (void)ctx;
+
+    for (const enum AVPixelFormat *p = formats;
+         *p != AV_PIX_FMT_NONE; p++) {
+        if (*p == hw_format)
+            return *p;
+    }
+
+    fprintf(stderr, "VAAPI pixel format not offered by decoder\n");
+    return AV_PIX_FMT_NONE;
+}
+
+static int get_vaapi_format(
+    const AVCodec *codec,
+    enum AVPixelFormat *format)
+{
+    for (int i = 0; ; i++) {
+        const AVCodecHWConfig *config = avcodec_get_hw_config(codec, i);
+        if (!config)
+            break;
+
+        if (config->device_type == AV_HWDEVICE_TYPE_VAAPI &&
+            (config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX)) {
+            *format = config->pix_fmt;
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static const AVCodec *find_vaapi_decoder(
+    enum AVCodecID codec_id,
+    enum AVPixelFormat *format)
+{
+    const AVCodec *codec = avcodec_find_decoder(codec_id);
+    if (codec && get_vaapi_format(codec, format))
+        return codec;
+
+    void *opaque = NULL;
+    while ((codec = av_codec_iterate(&opaque))) {
+        if (!av_codec_is_decoder(codec) || codec->id != codec_id)
+            continue;
+
+        if (get_vaapi_format(codec, format))
+            return codec;
+    }
+
+    return NULL;
+}
+
+
+static int import_layer(
+    EGLDisplay display,
+    PFNEGLCREATEIMAGEKHRPROC create_image,
+    PFNEGLDESTROYIMAGEKHRPROC destroy_image,
+    PFNGLEGLIMAGETARGETTEXTURE2DOESPROC image_to_texture,
+    const AVDRMFrameDescriptor *desc,
+    const AVDRMLayerDescriptor *layer,
+    int width,
+    int height,
+    int layer_index,
+    EGLImageKHR *image_out,
+    GLuint *texture_out)
+{
+    if (layer->nb_planes != 1) {
+        fprintf(stderr, "Layer %d: expected one plane, got %d\n",
+                layer_index, layer->nb_planes);
+        return -1;
+    }
+
+    const AVDRMPlaneDescriptor *plane = &layer->planes[0];
+
+    if (plane->object_index < 0 ||
+        plane->object_index >= desc->nb_objects ||
+        plane->offset < 0 || plane->offset > INT_MAX ||
+        plane->pitch <= 0 || plane->pitch > INT_MAX) {
+        fprintf(stderr, "Layer %d: invalid plane metadata\n", layer_index);
+        return -1;
+    }
+
+    const AVDRMObjectDescriptor *object =
+        &desc->objects[plane->object_index];
+
+    uint64_t modifier = object->format_modifier;
+
+    EGLint attrs[] = {
+        EGL_WIDTH, width,
+        EGL_HEIGHT, height,
+        EGL_LINUX_DRM_FOURCC_EXT, (EGLint)layer->format,
+        EGL_DMA_BUF_PLANE0_FD_EXT, object->fd,
+        EGL_DMA_BUF_PLANE0_OFFSET_EXT, (EGLint)plane->offset,
+        EGL_DMA_BUF_PLANE0_PITCH_EXT, (EGLint)plane->pitch,
+        EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT, (EGLint)(uint32_t)modifier,
+        EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT, (EGLint)(uint32_t)(modifier >> 32),
+        EGL_NONE
+    };
+
+    EGLImageKHR image = create_image(
+        display, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT,
+        (EGLClientBuffer)NULL, attrs);
+
+    if (image == EGL_NO_IMAGE_KHR) {
+        fprintf(stderr, "Layer %d: eglCreateImageKHR failed (0x%x)\n",
+                layer_index, eglGetError());
+        return -1;
+    }
+
+    GLuint texture = 0;
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    image_to_texture(GL_TEXTURE_2D, (GLeglImageOES)image);
+
+    GLenum gl_error = glGetError();
+    if (gl_error != GL_NO_ERROR) {
+        fprintf(stderr, "Layer %d: GL texture import failed (0x%x)\n",
+                layer_index, gl_error);
+        glDeleteTextures(1, &texture);
+        destroy_image(display, image);
+        return -1;
+    }
+
+    GLint imported_width = 0;
+    GLint imported_height = 0;
+    glGetTexLevelParameteriv(
+        GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &imported_width);
+    glGetTexLevelParameteriv(
+        GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &imported_height);
+
+    if (imported_width != width || imported_height != height) {
+        fprintf(stderr,
+                "Layer %d: imported dimensions %dx%d, expected %dx%d\n",
+                layer_index, imported_width, imported_height, width, height);
+        glDeleteTextures(1, &texture);
+        destroy_image(display, image);
+        return -1;
+    }
+
+    diagnostic_printf("Layer %d EGL import: %dx%d, texture=%u, modifier=0x%016" PRIx64 "\n",
+           layer_index, imported_width, imported_height, texture, modifier);
+
+    *image_out = image;
+    *texture_out = texture;
+    return 0;
+}
+
+
+static GLuint compile_shader(GLenum type, const char *source)
+{
+    GLuint shader = glCreateShader(type);
+    glShaderSource(shader, 1, &source, NULL);
+    glCompileShader(shader);
+
+    GLint ok = GL_FALSE;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
+
+    if (!ok) {
+        char log[4096];
+        GLsizei length = 0;
+        glGetShaderInfoLog(shader, sizeof(log), &length, log);
+        fprintf(stderr, "Shader compilation failed:\n%.*s\n",
+                (int)length, log);
+        glDeleteShader(shader);
+        return 0;
+    }
+
+    return shader;
+}
+
+static int wait_for_gpu_completion(void)
+{
+    GLsync fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    if (!fence) {
+        fprintf(stderr, "Creating OpenGL completion fence failed\n");
+        return -1;
+    }
+    glFlush();
+    GLenum status;
+    int waits = 0;
+    do {
+        status = glClientWaitSync(
+            fence, GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000ULL);
+        waits++;
+    } while (status == GL_TIMEOUT_EXPIRED && waits < 30);
+    glDeleteSync(fence);
+    if (status != GL_ALREADY_SIGNALED && status != GL_CONDITION_SATISFIED) {
+        fprintf(stderr, "Waiting for OpenGL completion fence failed (status=0x%x)\n", status);
+        return -1;
+    }
+    return 0;
+}
+
+static int render_yuv(GLuint y_texture, GLuint uv_texture,
+                      int width, int height,
+                      const GlimpseColorConversion *color,
+                      const char *dump_path)
+{
+    static const char *vertex_source =
+        "#version 330 core\n"
+        "out vec2 texcoord;\n"
+        "void main() {\n"
+        "    vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);\n"
+        "    texcoord = p;\n"
+        "    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);\n"
+        "}\n";
+
+    static const char *fragment_source =
+        "#version 330 core\n"
+        "in vec2 texcoord;\n"
+        "uniform sampler2D y_texture;\n"
+        "uniform sampler2D uv_texture;\n"
+        "uniform float sample_scale;\n"
+        "uniform float y_offset;\n"
+        "uniform float y_scale;\n"
+        "uniform float chroma_offset;\n"
+        "uniform float chroma_scale;\n"
+        "uniform float kr;\n"
+        "uniform float kb;\n"
+        "uniform vec2 chroma_offset_uv;\n"
+        "out vec4 output_color;\n"
+        "void main() {\n"
+        "    float y_code = texture(y_texture, texcoord).r * sample_scale;\n"
+        "    vec2 c_code = texture(uv_texture, texcoord + chroma_offset_uv).rg"
+        " * sample_scale;\n"
+        "    float y = (y_code - y_offset) / y_scale;\n"
+        "    float cb = (c_code.r - chroma_offset) / chroma_scale;\n"
+        "    float cr = (c_code.g - chroma_offset) / chroma_scale;\n"
+        "    float kg = 1.0 - kr - kb;\n"
+        "    vec3 rgb = vec3(\n"
+        "        y + 2.0 * (1.0 - kr) * cr,\n"
+        "        y - 2.0 * kb * (1.0 - kb) / kg * cb"
+        " - 2.0 * kr * (1.0 - kr) / kg * cr,\n"
+        "        y + 2.0 * (1.0 - kb) * cb\n"
+        "    );\n"
+        "    output_color = vec4(clamp(rgb, 0.0, 1.0), 1.0);\n"
+        "}\n";
+
+    GLuint vertex = compile_shader(GL_VERTEX_SHADER, vertex_source);
+    GLuint fragment = compile_shader(GL_FRAGMENT_SHADER, fragment_source);
+
+    if (!vertex || !fragment) {
+        if (vertex)
+            glDeleteShader(vertex);
+        if (fragment)
+            glDeleteShader(fragment);
+        return -1;
+    }
+
+    GLuint program = glCreateProgram();
+    glAttachShader(program, vertex);
+    glAttachShader(program, fragment);
+    glLinkProgram(program);
+
+    glDeleteShader(vertex);
+    glDeleteShader(fragment);
+
+    GLint linked = GL_FALSE;
+    glGetProgramiv(program, GL_LINK_STATUS, &linked);
+
+    if (!linked) {
+        char log[4096];
+        GLsizei length = 0;
+        glGetProgramInfoLog(program, sizeof(log), &length, log);
+        fprintf(stderr, "Shader linking failed:\n%.*s\n",
+                (int)length, log);
+        glDeleteProgram(program);
+        return -1;
+    }
+
+    GLuint output_texture = 0;
+    GLuint framebuffer = 0;
+    GLuint vao = 0;
+
+    glGenTextures(1, &output_texture);
+    glBindTexture(GL_TEXTURE_2D, output_texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height,
+                 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+
+    glGenFramebuffers(1, &framebuffer);
+    glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, output_texture, 0);
+
+    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (status != GL_FRAMEBUFFER_COMPLETE) {
+        fprintf(stderr, "Framebuffer incomplete: 0x%x\n", status);
+        glDeleteFramebuffers(1, &framebuffer);
+        glDeleteTextures(1, &output_texture);
+        glDeleteProgram(program);
+        return -1;
+    }
+
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+
+    glViewport(0, 0, width, height);
+    glDisable(GL_BLEND);
+    glDisable(GL_DEPTH_TEST);
+
+    glUseProgram(program);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, y_texture);
+    glUniform1i(glGetUniformLocation(program, "y_texture"), 0);
+
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, uv_texture);
+    glUniform1i(glGetUniformLocation(program, "uv_texture"), 1);
+
+    glUniform1f(glGetUniformLocation(program, "sample_scale"),
+                color->sample_scale);
+    glUniform1f(glGetUniformLocation(program, "y_offset"), color->y_offset);
+    glUniform1f(glGetUniformLocation(program, "y_scale"), color->y_scale);
+    glUniform1f(glGetUniformLocation(program, "chroma_offset"),
+                color->chroma_offset);
+    glUniform1f(glGetUniformLocation(program, "chroma_scale"),
+                color->chroma_scale);
+    glUniform1f(glGetUniformLocation(program, "kr"), color->kr);
+    glUniform1f(glGetUniformLocation(program, "kb"), color->kb);
+    glUniform2f(glGetUniformLocation(program, "chroma_offset_uv"),
+                color->chroma_x / (float)width,
+                (color->chroma_y - 0.5f) / (float)height);
+
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    if (wait_for_gpu_completion() < 0) {
+        glDeleteVertexArrays(1, &vao);
+        glDeleteFramebuffers(1, &framebuffer);
+        glDeleteTextures(1, &output_texture);
+        glDeleteProgram(program);
+        return -1;
+    }
+
+    GLenum gl_error = glGetError();
+    if (gl_error != GL_NO_ERROR) {
+        fprintf(stderr, "GPU rendering failed: GL error 0x%x\n", gl_error);
+        glDeleteVertexArrays(1, &vao);
+        glDeleteFramebuffers(1, &framebuffer);
+        glDeleteTextures(1, &output_texture);
+        glDeleteProgram(program);
+        return -1;
+    }
+
+    size_t pixel_count = (size_t)width * (size_t)height;
+    unsigned char *pixels = malloc(pixel_count * 4);
+
+    if (!pixels) {
+        fprintf(stderr, "Could not allocate framebuffer readback\n");
+        glDeleteVertexArrays(1, &vao);
+        glDeleteFramebuffers(1, &framebuffer);
+        glDeleteTextures(1, &output_texture);
+        glDeleteProgram(program);
+        return -1;
+    }
+
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+
+    GLenum readback_error = glGetError();
+    if (readback_error != GL_NO_ERROR) {
+        fprintf(stderr, "GPU framebuffer readback failed: GL error 0x%x\n",
+                readback_error);
+        free(pixels);
+        glBindVertexArray(0);
+        glUseProgram(0);
+        glDeleteVertexArrays(1, &vao);
+        glDeleteFramebuffers(1, &framebuffer);
+        glDeleteTextures(1, &output_texture);
+        glDeleteProgram(program);
+        return -1;
+    }
+
+    unsigned int minimum[3] = { 255, 255, 255 };
+    unsigned int maximum[3] = { 0, 0, 0 };
+    unsigned long long sums[3] = { 0, 0, 0 };
+    size_t nonblack = 0;
+
+    for (size_t i = 0; i < pixel_count; i++) {
+        for (int c = 0; c < 3; c++) {
+            unsigned int value = pixels[i * 4 + c];
+
+            if (value < minimum[c])
+                minimum[c] = value;
+            if (value > maximum[c])
+                maximum[c] = value;
+
+            sums[c] += value;
+        }
+
+        if (pixels[i * 4] > 2 ||
+            pixels[i * 4 + 1] > 2 ||
+            pixels[i * 4 + 2] > 2)
+            nonblack++;
+    }
+
+    diagnostic_printf("\nGPU shader rendering result\n");
+    diagnostic_printf("Output: %dx%d RGBA8 framebuffer\n", width, height);
+
+    for (int c = 0; c < 3; c++) {
+        const char *name = c == 0 ? "R" : c == 1 ? "G" : "B";
+        diagnostic_printf("%s: min=%u max=%u mean=%.2f\n",
+               name, minimum[c], maximum[c],
+               (double)sums[c] / (double)pixel_count);
+    }
+
+    diagnostic_printf("Non-black pixels: %zu / %zu (%.2f%%)\n",
+           nonblack, pixel_count,
+           100.0 * (double)nonblack / (double)pixel_count);
+
+    diagnostic_printf("Center pixel: R=%u G=%u B=%u\n",
+           pixels[((size_t)(height / 2) * width + width / 2) * 4],
+           pixels[((size_t)(height / 2) * width + width / 2) * 4 + 1],
+           pixels[((size_t)(height / 2) * width + width / 2) * 4 + 2]);
+    FILE *dump = fopen(dump_path, "wb");
+    int dump_ok = 1;
+
+    if (!dump) {
+        perror("Opening GPU framebuffer dump");
+        dump_ok = 0;
+    } else {
+        size_t written = fwrite(pixels, 4, pixel_count, dump);
+        int close_result = fclose(dump);
+
+        if (written != pixel_count || close_result != 0) {
+            fprintf(stderr, "Writing GPU framebuffer dump failed\n");
+            dump_ok = 0;
+        } else {
+            diagnostic_printf("GPU framebuffer saved: %s\n", dump_path);
+        }
+    }
+
+    diagnostic_printf("Framebuffer readback: %s\n",
+                      dump_ok ? "complete" : "failed");
+
+    /*
+     * Black and uniform-color frames are valid video content. Rendering
+     * success is established by the completed GL readback and successful
+     * dump, not by requiring pixel variation or non-black output.
+     */
+    int valid = dump_ok;
+
+    free(pixels);
+    glBindVertexArray(0);
+    glUseProgram(0);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteFramebuffers(1, &framebuffer);
+    glDeleteTextures(1, &output_texture);
+    glDeleteProgram(program);
+
+    if (!valid) {
+        fprintf(stderr, "Rendered output failed basic pixel checks\n");
+        return -1;
+    }
+
+    return 0;
+}
+
+static int inspect_10bit_samples(GLuint y_texture, GLuint uv_texture,
+                                 int width, int height,
+                                 const char *dump_path)
+{
+    static const char *vertex_source =
+        "#version 330 core\n"
+        "void main() {\n"
+        "    vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);\n"
+        "    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);\n"
+        "}\n";
+
+    static const char *fragment_source =
+        "#version 330 core\n"
+        "uniform sampler2D y_texture;\n"
+        "uniform sampler2D uv_texture;\n"
+        "out vec4 output_samples;\n"
+        "void main() {\n"
+        "    ivec2 pixel = ivec2(gl_FragCoord.xy);\n"
+        "    float y = texelFetch(y_texture, pixel, 0).r;\n"
+        "    vec2 uv = texelFetch(uv_texture, pixel / 2, 0).rg;\n"
+        "    output_samples = vec4(y, uv.r, uv.g, 1.0);\n"
+        "}\n";
+
+    if (width <= 0 || height <= 0 ||
+        (width & 1) != 0 || (height & 1) != 0 ||
+        !dump_path ||
+        (size_t)width > SIZE_MAX / (size_t)height / (4 * sizeof(float))) {
+        fprintf(stderr, "Invalid or oversized 10-bit inspection dimensions\n");
+        return -1;
+    }
+
+    GLuint vertex = compile_shader(GL_VERTEX_SHADER, vertex_source);
+    GLuint fragment = compile_shader(GL_FRAGMENT_SHADER, fragment_source);
+
+    if (!vertex || !fragment) {
+        if (vertex)
+            glDeleteShader(vertex);
+        if (fragment)
+            glDeleteShader(fragment);
+        return -1;
+    }
+
+    GLuint program = glCreateProgram();
+    glAttachShader(program, vertex);
+    glAttachShader(program, fragment);
+    glLinkProgram(program);
+    glDeleteShader(vertex);
+    glDeleteShader(fragment);
+
+    GLint linked = GL_FALSE;
+    glGetProgramiv(program, GL_LINK_STATUS, &linked);
+
+    if (!linked) {
+        char log[4096];
+        GLsizei length = 0;
+        glGetProgramInfoLog(program, sizeof(log), &length, log);
+        fprintf(stderr, "10-bit inspection shader linking failed:\n%.*s\n",
+                (int)length, log);
+        glDeleteProgram(program);
+        return -1;
+    }
+
+    GLuint output_texture = 0;
+    GLuint framebuffer = 0;
+    GLuint vao = 0;
+
+    glGenTextures(1, &output_texture);
+    glBindTexture(GL_TEXTURE_2D, output_texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, width, height,
+                 0, GL_RGBA, GL_FLOAT, NULL);
+
+    glGenFramebuffers(1, &framebuffer);
+    glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, output_texture, 0);
+
+    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (status != GL_FRAMEBUFFER_COMPLETE) {
+        fprintf(stderr, "10-bit inspection framebuffer incomplete: 0x%x\n",
+                status);
+        glDeleteFramebuffers(1, &framebuffer);
+        glDeleteTextures(1, &output_texture);
+        glDeleteProgram(program);
+        return -1;
+    }
+
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glViewport(0, 0, width, height);
+    glDisable(GL_BLEND);
+    glDisable(GL_DEPTH_TEST);
+    glUseProgram(program);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, y_texture);
+    glUniform1i(glGetUniformLocation(program, "y_texture"), 0);
+
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, uv_texture);
+    glUniform1i(glGetUniformLocation(program, "uv_texture"), 1);
+
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    if (wait_for_gpu_completion() < 0) {
+        glDeleteVertexArrays(1, &vao);
+        glDeleteFramebuffers(1, &framebuffer);
+        glDeleteTextures(1, &output_texture);
+        glDeleteProgram(program);
+        return -1;
+    }
+
+    GLenum gl_error = glGetError();
+    if (gl_error != GL_NO_ERROR) {
+        fprintf(stderr, "10-bit inspection rendering failed: GL error 0x%x\n",
+                gl_error);
+        glDeleteVertexArrays(1, &vao);
+        glDeleteFramebuffers(1, &framebuffer);
+        glDeleteTextures(1, &output_texture);
+        glDeleteProgram(program);
+        return -1;
+    }
+
+    size_t pixel_count = (size_t)width * (size_t)height;
+    float *pixels = malloc(pixel_count * 4 * sizeof(*pixels));
+
+    if (!pixels) {
+        fprintf(stderr, "Could not allocate 10-bit sample readback\n");
+        glDeleteVertexArrays(1, &vao);
+        glDeleteFramebuffers(1, &framebuffer);
+        glDeleteTextures(1, &output_texture);
+        glDeleteProgram(program);
+        return -1;
+    }
+
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, width, height, GL_RGBA, GL_FLOAT, pixels);
+
+    gl_error = glGetError();
+    if (gl_error != GL_NO_ERROR) {
+        fprintf(stderr, "10-bit sample readback failed: GL error 0x%x\n",
+                gl_error);
+        free(pixels);
+        glDeleteVertexArrays(1, &vao);
+        glDeleteFramebuffers(1, &framebuffer);
+        glDeleteTextures(1, &output_texture);
+        glDeleteProgram(program);
+        return -1;
+    }
+
+    const char *names[] = { "Y", "U", "V" };
+    uint32_t minimum[3] = { UINT32_MAX, UINT32_MAX, UINT32_MAX };
+    uint32_t maximum[3] = { 0, 0, 0 };
+    size_t counts[3] = { 0, 0, 0 };
+    size_t low_six_zero[3] = { 0, 0, 0 };
+    size_t above_10bit[3] = { 0, 0, 0 };
+    int valid = 1;
+
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            size_t pixel_index = ((size_t)y * (size_t)width + (size_t)x) * 4;
+            int sample_channels[] = { 0, 1, 2 };
+
+            for (int c = 0; c < 3; c++) {
+                if (c != 0 && ((x & 1) != 0 || (y & 1) != 0))
+                    continue;
+
+                float normalized = pixels[pixel_index + sample_channels[c]];
+                if (!(normalized >= 0.0f && normalized <= 1.0f)) {
+                    fprintf(stderr,
+                            "Invalid normalized %s sample at (%d,%d): %f\n",
+                            names[c], x, y, normalized);
+                    valid = 0;
+                    continue;
+                }
+
+                uint32_t value =
+                    (uint32_t)(normalized * 65535.0f + 0.5f);
+
+                if (value < minimum[c])
+                    minimum[c] = value;
+                if (value > maximum[c])
+                    maximum[c] = value;
+
+                counts[c]++;
+                if ((value & 0x3f) == 0)
+                    low_six_zero[c]++;
+                if (value > 1023)
+                    above_10bit[c]++;
+            }
+        }
+    }
+
+    diagnostic_printf("\n10-bit imported texture sample inspection\n");
+    diagnostic_printf("Samples reconstructed from normalized R16 texture values\n");
+    diagnostic_printf("Chroma samples counted once per 2x2 luma block\n");
+
+    for (int c = 0; c < 3; c++) {
+        if (counts[c] == 0) {
+            fprintf(stderr, "No %s samples inspected\n", names[c]);
+            valid = 0;
+            continue;
+        }
+
+        diagnostic_printf("%s: min=%u max=%u, low 6 bits zero=%.2f%%, "
+               "values >1023=%.2f%% (%zu samples)\n",
+               names[c], minimum[c], maximum[c],
+               100.0 * (double)low_six_zero[c] / (double)counts[c],
+               100.0 * (double)above_10bit[c] / (double)counts[c],
+               counts[c]);
+    }
+
+    /*
+     * Export canonical yuv420p10le samples. Imported R16 values are
+     * left-aligned, so shift right by six. Preserve GL readback row order;
+     * the comparison tool checks both vertical orientations.
+     */
+    size_t raw_size = pixel_count * 3;
+    uint8_t *raw = malloc(raw_size);
+    if (!raw) {
+        fprintf(stderr, "Could not allocate 10-bit sample dump\n");
+        valid = 0;
+    } else {
+        size_t offset = 0;
+
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                size_t index =
+                    ((size_t)y * (size_t)width + (size_t)x) * 4;
+                uint32_t value =
+                    (uint32_t)(pixels[index] * 65535.0f + 0.5f);
+                uint16_t sample = (uint16_t)(value >> 6);
+                raw[offset++] = (uint8_t)(sample & 0xff);
+                raw[offset++] = (uint8_t)(sample >> 8);
+            }
+        }
+
+        for (int plane = 1; plane <= 2; plane++) {
+            for (int y = 0; y < height; y += 2) {
+                for (int x = 0; x < width; x += 2) {
+                    size_t index =
+                        ((size_t)y * (size_t)width + (size_t)x) * 4;
+                    uint32_t value =
+                        (uint32_t)(pixels[index + plane] * 65535.0f + 0.5f);
+                    uint16_t sample = (uint16_t)(value >> 6);
+                    raw[offset++] = (uint8_t)(sample & 0xff);
+                    raw[offset++] = (uint8_t)(sample >> 8);
+                }
+            }
+        }
+
+        FILE *dump = fopen(dump_path, "wb");
+        if (!dump) {
+            perror("Opening 10-bit sample dump");
+            valid = 0;
+        } else {
+            size_t written = fwrite(raw, 1, raw_size, dump);
+            int close_result = fclose(dump);
+            if (written != raw_size || close_result != 0) {
+                fprintf(stderr, "Writing 10-bit sample dump failed\n");
+                valid = 0;
+            } else {
+                diagnostic_printf("10-bit yuv420p10le samples saved: %s (%zu bytes)\n",
+                       dump_path, raw_size);
+            }
+        }
+
+        free(raw);
+    }
+
+    diagnostic_printf("Interpretation: a high proportion of values with the low "
+           "six bits zero is consistent with left-aligned 10-bit samples; "
+           "values at or below 1023 are consistent with right alignment.\n");
+    diagnostic_printf("This is sample-layout inspection only, not a color-correctness "
+           "or 10-bit rendering validation.\n");
+
+    free(pixels);
+    glBindVertexArray(0);
+    glUseProgram(0);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteFramebuffers(1, &framebuffer);
+    glDeleteTextures(1, &output_texture);
+    glDeleteProgram(program);
+
+    return valid ? 0 : -1;
+}
+
+static void print_fourcc(uint32_t f, char out[5]);
+
+static int is_nv12_drm_layout(const AVDRMFrameDescriptor *desc)
+{
+    return desc->nb_objects == 1 && desc->nb_layers == 2 &&
+           desc->layers[0].format == DRM_FORMAT_R8 &&
+           desc->layers[1].format == DRM_FORMAT_GR88 &&
+           desc->layers[0].nb_planes == 1 &&
+           desc->layers[1].nb_planes == 1;
+}
+
+static int is_10bit_drm_layout(const AVDRMFrameDescriptor *desc)
+{
+    return desc->nb_objects == 1 && desc->nb_layers == 2 &&
+           desc->layers[0].format == DRM_FORMAT_R16 &&
+           desc->layers[1].format == DRM_FORMAT_GR1616 &&
+           desc->layers[0].nb_planes == 1 &&
+           desc->layers[1].nb_planes == 1;
+}
+
+static int validate_drm_descriptor(const AVDRMFrameDescriptor *desc)
+{
+    if (desc->nb_objects < 1 ||
+        desc->nb_objects > AV_DRM_MAX_PLANES ||
+        desc->nb_layers < 1 ||
+        desc->nb_layers > AV_DRM_MAX_PLANES) {
+        fprintf(stderr, "Invalid DRM descriptor counts\n");
+        return -1;
+    }
+
+    for (int i = 0; i < desc->nb_objects; i++) {
+        const AVDRMObjectDescriptor *object = &desc->objects[i];
+
+        if (object->fd < 0 || object->size == 0) {
+            fprintf(stderr, "Invalid DRM object metadata in object %d\n", i);
+            return -1;
+        }
+    }
+
+    for (int i = 0; i < desc->nb_layers; i++) {
+        const AVDRMLayerDescriptor *layer = &desc->layers[i];
+
+        if (layer->nb_planes < 1 ||
+            layer->nb_planes > AV_DRM_MAX_PLANES) {
+            fprintf(stderr,
+                    "Invalid plane count in DRM layer %d: %d\n",
+                    i, layer->nb_planes);
+            return -1;
+        }
+
+        for (int p = 0; p < layer->nb_planes; p++) {
+            const AVDRMPlaneDescriptor *plane = &layer->planes[p];
+
+            if (plane->object_index < 0 ||
+                plane->object_index >= desc->nb_objects ||
+                plane->offset < 0 ||
+                plane->offset > INT_MAX ||
+                (uint64_t)plane->offset >=
+                    desc->objects[plane->object_index].size ||
+                plane->pitch <= 0 ||
+                plane->pitch > INT_MAX) {
+                fprintf(stderr,
+                        "Invalid DRM plane metadata in layer %d plane %d\n",
+                        i, p);
+                return -1;
+            }
+        }
+    }
+
+    return 0;
+}
+
+static int validate_supported_drm_layout(
+    const AVDRMFrameDescriptor *desc)
+{
+    if (desc->nb_objects != 1 || desc->nb_layers != 2) {
+        fprintf(stderr,
+                "Unsupported DRM descriptor shape: objects=%d layers=%d\n",
+                desc->nb_objects, desc->nb_layers);
+        return 0;
+    }
+
+    if (!is_nv12_drm_layout(desc) && !is_10bit_drm_layout(desc)) {
+        char first[5];
+        char second[5];
+        print_fourcc(desc->layers[0].format, first);
+        print_fourcc(desc->layers[1].format, second);
+        fprintf(stderr,
+                "Unsupported DRM layer formats: %s + %s\n",
+                first, second);
+        return 0;
+    }
+
+    return 1;
+}
+
+/*
+ * Return 0 when a modifier is unavailable, 1 when it supports 2D texture
+ * import, and 2 when it is advertised as external-only.
+ */
+static int classify_egl_modifier(
+    uint64_t frame_modifier,
+    const EGLuint64KHR *modifiers,
+    const EGLBoolean *external_only,
+    EGLint modifier_count)
+{
+    if (!modifiers || !external_only || modifier_count <= 0)
+        return 0;
+
+    for (EGLint i = 0; i < modifier_count; i++) {
+        if ((uint64_t)modifiers[i] == frame_modifier)
+            return external_only[i] ? 2 : 1;
+    }
+
+    return 0;
+}
+
+static int self_test_layout_validation(void)
+{
+    static const struct {
+        const char *name;
+        uint32_t first_format;
+        uint32_t second_format;
+        int expected;
+    } cases[] = {
+        { "NV12", DRM_FORMAT_R8, DRM_FORMAT_GR88, 1 },
+        { "10-bit", DRM_FORMAT_R16, DRM_FORMAT_GR1616, 1 },
+        { "unsupported XRGB8888", DRM_FORMAT_XRGB8888, DRM_FORMAT_GR88, 0 },
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        AVDRMFrameDescriptor desc = { 0 };
+        desc.nb_objects = 1;
+        desc.nb_layers = 2;
+        desc.objects[0].fd = 0;
+        desc.objects[0].size = 4096;
+
+        desc.layers[0].format = cases[i].first_format;
+        desc.layers[1].format = cases[i].second_format;
+
+        for (int layer = 0; layer < 2; layer++) {
+            desc.layers[layer].nb_planes = 1;
+            desc.layers[layer].planes[0].object_index = 0;
+            desc.layers[layer].planes[0].offset = layer * 2048;
+            desc.layers[layer].planes[0].pitch = 64;
+        }
+
+        if (validate_drm_descriptor(&desc) < 0) {
+            fprintf(stderr, "FAIL: %s descriptor validation\n",
+                    cases[i].name);
+            return 1;
+        }
+
+        int result = validate_supported_drm_layout(&desc);
+        if (result != cases[i].expected) {
+            fprintf(stderr,
+                    "FAIL: %s layout classification: expected %d, got %d\n",
+                    cases[i].name, cases[i].expected, result);
+            return 1;
+        }
+
+        diagnostic_printf("PASS: %s layout classification\n", cases[i].name);
+    }
+
+    AVDRMFrameDescriptor malformed = { 0 };
+    malformed.nb_objects = 1;
+    malformed.nb_layers = 1;
+    malformed.objects[0].fd = 0;
+    malformed.objects[0].size = 4096;
+    malformed.layers[0].format = DRM_FORMAT_R8;
+    malformed.layers[0].nb_planes = 1;
+    malformed.layers[0].planes[0].object_index = 1;
+    malformed.layers[0].planes[0].offset = 0;
+    malformed.layers[0].planes[0].pitch = 64;
+
+    if (validate_drm_descriptor(&malformed) == 0) {
+        fprintf(stderr, "FAIL: malformed descriptor was accepted\n");
+        return 1;
+    }
+
+    diagnostic_printf("PASS: malformed descriptor rejected\n");
+
+    const EGLuint64KHR test_modifiers[] = {
+        (EGLuint64KHR)0x1234, (EGLuint64KHR)0x5678
+    };
+    const EGLBoolean test_external_only[] = { EGL_FALSE, EGL_TRUE };
+    if (classify_egl_modifier(
+            0x1234, test_modifiers, test_external_only, 2) != 1 ||
+        classify_egl_modifier(
+            0x5678, test_modifiers, test_external_only, 2) != 2 ||
+        classify_egl_modifier(
+            0x9abc, test_modifiers, test_external_only, 2) != 0 ||
+        classify_egl_modifier(
+            0x1234, test_modifiers, test_external_only, 0) != 0) {
+        fprintf(stderr, "FAIL: EGL modifier fallback classification\n");
+        return 1;
+    }
+    diagnostic_printf("PASS: EGL modifier 2D/external-only/unavailable classification\n");
+    diagnostic_printf("All DRM layout and fallback classification self-tests passed\n");
+    return 0;
+}
+
+static int test_egl_import(const AVDRMFrameDescriptor *desc,
+                           int frame_width, int frame_height,
+                           const GlimpseColorConversion *color,
+                           const char *dump_path)
+{
+    EGLDisplay display = eglGetPlatformDisplay(
+        EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, NULL);
+
+    if (display == EGL_NO_DISPLAY) {
+        fprintf(stderr, "Could not get surfaceless EGL display: 0x%x\n",
+                eglGetError());
+        return -1;
+    }
+
+    EGLint major = 0, minor = 0;
+    if (!eglInitialize(display, &major, &minor)) {
+        fprintf(stderr, "eglInitialize failed: 0x%x\n", eglGetError());
+        return -1;
+    }
+
+    diagnostic_printf("\nEGL version: %d.%d\n", major, minor);
+
+    const char *extensions = eglQueryString(display, EGL_EXTENSIONS);
+    if (!extensions ||
+        !strstr(extensions, "EGL_EXT_image_dma_buf_import") ||
+        !strstr(extensions, "EGL_EXT_image_dma_buf_import_modifiers")) {
+        fprintf(stderr, "Required EGL DMA-BUF import extensions unavailable\n");
+        eglTerminate(display);
+        return -1;
+    }
+
+    PFNEGLCREATEIMAGEKHRPROC create_image =
+        (PFNEGLCREATEIMAGEKHRPROC)eglGetProcAddress("eglCreateImageKHR");
+    PFNEGLDESTROYIMAGEKHRPROC destroy_image =
+        (PFNEGLDESTROYIMAGEKHRPROC)eglGetProcAddress("eglDestroyImageKHR");
+    PFNGLEGLIMAGETARGETTEXTURE2DOESPROC image_to_texture =
+        (PFNGLEGLIMAGETARGETTEXTURE2DOESPROC)
+            eglGetProcAddress("glEGLImageTargetTexture2DOES");
+
+    if (!create_image || !destroy_image || !image_to_texture) {
+        fprintf(stderr, "Required EGL/GL entry points unavailable\n");
+        eglTerminate(display);
+        return -1;
+    }
+
+    if (!eglBindAPI(EGL_OPENGL_API)) {
+        fprintf(stderr, "eglBindAPI failed: 0x%x\n", eglGetError());
+        eglTerminate(display);
+        return -1;
+    }
+
+    const EGLint config_attrs[] = {
+        EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
+        EGL_NONE
+    };
+
+    EGLConfig config;
+    EGLint config_count = 0;
+    if (!eglChooseConfig(display, config_attrs, &config, 1, &config_count) ||
+        config_count != 1) {
+        fprintf(stderr, "No suitable EGL OpenGL config: 0x%x\n", eglGetError());
+        eglTerminate(display);
+        return -1;
+    }
+
+    const EGLint surface_attrs[] = {
+        EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE
+    };
+    EGLSurface surface = eglCreatePbufferSurface(
+        display, config, surface_attrs);
+
+    if (surface == EGL_NO_SURFACE) {
+        fprintf(stderr, "eglCreatePbufferSurface failed: 0x%x\n", eglGetError());
+        eglTerminate(display);
+        return -1;
+    }
+
+    const EGLint context_attrs[] = {
+        EGL_CONTEXT_MAJOR_VERSION, 3,
+        EGL_CONTEXT_MINOR_VERSION, 3,
+        EGL_CONTEXT_OPENGL_PROFILE_MASK,
+        EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
+        EGL_NONE
+    };
+
+    EGLContext context = eglCreateContext(
+        display, config, EGL_NO_CONTEXT, context_attrs);
+
+    if (context == EGL_NO_CONTEXT) {
+        fprintf(stderr, "eglCreateContext failed: 0x%x\n", eglGetError());
+        eglDestroySurface(display, surface);
+        eglTerminate(display);
+        return -1;
+    }
+
+    if (!eglMakeCurrent(display, surface, surface, context)) {
+        fprintf(stderr, "eglMakeCurrent failed: 0x%x\n", eglGetError());
+        eglDestroyContext(display, context);
+        eglDestroySurface(display, surface);
+        eglTerminate(display);
+        return -1;
+    }
+
+    const char *renderer = (const char *)glGetString(GL_RENDERER);
+    if (renderer)
+        snprintf(renderer_name, sizeof(renderer_name), "%s", renderer);
+    diagnostic_printf("OpenGL renderer: %s\n",
+                      renderer ? renderer : "(unknown)");
+
+    if (!renderer || strstr(renderer, "llvmpipe") ||
+        strstr(renderer, "softpipe")) {
+        fprintf(stderr, "Refusing to test with a software renderer\n");
+        eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+        eglDestroyContext(display, context);
+        eglDestroySurface(display, surface);
+        eglTerminate(display);
+        return -1;
+    }
+
+    int nv12_layout = is_nv12_drm_layout(desc);
+    int ten_bit_layout = is_10bit_drm_layout(desc);
+
+    if (!nv12_layout && !ten_bit_layout) {
+        fprintf(stderr, "Unexpected DRM layout for this test\n");
+        eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+        eglDestroyContext(display, context);
+        eglDestroySurface(display, surface);
+        eglTerminate(display);
+        return -1;
+    }
+
+    EGLImageKHR images[2] = { EGL_NO_IMAGE_KHR, EGL_NO_IMAGE_KHR };
+    GLuint textures[2] = { 0, 0 };
+
+    int result = import_layer(
+        display, create_image, destroy_image, image_to_texture,
+        desc, &desc->layers[0],
+        frame_width, frame_height, 0, &images[0], &textures[0]);
+
+    if (result == 0) {
+        result = import_layer(
+            display, create_image, destroy_image, image_to_texture,
+        desc, &desc->layers[1],
+            frame_width / 2, frame_height / 2, 1,
+            &images[1], &textures[1]);
+    }
+
+    if (result == 0 && nv12_layout) {
+        if (verbose_output)
+            fprintf(stderr, "\nAttempting NV12 shader rendering...\n");
+        result = render_yuv(
+            textures[0], textures[1], frame_width, frame_height,
+            color, dump_path);
+        if (result == 0)
+            diagnostic_printf("NV12 shader rendering and framebuffer verification succeeded\n");
+    } else if (result == 0) {
+        diagnostic_printf("\n10-bit R16 + GR32 EGL import and GL texture "
+               "creation succeeded\n");
+        result = inspect_10bit_samples(
+            textures[0], textures[1], frame_width, frame_height, dump_path);
+        if (result == 0) {
+            diagnostic_printf("10-bit color conversion shader rendering started\n");
+            char rgba_path[PATH_MAX];
+            int written = snprintf(rgba_path, sizeof(rgba_path),
+                                   "%s.rgba", dump_path);
+            if (written < 0 || (size_t)written >= sizeof(rgba_path)) {
+                fprintf(stderr, "10-bit RGBA output path is too long\n");
+                result = -1;
+            } else {
+                result = render_yuv(
+                    textures[0], textures[1], frame_width, frame_height,
+                    color, rgba_path);
+            }
+        }
+    }
+
+    for (int i = 0; i < 2; i++) {
+        if (textures[i])
+            glDeleteTextures(1, &textures[i]);
+        if (images[i] != EGL_NO_IMAGE_KHR)
+            destroy_image(display, images[i]);
+    }
+
+    eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    eglDestroyContext(display, context);
+    eglDestroySurface(display, surface);
+    eglTerminate(display);
+
+    return result;
+}
+
+static void print_fourcc(uint32_t f, char out[5])
+{
+    out[0] = f & 0xff;
+    out[1] = (f >> 8) & 0xff;
+    out[2] = (f >> 16) & 0xff;
+    out[3] = (f >> 24) & 0xff;
+    out[4] = '\0';
+}
+
+static int query_egl_dma_buf_support(
+    const AVDRMFrameDescriptor *desc)
+{
+    static const struct {
+        uint32_t format;
+        const char *name;
+    } targets[] = {
+        { DRM_FORMAT_R8, "R8" },
+        { DRM_FORMAT_GR88, "GR88" },
+        { DRM_FORMAT_R16, "R16" },
+        { DRM_FORMAT_GR1616, "GR32" },
+    };
+
+    EGLDisplay display = eglGetPlatformDisplay(
+        EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, NULL);
+
+    if (display == EGL_NO_DISPLAY) {
+        fprintf(stderr, "Could not get EGL display for format query: 0x%x\n",
+                eglGetError());
+        return -1;
+    }
+
+    EGLint major = 0;
+    EGLint minor = 0;
+    if (!eglInitialize(display, &major, &minor)) {
+        fprintf(stderr, "EGL initialization for format query failed: 0x%x\n",
+                eglGetError());
+        return -1;
+    }
+
+    const char *extensions = eglQueryString(display, EGL_EXTENSIONS);
+    if (!extensions ||
+        !strstr(extensions, "EGL_EXT_image_dma_buf_import") ||
+        !strstr(extensions, "EGL_EXT_image_dma_buf_import_modifiers")) {
+        fprintf(stderr,
+                "EGL DMA-BUF format/modifier query extensions unavailable\n");
+        eglTerminate(display);
+        return -1;
+    }
+
+    PFNEGLQUERYDMABUFFORMATSEXTPROC query_formats =
+        (PFNEGLQUERYDMABUFFORMATSEXTPROC)
+            eglGetProcAddress("eglQueryDmaBufFormatsEXT");
+    PFNEGLQUERYDMABUFMODIFIERSEXTPROC query_modifiers =
+        (PFNEGLQUERYDMABUFMODIFIERSEXTPROC)
+            eglGetProcAddress("eglQueryDmaBufModifiersEXT");
+
+    if (!query_formats || !query_modifiers) {
+        fprintf(stderr, "EGL DMA-BUF query entry points unavailable\n");
+        eglTerminate(display);
+        return -1;
+    }
+
+    EGLint format_count = 0;
+    if (!query_formats(display, 0, NULL, &format_count) ||
+        format_count <= 0) {
+        fprintf(stderr, "eglQueryDmaBufFormatsEXT failed: 0x%x\n",
+                eglGetError());
+        eglTerminate(display);
+        return -1;
+    }
+
+    EGLint *formats = malloc((size_t)format_count * sizeof(*formats));
+    if (!formats) {
+        fprintf(stderr, "Allocating EGL format list failed\n");
+        eglTerminate(display);
+        return -1;
+    }
+
+    EGLint returned_formats = 0;
+    if (!query_formats(display, format_count, formats, &returned_formats)) {
+        fprintf(stderr, "Reading EGL DMA-BUF formats failed: 0x%x\n",
+                eglGetError());
+        free(formats);
+        eglTerminate(display);
+        return -1;
+    }
+
+    diagnostic_printf("\nEGL DMA-BUF format and modifier support\n");
+    diagnostic_printf("Advertised DMA-BUF formats: %d\n", returned_formats);
+    int frame_import_supported = 1;
+
+    for (size_t i = 0; i < sizeof(targets) / sizeof(targets[0]); i++) {
+        EGLint egl_format = (EGLint)targets[i].format;
+        int supported = 0;
+
+        for (EGLint j = 0; j < returned_formats; j++) {
+            if ((uint32_t)formats[j] == targets[i].format) {
+                supported = 1;
+                break;
+            }
+        }
+
+        int frame_uses_format = 0;
+        for (int layer_index = 0;
+             layer_index < desc->nb_layers; layer_index++) {
+            if (desc->layers[layer_index].format == targets[i].format)
+                frame_uses_format = 1;
+        }
+
+        diagnostic_printf("\n%s (0x%08x): %s\n",
+               targets[i].name, targets[i].format,
+               supported ? "advertised" : "not advertised");
+
+        if (!supported) {
+            if (frame_uses_format)
+                frame_import_supported = 0;
+            continue;
+        }
+
+        EGLint modifier_count = 0;
+        if (!query_modifiers(
+                display, egl_format, 0, NULL, NULL, &modifier_count)) {
+            fprintf(stderr,
+                    "  Modifier query failed for %s: 0x%x\n",
+                    targets[i].name, eglGetError());
+            if (frame_uses_format)
+                frame_import_supported = 0;
+            continue;
+        }
+
+        if (modifier_count <= 0) {
+            diagnostic_printf("  No modifiers advertised\n");
+            if (frame_uses_format)
+                frame_import_supported = 0;
+            continue;
+        }
+
+        EGLuint64KHR *modifiers =
+            malloc((size_t)modifier_count * sizeof(*modifiers));
+        EGLBoolean *external_only =
+            malloc((size_t)modifier_count * sizeof(*external_only));
+
+        if (!modifiers || !external_only) {
+            fprintf(stderr, "  Allocating modifier list failed\n");
+            free(modifiers);
+            free(external_only);
+            free(formats);
+            eglTerminate(display);
+            return -1;
+        }
+
+        EGLint returned_modifiers = 0;
+        if (!query_modifiers(
+                display, egl_format, modifier_count,
+                modifiers, external_only, &returned_modifiers)) {
+            fprintf(stderr,
+                    "  Reading modifiers for %s failed: 0x%x\n",
+                    targets[i].name, eglGetError());
+            if (frame_uses_format)
+                frame_import_supported = 0;
+            free(modifiers);
+            free(external_only);
+            continue;
+        }
+
+        diagnostic_printf("  Advertised modifiers: %d\n", returned_modifiers);
+
+        for (EGLint j = 0; j < returned_modifiers; j++) {
+            diagnostic_printf("    0x%016" PRIx64 " external_only=%s\n",
+                   (uint64_t)modifiers[j],
+                   external_only[j] ? "yes" : "no");
+        }
+
+        for (int layer_index = 0;
+             layer_index < desc->nb_layers; layer_index++) {
+            const AVDRMLayerDescriptor *layer =
+                &desc->layers[layer_index];
+
+            if (layer->format != targets[i].format)
+                continue;
+
+            for (int plane_index = 0;
+                 plane_index < layer->nb_planes; plane_index++) {
+                const AVDRMPlaneDescriptor *plane =
+                    &layer->planes[plane_index];
+
+                if (plane->object_index < 0 ||
+                    plane->object_index >= desc->nb_objects)
+                    continue;
+
+                uint64_t frame_modifier =
+                    desc->objects[plane->object_index].format_modifier;
+                int modifier_status = classify_egl_modifier(
+                    frame_modifier, modifiers, external_only,
+                    returned_modifiers);
+                int modifier_supported = modifier_status != 0;
+                EGLBoolean frame_external_only = modifier_status == 2;
+
+                diagnostic_printf("  Frame layer %d plane %d modifier "
+                       "0x%016" PRIx64 ": %s",
+                       layer_index, plane_index, frame_modifier,
+                       modifier_supported ? "advertised" : "NOT advertised");
+
+                if (modifier_supported)
+                    diagnostic_printf(" (external_only=%s)",
+                           frame_external_only ? "yes" : "no");
+
+                if (modifier_status != 1)
+                    frame_import_supported = 0;
+
+                diagnostic_printf("\n");
+            }
+        }
+
+        free(modifiers);
+        free(external_only);
+    }
+
+    free(formats);
+    eglTerminate(display);
+    return frame_import_supported ? 0 : 1;
+}
+
+static int self_test_color_conversion(void)
+{
+    GlimpseColorConversion color;
+
+    if (glimpse_color_conversion_resolve(
+            AVCOL_SPC_BT709, AVCOL_RANGE_MPEG, AVCHROMA_LOC_LEFT,
+            1920, 1080, 8, &color) != 0 ||
+        color.kr < 0.2125f || color.kr > 0.2127f ||
+        color.kb < 0.0721f || color.kb > 0.0723f ||
+        color.y_offset != 16.0f || color.y_scale != 219.0f ||
+        color.chroma_offset != 128.0f || color.chroma_scale != 224.0f ||
+        color.sample_scale != 255.0f) {
+        fprintf(stderr, "FAIL: BT.709 limited-range 8-bit parameters\n");
+        return 1;
+    }
+    diagnostic_printf("PASS: BT.709 limited-range 8-bit parameters\n");
+
+    if (glimpse_color_conversion_resolve(
+            AVCOL_SPC_BT2020_NCL, AVCOL_RANGE_MPEG, AVCHROMA_LOC_CENTER,
+            3840, 2160, 10, &color) != 0 ||
+        color.y_offset != 64.0f || color.y_scale != 876.0f ||
+        color.chroma_offset != 512.0f || color.chroma_scale != 896.0f ||
+        color.bit_depth != 10 || color.chroma_x != 0.5f ||
+        color.chroma_y != 0.5f) {
+        fprintf(stderr, "FAIL: BT.2020 limited-range 10-bit parameters\n");
+        return 1;
+    }
+    diagnostic_printf("PASS: BT.2020 limited-range 10-bit parameters\n");
+
+    if (glimpse_color_conversion_resolve(
+            AVCOL_SPC_BT470BG, AVCOL_RANGE_JPEG, AVCHROMA_LOC_TOPLEFT,
+            640, 480, 10, &color) != 0 ||
+        color.y_offset != 0.0f || color.y_scale != 1023.0f ||
+        color.chroma_offset != 512.0f || color.chroma_scale != 1023.0f ||
+        color.chroma_x != 0.0f || color.chroma_y != 0.0f) {
+        fprintf(stderr, "FAIL: full-range 10-bit parameters\n");
+        return 1;
+    }
+    diagnostic_printf("PASS: full-range 10-bit parameters\n");
+
+    if (glimpse_color_conversion_resolve(
+            AVCOL_SPC_UNSPECIFIED, AVCOL_RANGE_UNSPECIFIED,
+            AVCHROMA_LOC_UNSPECIFIED, 1280, 720, 8, &color) != 0 ||
+        !color.used_default_colorspace || !color.used_default_range ||
+        !color.used_default_chroma_location ||
+        color.kr < 0.2125f || color.kr > 0.2127f) {
+        fprintf(stderr, "FAIL: unspecified metadata defaults\n");
+        return 1;
+    }
+    diagnostic_printf("PASS: unspecified metadata defaults\n");
+
+    if (glimpse_color_conversion_resolve(
+            AVCOL_SPC_BT2020_CL, AVCOL_RANGE_MPEG, AVCHROMA_LOC_LEFT,
+            1920, 1080, 10, &color) == 0) {
+        fprintf(stderr, "FAIL: unsupported constant-luminance matrix accepted\n");
+        return 1;
+    }
+    diagnostic_printf("PASS: unsupported matrix rejected\n");
+    diagnostic_printf("All color metadata resolver self-tests passed\n");
+    return 0;
+}
+
+static int process_decoded_frame(AVFrame *frame,
+                                  const char *dump_path,
+                                  unsigned long long frame_index)
+{
+    AVFrame *drm = av_frame_alloc();
+    int ret = 0;
+    int frame_status = 1;
+
+    if (!drm) {
+        fprintf(stderr, "Allocating DRM frame failed\n");
+        return -1;
+    }
+
+    diagnostic_printf("Selected decoded frame: %llu\n", frame_index);
+    diagnostic_printf("\nDecoded frame: %dx%d format=%s\n",
+           frame->width, frame->height,
+           av_get_pix_fmt_name(frame->format));
+    diagnostic_printf("Frame metadata: colorspace=%d range=%d chroma_location=%d\n",
+           frame->colorspace, frame->color_range,
+           frame->chroma_location);
+
+    if (frame->format != hw_format) {
+        fprintf(stderr, "Unexpected decoder output format\n");
+        goto frame_cleanup;
+    }
+
+    if (verbose_output)
+        fprintf(stderr, "Attempting direct DRM PRIME mapping...\n");
+
+    drm->format = AV_PIX_FMT_DRM_PRIME;
+
+    ret = av_hwframe_map(
+        drm, frame, AV_HWFRAME_MAP_READ | AV_HWFRAME_MAP_DIRECT);
+    if (ret < 0) {
+        log_av_error("Direct DRM PRIME mapping", ret);
+        goto frame_cleanup;
+    }
+
+    if (drm->format != AV_PIX_FMT_DRM_PRIME || !drm->data[0]) {
+        fprintf(stderr, "Invalid DRM PRIME frame\n");
+        goto frame_cleanup;
+    }
+
+    AVDRMFrameDescriptor *desc =
+        (AVDRMFrameDescriptor *)drm->data[0];
+
+    if (validate_drm_descriptor(desc) < 0)
+        goto frame_cleanup;
+
+    int layout_status = validate_supported_drm_layout(desc);
+    if (layout_status < 0)
+        goto frame_cleanup;
+
+    int bit_depth = is_nv12_drm_layout(desc) ? 8 : 10;
+    GlimpseColorConversion color;
+    if (layout_status == 1 &&
+        glimpse_color_conversion_resolve(
+            frame->colorspace, frame->color_range, frame->chroma_location,
+            frame->width, frame->height, bit_depth, &color) < 0) {
+        fprintf(stderr,
+                "Unsupported color metadata: colorspace=%d range=%d "
+                "chroma_location=%d; software fallback required\n",
+                frame->colorspace, frame->color_range,
+                frame->chroma_location);
+        frame_status = 2;
+        goto frame_cleanup;
+    }
+
+    if (layout_status == 1) {
+        diagnostic_printf(
+            "Resolved color: Kr=%.4f Kb=%.4f range Y=%.1f..%.1f "
+            "chroma_center=%.1f chroma_scale=%.1f bit_depth=%d\n",
+            color.kr, color.kb, color.y_offset,
+            color.y_offset + color.y_scale, color.chroma_offset,
+            color.chroma_scale, color.bit_depth);
+        if (color.used_default_colorspace ||
+            color.used_default_range ||
+            color.used_default_chroma_location) {
+            diagnostic_printf(
+                "Color metadata defaults used: matrix=%s range=%s chroma=%s\n",
+                color.used_default_colorspace ? "yes" : "no",
+                color.used_default_range ? "yes" : "no",
+                color.used_default_chroma_location ? "yes" : "no");
+        }
+    }
+
+    diagnostic_printf("\nDRM PRIME descriptor\n");
+    diagnostic_printf("Objects: %d\n", desc->nb_objects);
+    diagnostic_printf("Layers:  %d\n", desc->nb_layers);
+
+    for (int i = 0; i < desc->nb_objects; i++) {
+        const AVDRMObjectDescriptor *obj = &desc->objects[i];
+
+        diagnostic_printf("\nObject %d:\n", i);
+        diagnostic_printf("  fd:        %d\n", obj->fd);
+        diagnostic_printf("  size:      %" PRIu64 "\n", obj->size);
+        diagnostic_printf("  modifier:  0x%016" PRIx64 "\n",
+               obj->format_modifier);
+    }
+
+    for (int i = 0; i < desc->nb_layers; i++) {
+        const AVDRMLayerDescriptor *layer = &desc->layers[i];
+        char fourcc[5];
+        print_fourcc(layer->format, fourcc);
+
+        diagnostic_printf("\nLayer %d:\n", i);
+        diagnostic_printf("  format:    %s (0x%08x)\n",
+               fourcc, layer->format);
+        diagnostic_printf("  planes:    %d\n", layer->nb_planes);
+
+        for (int p = 0; p < layer->nb_planes; p++) {
+            const AVDRMPlaneDescriptor *plane = &layer->planes[p];
+
+            diagnostic_printf("  plane %d: object=%d offset=%td pitch=%td\n",
+                   p, plane->object_index,
+                   plane->offset, plane->pitch);
+        }
+    }
+
+    if (layout_status == 0) {
+        fprintf(stderr,
+                "Unsupported DRM layout; software fallback required\n");
+        diagnostic_printf("\nRejecting unsupported DRM layout: "
+               "skipping EGL capability query and import\n");
+        frame_status = 2;
+    } else {
+        int capability_status = query_egl_dma_buf_support(desc);
+        if (capability_status < 0) {
+            fprintf(stderr, "EGL DMA-BUF capability query failed\n");
+            goto frame_cleanup;
+        }
+        if (capability_status > 0) {
+            fprintf(stderr,
+                    "EGL format/modifier is unavailable for this frame; "
+                    "software fallback required\n");
+            frame_status = 2;
+            goto frame_cleanup;
+        }
+
+        if (verbose_output)
+            fprintf(stderr, "\nAttempting EGL DMA-BUF import...\n");
+        if (test_egl_import(
+                desc, frame->width, frame->height,
+                &color, dump_path) < 0) {
+            fprintf(stderr,
+                    "EGL DMA-BUF import or color rendering failed; "
+                    "software fallback required\n");
+            frame_status = 2;
+            goto frame_cleanup;
+        }
+        diagnostic_printf("%s EGL DMA-BUF import and GL texture creation succeeded\n",
+               is_nv12_drm_layout(desc) ? "NV12" : "10-bit R16 + GR32");
+        frame_status = 0;
+    }
+
+
+frame_cleanup:
+    av_frame_free(&drm);
+    return frame_status;
+}
+
+
+
+#define FRAME_QUEUE_CAPACITY 3
+
+typedef struct {
+    AVFrame *frame;
+    unsigned long long index;
+} FrameItem;
+
+typedef struct {
+    pthread_mutex_t mutex;
+    pthread_cond_t readable;
+    pthread_cond_t writable;
+    FrameItem items[FRAME_QUEUE_CAPACITY];
+    size_t head;
+    size_t count;
+    int done;
+    int cancelled;
+    int producer_status;
+} FrameQueue;
+
+typedef struct {
+    FrameQueue *queue;
+    const char *video_path;
+    unsigned long long target_frame;
+    unsigned long long frame_count;
+} ProducerArgs;
+
+static int frame_queue_init(FrameQueue *queue)
+{
+    memset(queue, 0, sizeof(*queue));
+    if (pthread_mutex_init(&queue->mutex, NULL) != 0)
+        return -1;
+    if (pthread_cond_init(&queue->readable, NULL) != 0) {
+        pthread_mutex_destroy(&queue->mutex);
+        return -1;
+    }
+    if (pthread_cond_init(&queue->writable, NULL) != 0) {
+        pthread_cond_destroy(&queue->readable);
+        pthread_mutex_destroy(&queue->mutex);
+        return -1;
+    }
+    return 0;
+}
+
+static int frame_queue_is_cancelled(FrameQueue *queue)
+{
+    int cancelled;
+    pthread_mutex_lock(&queue->mutex);
+    cancelled = queue->cancelled;
+    pthread_mutex_unlock(&queue->mutex);
+    return cancelled;
+}
+
+/* Takes ownership of frame only when it returns zero. */
+static int frame_queue_push(FrameQueue *queue, AVFrame *frame,
+                            unsigned long long index)
+{
+    if (pthread_mutex_lock(&queue->mutex) != 0)
+        return -1;
+
+    while (queue->count == FRAME_QUEUE_CAPACITY && !queue->cancelled) {
+        if (pthread_cond_wait(&queue->writable, &queue->mutex) != 0) {
+            pthread_mutex_unlock(&queue->mutex);
+            return -1;
+        }
+    }
+
+    if (queue->cancelled) {
+        pthread_mutex_unlock(&queue->mutex);
+        return 1;
+    }
+
+    size_t tail = (queue->head + queue->count) % FRAME_QUEUE_CAPACITY;
+    queue->items[tail].frame = frame;
+    queue->items[tail].index = index;
+    queue->count++;
+    pthread_cond_signal(&queue->readable);
+    pthread_mutex_unlock(&queue->mutex);
+    return 0;
+}
+
+/* Returns 1 for an item, 0 when complete/cancelled, or -1 on sync failure. */
+static int frame_queue_pop(FrameQueue *queue, FrameItem *item)
+{
+    if (pthread_mutex_lock(&queue->mutex) != 0)
+        return -1;
+
+    while (queue->count == 0 && !queue->done && !queue->cancelled) {
+        if (pthread_cond_wait(&queue->readable, &queue->mutex) != 0) {
+            pthread_mutex_unlock(&queue->mutex);
+            return -1;
+        }
+    }
+
+    if (queue->cancelled || queue->count == 0) {
+        pthread_mutex_unlock(&queue->mutex);
+        return 0;
+    }
+
+    *item = queue->items[queue->head];
+    queue->items[queue->head].frame = NULL;
+    queue->head = (queue->head + 1) % FRAME_QUEUE_CAPACITY;
+    queue->count--;
+    pthread_cond_signal(&queue->writable);
+    pthread_mutex_unlock(&queue->mutex);
+    return 1;
+}
+
+static void frame_queue_cancel(FrameQueue *queue)
+{
+    pthread_mutex_lock(&queue->mutex);
+    queue->cancelled = 1;
+    pthread_cond_broadcast(&queue->readable);
+    pthread_cond_broadcast(&queue->writable);
+    pthread_mutex_unlock(&queue->mutex);
+}
+
+static void frame_queue_finish(FrameQueue *queue, int producer_status)
+{
+    pthread_mutex_lock(&queue->mutex);
+    queue->producer_status = producer_status;
+    queue->done = 1;
+    pthread_cond_broadcast(&queue->readable);
+    pthread_cond_broadcast(&queue->writable);
+    pthread_mutex_unlock(&queue->mutex);
+}
+
+static void frame_queue_destroy(FrameQueue *queue)
+{
+    for (size_t i = 0; i < FRAME_QUEUE_CAPACITY; i++)
+        av_frame_free(&queue->items[i].frame);
+    pthread_cond_destroy(&queue->writable);
+    pthread_cond_destroy(&queue->readable);
+    pthread_mutex_destroy(&queue->mutex);
+}
+
+/*
+ * Selected frames are cloned so the producer can reuse its decode frame
+ * while the renderer owns an independent reference. Returns the FFmpeg
+ * receive result, or 1 when the queue is cancelled.
+ */
+static int queue_decoded_frames(
+    AVCodecContext *dec,
+    AVFrame *frame,
+    FrameQueue *queue,
+    unsigned long long target_frame,
+    unsigned long long frame_count,
+    unsigned long long *decoded_frames,
+    unsigned long long *queued_frames)
+{
+    int ret;
+    while ((ret = avcodec_receive_frame(dec, frame)) >= 0) {
+        unsigned long long frame_index = (*decoded_frames)++;
+
+        if (frame_index >= target_frame) {
+            AVFrame *queued_frame = av_frame_clone(frame);
+            av_frame_unref(frame);
+            if (!queued_frame) {
+                fprintf(stderr, "Cloning decoded frame reference failed\n");
+                return AVERROR(ENOMEM);
+            }
+
+            int push_result = frame_queue_push(queue, queued_frame, frame_index);
+            if (push_result != 0) {
+                av_frame_free(&queued_frame);
+                if (push_result > 0)
+                    return 1;
+                fprintf(stderr, "Pushing decoded frame to queue failed\n");
+                return AVERROR_EXTERNAL;
+            }
+
+            (*queued_frames)++;
+            if (*queued_frames >= frame_count)
+                return 0;
+        } else {
+            av_frame_unref(frame);
+        }
+
+        if (frame_queue_is_cancelled(queue))
+            return 1;
+    }
+    return ret;
+}
+
+static void *decode_producer_thread(void *opaque)
+{
+    ProducerArgs *args = opaque;
+    FrameQueue *queue = args->queue;
+    AVFormatContext *fmt = NULL;
+    AVBufferRef *device = NULL;
+    AVCodecContext *dec = NULL;
+    AVPacket *pkt = NULL;
+    AVFrame *frame = NULL;
+    int producer_status = 1;
+
+    int ret = avformat_open_input(&fmt, args->video_path, NULL, NULL);
+    if (ret < 0) {
+        log_av_error("Opening input", ret);
+        goto cleanup;
+    }
+    ret = avformat_find_stream_info(fmt, NULL);
+    if (ret < 0) {
+        log_av_error("Finding stream information", ret);
+        goto cleanup;
+    }
+
+    int stream = av_find_best_stream(
+        fmt, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
+    if (stream < 0) {
+        log_av_error("Finding video stream", stream);
+        goto cleanup;
+    }
+
+    const AVCodecParameters *par = fmt->streams[stream]->codecpar;
+    const AVCodec *codec = find_vaapi_decoder(par->codec_id, &hw_format);
+    if (!codec) {
+        fprintf(stderr,
+                "No decoder with VAAPI device-context support found\n");
+        goto cleanup;
+    }
+
+    diagnostic_printf("VAAPI decoder: %s\n", codec->name);
+    for (int i = 0; ; i++) {
+        const AVCodecHWConfig *config = avcodec_get_hw_config(codec, i);
+        if (!config)
+            break;
+        diagnostic_printf("Hardware config: format=%s device=%d methods=0x%x\n",
+               av_get_pix_fmt_name(config->pix_fmt),
+               config->device_type, config->methods);
+    }
+
+    if (hw_format == AV_PIX_FMT_NONE) {
+        fprintf(stderr, "Decoder has no VAAPI device-context support\n");
+        goto cleanup;
+    }
+
+    ret = av_hwdevice_ctx_create(
+        &device, AV_HWDEVICE_TYPE_VAAPI,
+        "/dev/dri/renderD128", NULL, 0);
+    if (ret < 0) {
+        log_av_error("Creating VAAPI device", ret);
+        goto cleanup;
+    }
+
+    dec = avcodec_alloc_context3(codec);
+    if (!dec) {
+        fprintf(stderr, "Allocating decoder failed\n");
+        goto cleanup;
+    }
+    ret = avcodec_parameters_to_context(dec, par);
+    if (ret < 0) {
+        log_av_error("Copying codec parameters", ret);
+        goto cleanup;
+    }
+
+    dec->hw_device_ctx = av_buffer_ref(device);
+    dec->get_format = get_hw_format;
+    ret = avcodec_open2(dec, codec, NULL);
+    if (ret < 0) {
+        log_av_error("Opening decoder", ret);
+        goto cleanup;
+    }
+
+    pkt = av_packet_alloc();
+    frame = av_frame_alloc();
+    if (!pkt || !frame) {
+        fprintf(stderr, "Allocating packet/frame failed\n");
+        goto cleanup;
+    }
+
+    unsigned long long decoded_frames = 0;
+    unsigned long long queued_frames = 0;
+    int flush_requested = 0;
+    int flush_sent = 0;
+    int decoder_eof = 0;
+    int packet_pending = 0;
+
+    while (!decoder_eof && queued_frames < args->frame_count) {
+        if (frame_queue_is_cancelled(queue)) {
+            producer_status = 0;
+            goto cleanup;
+        }
+
+        if (!packet_pending && !flush_requested && !flush_sent) {
+            ret = av_read_frame(fmt, pkt);
+            if (ret == AVERROR_EOF) {
+                flush_requested = 1;
+            } else if (ret < 0) {
+                log_av_error("Reading input packet", ret);
+                goto cleanup;
+            } else if (pkt->stream_index == stream) {
+                packet_pending = 1;
+            } else {
+                av_packet_unref(pkt);
+            }
+        }
+
+        if (packet_pending || flush_requested) {
+            ret = avcodec_send_packet(dec, packet_pending ? pkt : NULL);
+            if (ret == AVERROR(EAGAIN)) {
+                unsigned long long frames_before_drain = decoded_frames;
+                ret = queue_decoded_frames(
+                    dec, frame, queue, args->target_frame, args->frame_count,
+                    &decoded_frames, &queued_frames);
+
+                if (ret == 1) {
+                    producer_status = 0;
+                    goto cleanup;
+                }
+                if (queued_frames >= args->frame_count)
+                    break;
+                if (ret == AVERROR_EOF) {
+                    decoder_eof = 1;
+                    continue;
+                }
+                if (ret != AVERROR(EAGAIN)) {
+                    log_av_error("Draining decoder before retrying packet", ret);
+                    goto cleanup;
+                }
+                if (decoded_frames == frames_before_drain) {
+                    fprintf(stderr,
+                            "Decoder send/receive made no progress after EAGAIN\n");
+                    goto cleanup;
+                }
+                continue;
+            }
+
+            if (ret < 0 && !(flush_requested && ret == AVERROR_EOF)) {
+                log_av_error(packet_pending ? "Sending packet" : "Flushing decoder", ret);
+                goto cleanup;
+            }
+
+            if (packet_pending) {
+                av_packet_unref(pkt);
+                packet_pending = 0;
+            } else {
+                flush_sent = 1;
+                flush_requested = 0;
+                if (ret == AVERROR_EOF)
+                    decoder_eof = 1;
+            }
+        }
+
+        if (decoder_eof || queued_frames >= args->frame_count)
+            break;
+
+        ret = queue_decoded_frames(
+            dec, frame, queue, args->target_frame, args->frame_count,
+            &decoded_frames, &queued_frames);
+        if (ret == 1) {
+            producer_status = 0;
+            goto cleanup;
+        }
+        if (queued_frames >= args->frame_count)
+            break;
+        if (ret == AVERROR_EOF) {
+            decoder_eof = 1;
+        } else if (ret == AVERROR(EAGAIN)) {
+            if (flush_sent) {
+                fprintf(stderr,
+                        "Decoder requested more input after flush was accepted\n");
+                goto cleanup;
+            }
+        } else if (ret < 0) {
+            log_av_error("Receiving decoded frame", ret);
+            goto cleanup;
+        }
+    }
+
+    if (queued_frames != args->frame_count) {
+        fprintf(stderr,
+                "Requested %llu frames starting at %llu, but only %llu were available\n",
+                args->frame_count, args->target_frame, queued_frames);
+        goto cleanup;
+    }
+    producer_status = 0;
+
+cleanup:
+    av_frame_free(&frame);
+    av_packet_free(&pkt);
+    avcodec_free_context(&dec);
+    av_buffer_unref(&device);
+    avformat_close_input(&fmt);
+    frame_queue_finish(queue, producer_status);
+    return NULL;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc == 2 &&
+        strcmp(argv[1], "--self-test-layout-validation") == 0) {
+        verbose_output = 1;
+        return self_test_layout_validation();
+    }
+
+    if (argc == 2 &&
+        strcmp(argv[1], "--self-test-color-conversion") == 0) {
+        verbose_output = 1;
+        return self_test_color_conversion();
+    }
+
+    int arg_index = 1;
+    if (argc > arg_index && strcmp(argv[arg_index], "--verbose") == 0) {
+        verbose_output = 1;
+        arg_index++;
+    } else if (argc > arg_index &&
+               strcmp(argv[arg_index], "--quiet") == 0) {
+        quiet_output = 1;
+        arg_index++;
+    } else if (argc > arg_index &&
+               strcmp(argv[arg_index], "--summary") == 0) {
+        arg_index++;
+    }
+
+    int positional_count = argc - arg_index;
+    if (positional_count < 1 || positional_count > 4) {
+        fprintf(stderr,
+                "Usage: %s [--summary|--verbose|--quiet] VIDEO "
+                "[GPU_OUTPUT [FRAME_INDEX [FRAME_COUNT]]]\n"
+                "       %s --self-test-layout-validation\n"
+                "       %s --self-test-color-conversion\n",
+                argv[0], argv[0], argv[0]);
+        return 2;
+    }
+
+    const char *dump_path = positional_count >= 2
+        ? argv[arg_index + 1]
+        : "/tmp/glimpse-stage-gpu-output.bin";
+
+    unsigned long long target_frame = 0;
+    if (positional_count >= 3) {
+        char *end = NULL;
+        if (argv[arg_index + 2][0] == '-') {
+            fprintf(stderr, "FRAME_INDEX must be non-negative\n");
+            return 2;
+        }
+        target_frame = strtoull(argv[arg_index + 2], &end, 10);
+        if (end == argv[arg_index + 2] || *end != '\0') {
+            fprintf(stderr, "Invalid FRAME_INDEX: %s\n", argv[arg_index + 2]);
+            return 2;
+        }
+    }
+
+    unsigned long long frame_count = 1;
+    if (positional_count == 4) {
+        char *end = NULL;
+        if (argv[arg_index + 3][0] == '-') {
+            fprintf(stderr, "FRAME_COUNT must be positive\n");
+            return 2;
+        }
+        frame_count = strtoull(argv[arg_index + 3], &end, 10);
+        if (end == argv[arg_index + 3] || *end != '\0' ||
+            frame_count == 0 || frame_count > 300) {
+            fprintf(stderr, "FRAME_COUNT must be between 1 and 300\n");
+            return 2;
+        }
+    }
+
+    FrameQueue queue;
+    if (frame_queue_init(&queue) != 0) {
+        fprintf(stderr, "Initializing frame queue failed\n");
+        return 1;
+    }
+
+    ProducerArgs producer_args = {
+        .queue = &queue,
+        .video_path = argv[arg_index],
+        .target_frame = target_frame,
+        .frame_count = frame_count,
+    };
+
+    pthread_t producer;
+    int thread_result = pthread_create(
+        &producer, NULL, decode_producer_thread, &producer_args);
+    if (thread_result != 0) {
+        fprintf(stderr, "Starting decode producer thread failed: %d\n",
+                thread_result);
+        frame_queue_destroy(&queue);
+        return 1;
+    }
+
+    unsigned long long processed_frames = 0;
+    int exit_status = 1;
+    int renderer_failed = 0;
+
+    for (;;) {
+        FrameItem item = { 0 };
+        int pop_result = frame_queue_pop(&queue, &item);
+        if (pop_result < 0) {
+            fprintf(stderr, "Waiting for decoded frame failed\n");
+            renderer_failed = 1;
+            frame_queue_cancel(&queue);
+            break;
+        }
+        if (pop_result == 0)
+            break;
+
+        char frame_dump_path[PATH_MAX];
+        const char *output_path = dump_path;
+        if (frame_count > 1) {
+            int written = snprintf(
+                frame_dump_path, sizeof(frame_dump_path),
+                "%s.frame-%llu", dump_path, item.index);
+            if (written < 0 || (size_t)written >= sizeof(frame_dump_path)) {
+                fprintf(stderr, "Frame output path is too long\n");
+                av_frame_free(&item.frame);
+                renderer_failed = 1;
+                frame_queue_cancel(&queue);
+                break;
+            }
+            output_path = frame_dump_path;
+        }
+
+        diagnostic_printf("\nRendering queued frame %llu (%llu/%llu)\n",
+                          item.index, processed_frames + 1, frame_count);
+        int frame_result = process_decoded_frame(
+            item.frame, output_path, item.index);
+        av_frame_free(&item.frame);
+
+        if (frame_result != 0) {
+            if (frame_result == 2)
+                exit_status = 2;
+            renderer_failed = 1;
+            frame_queue_cancel(&queue);
+            break;
+        }
+        processed_frames++;
+    }
+
+    if (renderer_failed)
+        frame_queue_cancel(&queue);
+
+    thread_result = pthread_join(producer, NULL);
+    if (thread_result != 0) {
+        fprintf(stderr, "Joining decode producer thread failed: %d\n",
+                thread_result);
+        frame_queue_cancel(&queue);
+        return 1;
+    }
+
+    if (!renderer_failed && queue.producer_status != 0) {
+        fprintf(stderr, "Decode producer failed\n");
+    } else if (!renderer_failed && processed_frames != frame_count) {
+        fprintf(stderr,
+                "Requested %llu frames, but rendered %llu\n",
+                frame_count, processed_frames);
+    } else if (!renderer_failed) {
+        if (verbose_output) {
+            diagnostic_printf(
+                "\nPipeline test passed: %llu/%llu frames decoded, queued, "
+                "rendered, and GPU-completed\n",
+                processed_frames, frame_count);
+        }
+        exit_status = 0;
+    }
+
+    if (exit_status == 0) {
+        if (quiet_output) {
+            fprintf(stdout, "PASS: %llu/%llu frames\n",
+                    processed_frames, frame_count);
+        } else if (!verbose_output) {
+            fprintf(stdout,
+                    "VAAPI/EGL pipeline: PASS\n"
+                    "Frames completed: %llu/%llu\n"
+                    "Queue capacity: %d\n"
+                    "GPU renderer: %s\n",
+                    processed_frames, frame_count,
+                    FRAME_QUEUE_CAPACITY, renderer_name);
+        }
+    } else if (quiet_output) {
+        fprintf(stderr, "FAIL: pipeline stopped after %llu/%llu frames\n",
+                processed_frames, frame_count);
+    } else if (!verbose_output) {
+        fprintf(stderr,
+                "VAAPI/EGL pipeline: FAIL (%llu/%llu frames completed; "
+                "see diagnostics above)\n",
+                processed_frames, frame_count);
+    }
+
+    frame_queue_destroy(&queue);
+    return exit_status;
+}
