@@ -96,7 +96,7 @@ From the Glimpse repository root:
 ```bash
 cc -Wall -Wextra -Werror -O2 -pthread \
     tools/diagnostics/vaapi-egl/inspect.c \
-    -o /tmp/glimpse-stage2-inspect \
+    -o /tmp/glimpse-stage6-inspect \
     $(pkg-config --cflags --libs libavformat libavcodec libavutil egl gl libdrm)
 ```
 
@@ -128,7 +128,7 @@ Pass a video file, an optional output path, and an optional decoded frame
 index. The default output is a compact summary rather than per-frame logs:
 
 ```bash
-/tmp/glimpse-stage2-inspect \
+/tmp/glimpse-stage6-inspect \
     "$HOME/Videos/Clips/Gungun.mp4" \
     /tmp/glimpse-stage2-gpu.rgba \
     0
@@ -151,12 +151,12 @@ video path:
 For example:
 
 ```bash
-/tmp/glimpse-stage2-inspect --verbose \
+/tmp/glimpse-stage6-inspect --verbose \
     "$HOME/Videos/Clips/Gungun.mp4" \
     /tmp/glimpse-stage-frame.rgba \
     0 30
 
-/tmp/glimpse-stage2-inspect --quiet \
+/tmp/glimpse-stage6-inspect --quiet \
     "$HOME/Videos/Clips/Gungun.mp4" \
     /tmp/glimpse-stage-frame.rgba \
     0 30
@@ -228,7 +228,7 @@ ffmpeg -hide_banner -loglevel error \
 Run the diagnostic with the same frame index and an explicit output path:
 
 ```bash
-/tmp/glimpse-stage2-inspect \
+/tmp/glimpse-stage6-inspect \
     "$VIDEO" \
     /tmp/glimpse-stage2-gpu.yuv \
     1000
@@ -349,7 +349,7 @@ The renderer inserts an OpenGL 3.2 sync object immediately after each frame's dr
 To exercise repeated frame handoff, request a bounded sequence:
 
 ```bash
-/tmp/glimpse-stage2-inspect \
+/tmp/glimpse-stage6-inspect \
     "$HOME/Videos/Clips/Gungun.mp4" \
     /tmp/glimpse-stage4-frame.rgba \
     0 \
@@ -415,7 +415,7 @@ The diagnostic now runs decode and rendering on separate threads:
 Build with pthread support using the command above. Then run a sustained
 300-frame test:
 
-    /tmp/glimpse-stage2-inspect \
+    /tmp/glimpse-stage6-inspect \
         "$HOME/Videos/Clips/Gungun.mp4" \
         /tmp/glimpse-stage5-frame.rgba \
         0 \
