@@ -12,7 +12,9 @@ path independently of the Glimpse application:
    textures.
 6. Render NV12 through a shader to an RGBA8 framebuffer, or inspect 10-bit
    texture samples through an RGBA32F framebuffer.
-7. Insert an OpenGL sync fence after rendering and wait for GPU completion\n   before readback or releasing imported frame resources.\n8. Read framebuffer data back for diagnostic validation.
+7. Insert an OpenGL sync fence after rendering and wait for GPU completion
+   before readback or releasing imported frame resources.
+8. Read framebuffer data back for diagnostic validation.
 
 The readback is deliberately diagnostic-only. It is not part of the intended
 zero-copy playback path.
