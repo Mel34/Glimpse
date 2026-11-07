@@ -948,7 +948,6 @@ static int self_test_layout_validation(void)
 
 static int test_egl_import(const AVDRMFrameDescriptor *desc,
                            int frame_width, int frame_height,
-                           int bit_depth,
                            const GlimpseColorConversion *color,
                            const char *dump_path)
 {
@@ -1109,6 +1108,7 @@ static int test_egl_import(const AVDRMFrameDescriptor *desc,
         result = inspect_10bit_samples(
             textures[0], textures[1], frame_width, frame_height, dump_path);
         if (result == 0) {
+            diagnostic_printf("10-bit color conversion shader rendering started\n");
             char rgba_path[PATH_MAX];
             int written = snprintf(rgba_path, sizeof(rgba_path),
                                    "%s.rgba", dump_path);
@@ -1544,7 +1544,7 @@ static int process_decoded_frame(AVFrame *frame,
         if (verbose_output)
             fprintf(stderr, "\nAttempting EGL DMA-BUF import...\n");
         if (test_egl_import(
-                desc, frame->width, frame->height, bit_depth,
+                desc, frame->width, frame->height,
                 &color, dump_path) < 0) {
             fprintf(stderr,
                     "EGL DMA-BUF import or color rendering failed; "
@@ -1983,8 +1983,9 @@ int main(int argc, char **argv)
         fprintf(stderr,
                 "Usage: %s [--summary|--verbose|--quiet] VIDEO "
                 "[GPU_OUTPUT [FRAME_INDEX [FRAME_COUNT]]]\n"
-                "       %s --self-test-layout-validation\n",
-                argv[0], argv[0]);
+                "       %s --self-test-layout-validation\n"
+                "       %s --self-test-color-conversion\n",
+                argv[0], argv[0], argv[0]);
         return 2;
     }
 
