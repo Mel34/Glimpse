@@ -206,6 +206,23 @@ static GLuint compile_shader(GLenum type, const char *source)
     return shader;
 }
 
+static int wait_for_gpu_completion(void)
+{
+    GLsync fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    if (!fence) {
+        fprintf(stderr, "Creating OpenGL completion fence failed\\n");
+        return -1;
+    }
+    glFlush();
+    GLenum status = glClientWaitSync(fence, GL_SYNC_FLUSH_COMMANDS_BIT, GL_TIMEOUT_IGNORED);
+    glDeleteSync(fence);
+    if (status != GL_ALREADY_SIGNALED && status != GL_CONDITION_SATISFIED) {
+        fprintf(stderr, "Waiting for OpenGL completion fence failed (status=0x%x)\\n", status);
+        return -1;
+    }
+    return 0;
+}
+
 static int render_nv12(GLuint y_texture, GLuint uv_texture,
                        int width, int height, const char *dump_path)
 {
@@ -314,7 +331,13 @@ static int render_nv12(GLuint y_texture, GLuint uv_texture,
     glUniform1i(glGetUniformLocation(program, "uv_texture"), 1);
 
     glDrawArrays(GL_TRIANGLES, 0, 3);
-    glFinish();
+    if (wait_for_gpu_completion() < 0) {
+        glDeleteVertexArrays(1, &vao);
+        glDeleteFramebuffers(1, &framebuffer);
+        glDeleteTextures(1, &output_texture);
+        glDeleteProgram(program);
+        return -1;
+    }
 
     GLenum gl_error = glGetError();
     if (gl_error != GL_NO_ERROR) {
@@ -525,7 +548,13 @@ static int inspect_10bit_samples(GLuint y_texture, GLuint uv_texture,
     glUniform1i(glGetUniformLocation(program, "uv_texture"), 1);
 
     glDrawArrays(GL_TRIANGLES, 0, 3);
-    glFinish();
+    if (wait_for_gpu_completion() < 0) {
+        glDeleteVertexArrays(1, &vao);
+        glDeleteFramebuffers(1, &framebuffer);
+        glDeleteTextures(1, &output_texture);
+        glDeleteProgram(program);
+        return -1;
+    }
 
     GLenum gl_error = glGetError();
     if (gl_error != GL_NO_ERROR) {
@@ -1246,15 +1275,128 @@ static int query_egl_dma_buf_support(
     return 0;
 }
 
+static int process_decoded_frame(AVFrame *frame,
+                                  const char *dump_path,
+                                  unsigned long long frame_index)
+{
+    AVFrame *drm = av_frame_alloc();
+    int ret = 0;
+    int frame_status = 1;
+
+    if (!drm) {
+        fprintf(stderr, "Allocating DRM frame failed\\n");
+        return -1;
+    }
+
+    printf("Selected decoded frame: %llu\n", frame_index);
+    printf("\nDecoded frame: %dx%d format=%s\n",
+           frame->width, frame->height,
+           av_get_pix_fmt_name(frame->format));
+    printf("Frame metadata: colorspace=%d range=%d chroma_location=%d\n",
+           frame->colorspace, frame->color_range,
+           frame->chroma_location);
+
+    if (frame->format != hw_format) {
+        fprintf(stderr, "Unexpected decoder output format\n");
+        goto frame_cleanup;
+    }
+
+    fprintf(stderr, "Attempting direct DRM PRIME mapping...\n");
+
+    drm->format = AV_PIX_FMT_DRM_PRIME;
+
+    ret = av_hwframe_map(
+        drm, frame, AV_HWFRAME_MAP_READ | AV_HWFRAME_MAP_DIRECT);
+    if (ret < 0) {
+        log_av_error("Direct DRM PRIME mapping", ret);
+        goto frame_cleanup;
+    }
+
+    if (drm->format != AV_PIX_FMT_DRM_PRIME || !drm->data[0]) {
+        fprintf(stderr, "Invalid DRM PRIME frame\n");
+        goto frame_cleanup;
+    }
+
+    AVDRMFrameDescriptor *desc =
+        (AVDRMFrameDescriptor *)drm->data[0];
+
+    if (validate_drm_descriptor(desc) < 0)
+        goto frame_cleanup;
+
+    int layout_status = validate_supported_drm_layout(desc);
+    if (layout_status < 0)
+        goto frame_cleanup;
+
+    printf("\nDRM PRIME descriptor\n");
+    printf("Objects: %d\n", desc->nb_objects);
+    printf("Layers:  %d\n", desc->nb_layers);
+
+    for (int i = 0; i < desc->nb_objects; i++) {
+        const AVDRMObjectDescriptor *obj = &desc->objects[i];
+
+        printf("\nObject %d:\n", i);
+        printf("  fd:        %d\n", obj->fd);
+        printf("  size:      %" PRIu64 "\n", obj->size);
+        printf("  modifier:  0x%016" PRIx64 "\n",
+               obj->format_modifier);
+    }
+
+    for (int i = 0; i < desc->nb_layers; i++) {
+        const AVDRMLayerDescriptor *layer = &desc->layers[i];
+        char fourcc[5];
+        print_fourcc(layer->format, fourcc);
+
+        printf("\nLayer %d:\n", i);
+        printf("  format:    %s (0x%08x)\n",
+               fourcc, layer->format);
+        printf("  planes:    %d\n", layer->nb_planes);
+
+        for (int p = 0; p < layer->nb_planes; p++) {
+            const AVDRMPlaneDescriptor *plane = &layer->planes[p];
+
+            printf("  plane %d: object=%d offset=%td pitch=%td\n",
+                   p, plane->object_index,
+                   plane->offset, plane->pitch);
+        }
+    }
+
+    if (layout_status == 0) {
+        printf("\nRejecting unsupported DRM layout: "
+               "skipping EGL capability query and import\n");
+        frame_status = 2;
+    } else {
+        if (query_egl_dma_buf_support(desc) < 0) {
+            fprintf(stderr, "EGL DMA-BUF capability query failed\n");
+            goto frame_cleanup;
+        }
+
+        fprintf(stderr, "\nAttempting EGL DMA-BUF import...\n");
+        if (test_egl_import(
+                desc, frame->width, frame->height, dump_path) < 0) {
+            fprintf(stderr, "EGL DMA-BUF import test failed\n");
+            goto frame_cleanup;
+        }
+        printf("%s EGL DMA-BUF import and GL texture creation succeeded\n",
+               is_nv12_drm_layout(desc) ? "NV12" : "10-bit R16 + GR32");
+        frame_status = 0;
+    }
+
+
+frame_cleanup:
+    av_frame_free(&drm);
+    return frame_status;
+}
+
+
 int main(int argc, char **argv)
 {
     if (argc == 2 &&
         strcmp(argv[1], "--self-test-layout-validation") == 0)
         return self_test_layout_validation();
 
-    if (argc < 2 || argc > 4) {
+    if (argc < 2 || argc > 5) {
         fprintf(stderr,
-                "Usage: %s VIDEO [GPU_OUTPUT [FRAME_INDEX]]\n"
+                "Usage: %s VIDEO [GPU_OUTPUT [FRAME_INDEX [FRAME_COUNT]]]\n"
                 "       %s --self-test-layout-validation\n",
                 argv[0], argv[0]);
         return 2;
@@ -1279,12 +1421,25 @@ int main(int argc, char **argv)
         }
     }
 
+    unsigned long long frame_count = 1;
+    if (argc == 5) {
+        char *end = NULL;
+        if (argv[4][0] == '-') {
+            fprintf(stderr, "FRAME_COUNT must be positive\\n");
+            return 2;
+        }
+        frame_count = strtoull(argv[4], &end, 10);
+        if (end == argv[4] || *end != '\0' || frame_count == 0 || frame_count > 300) {
+            fprintf(stderr, "FRAME_COUNT must be between 1 and 300\\n");
+            return 2;
+        }
+    }
+
     AVFormatContext *fmt = NULL;
     AVBufferRef *device = NULL;
     AVCodecContext *dec = NULL;
     AVPacket *pkt = NULL;
     AVFrame *frame = NULL;
-    AVFrame *drm = NULL;
     int exit_status = 1;
 
     int ret = avformat_open_input(&fmt, argv[1], NULL, NULL);
@@ -1364,142 +1519,82 @@ int main(int argc, char **argv)
 
     pkt = av_packet_alloc();
     frame = av_frame_alloc();
-    drm = av_frame_alloc();
 
-    if (!pkt || !frame || !drm) {
+    if (!pkt || !frame) {
         fprintf(stderr, "Allocating packet/frame failed\n");
         goto cleanup;
     }
 
-    int got_frame = 0;
     unsigned long long decoded_frames = 0;
+    unsigned long long processed_frames = 0;
+    int reached_eof = 0;
 
-    while (!got_frame && (ret = av_read_frame(fmt, pkt)) >= 0) {
-        if (pkt->stream_index == stream) {
+    while (processed_frames < frame_count && !reached_eof) {
+        ret = av_read_frame(fmt, pkt);
+        if (ret == AVERROR_EOF) {
+            reached_eof = 1;
+            ret = avcodec_send_packet(dec, NULL);
+            if (ret < 0 && ret != AVERROR_EOF) {
+                log_av_error("Flushing decoder", ret);
+                goto cleanup;
+            }
+        } else if (ret < 0) {
+            log_av_error("Reading input packet", ret);
+            goto cleanup;
+        } else if (pkt->stream_index == stream) {
             ret = avcodec_send_packet(dec, pkt);
             if (ret < 0 && ret != AVERROR(EAGAIN)) {
                 log_av_error("Sending packet", ret);
                 goto cleanup;
             }
-
-            while ((ret = avcodec_receive_frame(dec, frame)) >= 0) {
-                if (decoded_frames++ == target_frame) {
-                    got_frame = 1;
-                    break;
-                }
-
-                av_frame_unref(frame);
-            }
-
-            if (!got_frame && ret != AVERROR(EAGAIN)) {
-                log_av_error("Receiving frame", ret);
-                goto cleanup;
-            }
         }
 
         av_packet_unref(pkt);
-    }
 
-    if (!got_frame) {
-        fprintf(stderr, "Could not decode frame %llu\n", target_frame);
-        goto cleanup;
-    }
-
-    printf("Selected decoded frame: %llu\n", target_frame);
-    printf("\nDecoded frame: %dx%d format=%s\n",
-           frame->width, frame->height,
-           av_get_pix_fmt_name(frame->format));
-    printf("Frame metadata: colorspace=%d range=%d chroma_location=%d\n",
-           frame->colorspace, frame->color_range,
-           frame->chroma_location);
-
-    if (frame->format != hw_format) {
-        fprintf(stderr, "Unexpected decoder output format\n");
-        goto cleanup;
-    }
-
-    fprintf(stderr, "Attempting direct DRM PRIME mapping...\n");
-
-    drm->format = AV_PIX_FMT_DRM_PRIME;
-
-    ret = av_hwframe_map(
-        drm, frame, AV_HWFRAME_MAP_READ | AV_HWFRAME_MAP_DIRECT);
-    if (ret < 0) {
-        log_av_error("Direct DRM PRIME mapping", ret);
-        goto cleanup;
-    }
-
-    if (drm->format != AV_PIX_FMT_DRM_PRIME || !drm->data[0]) {
-        fprintf(stderr, "Invalid DRM PRIME frame\n");
-        goto cleanup;
-    }
-
-    AVDRMFrameDescriptor *desc =
-        (AVDRMFrameDescriptor *)drm->data[0];
-
-    if (validate_drm_descriptor(desc) < 0)
-        goto cleanup;
-
-    int layout_status = validate_supported_drm_layout(desc);
-    if (layout_status < 0)
-        goto cleanup;
-
-    printf("\nDRM PRIME descriptor\n");
-    printf("Objects: %d\n", desc->nb_objects);
-    printf("Layers:  %d\n", desc->nb_layers);
-
-    for (int i = 0; i < desc->nb_objects; i++) {
-        const AVDRMObjectDescriptor *obj = &desc->objects[i];
-
-        printf("\nObject %d:\n", i);
-        printf("  fd:        %d\n", obj->fd);
-        printf("  size:      %" PRIu64 "\n", obj->size);
-        printf("  modifier:  0x%016" PRIx64 "\n",
-               obj->format_modifier);
-    }
-
-    for (int i = 0; i < desc->nb_layers; i++) {
-        const AVDRMLayerDescriptor *layer = &desc->layers[i];
-        char fourcc[5];
-        print_fourcc(layer->format, fourcc);
-
-        printf("\nLayer %d:\n", i);
-        printf("  format:    %s (0x%08x)\n",
-               fourcc, layer->format);
-        printf("  planes:    %d\n", layer->nb_planes);
-
-        for (int p = 0; p < layer->nb_planes; p++) {
-            const AVDRMPlaneDescriptor *plane = &layer->planes[p];
-
-            printf("  plane %d: object=%d offset=%td pitch=%td\n",
-                   p, plane->object_index,
-                   plane->offset, plane->pitch);
+        while ((ret = avcodec_receive_frame(dec, frame)) >= 0) {
+            unsigned long long frame_index = decoded_frames++;
+            if (frame_index >= target_frame) {
+                char frame_dump_path[PATH_MAX];
+                const char *output_path = dump_path;
+                if (frame_count > 1) {
+                    int written = snprintf(frame_dump_path, sizeof(frame_dump_path),
+                                           "%s.frame-%llu", dump_path, frame_index);
+                    if (written < 0 || (size_t)written >= sizeof(frame_dump_path)) {
+                        fprintf(stderr, "Frame output path is too long\\n");
+                        goto cleanup;
+                    }
+                    output_path = frame_dump_path;
+                }
+                printf("\\nProcessing frame %llu (%llu/%llu)\\n",
+                       frame_index, processed_frames + 1, frame_count);
+                int frame_result = process_decoded_frame(frame, output_path, frame_index);
+                if (frame_result != 0) {
+                    if (frame_result == 2)
+                        exit_status = 2;
+                    goto cleanup;
+                }
+                processed_frames++;
+            }
+            av_frame_unref(frame);
+            if (processed_frames >= frame_count)
+                break;
         }
-    }
-
-    if (layout_status == 0) {
-        printf("\nRejecting unsupported DRM layout: "
-               "skipping EGL capability query and import\n");
-        exit_status = 2;
-    } else {
-        if (query_egl_dma_buf_support(desc) < 0) {
-            fprintf(stderr, "EGL DMA-BUF capability query failed\n");
+        if (ret != AVERROR(EAGAIN) && ret != AVERROR_EOF && ret < 0) {
+            log_av_error("Receiving decoded frame", ret);
             goto cleanup;
         }
-
-        fprintf(stderr, "\nAttempting EGL DMA-BUF import...\n");
-        if (test_egl_import(
-                desc, frame->width, frame->height, dump_path) < 0) {
-            fprintf(stderr, "EGL DMA-BUF import test failed\n");
-            goto cleanup;
-        }
-        printf("%s EGL DMA-BUF import and GL texture creation succeeded\n",
-               is_nv12_drm_layout(desc) ? "NV12" : "10-bit R16 + GR32");
-        exit_status = 0;
     }
+
+    if (processed_frames != frame_count) {
+        fprintf(stderr, "Requested %llu frames starting at %llu, but only %llu were available\\n",
+                frame_count, target_frame, processed_frames);
+        goto cleanup;
+    }
+    printf("\\nSynchronization test passed: %llu/%llu frames imported, rendered, and completed\\n",
+           processed_frames, frame_count);
+    exit_status = 0;
 
 cleanup:
-    av_frame_free(&drm);
     av_frame_free(&frame);
     av_packet_free(&pkt);
     avcodec_free_context(&dec);
