@@ -20,7 +20,7 @@ Glimpse 0.1.0 maintains a dual architecture to guarantee a rock-solid user exper
    - Architectural foundation for an in-process media pipeline in pure Rust.
    - Contains clean abstractions and algorithms: audio clock drift math, latency deduction, serial queue invalidation, and frame presentation scheduling.
    - Demuxer and decoder currently return mock/synthetic frames and tracks while the presentation bridge to GTK4 is being designed.
-   - Native `ffmpeg-the-third` and `cpal` backends are maintained as optional features to avoid upstream build failures on modern rolling distributions (Arch Linux FFmpeg 7+/8+).
+   - Native `ffmpeg-the-third` and `cpal` backends remain optional; the FFmpeg binding is upgraded to the 6.x line, which supports system FFmpeg 5.1 through 9.0.
 
 ---
 
@@ -51,6 +51,12 @@ Glimpse 0.1.0 maintains a dual architecture to guarantee a rock-solid user exper
 ---
 
 ## Building & Packaging
+
+### Requirements
+
+- Rust 1.83 or newer.
+- GTK 4.14 or newer (the Rust bindings expose the GDK DMA-BUF texture builder API from GTK 4.14).
+- libadwaita 1.5 or newer.
 
 ### Arch Linux Prerequisites
 
