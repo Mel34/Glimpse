@@ -112,7 +112,7 @@ path. The diagnostic reports the unsupported layout and exits with status
 ## Run
 
 Pass a video file, an optional output path, and an optional decoded frame
-index:
+index. The default output is a compact summary rather than per-frame logs:
 
 ```bash
 /tmp/glimpse-stage2-inspect \
@@ -123,6 +123,31 @@ index:
 
 If the output path is omitted, the diagnostic writes to
 `/tmp/glimpse-stage-gpu-output.bin`.
+
+### Output modes
+
+The compact summary is the default. The mode flag, when used, must precede the
+video path:
+
+- `--summary`: compact result (also the default).
+- `--verbose`: restore the detailed per-frame DRM, EGL, import, and pixel
+  diagnostics.
+- `--quiet`: print only a one-line success result. Failures still report
+  diagnostic details on standard error.
+
+For example:
+
+```bash
+/tmp/glimpse-stage2-inspect --verbose \
+    "$HOME/Videos/Clips/Gungun.mp4" \
+    /tmp/glimpse-stage-frame.rgba \
+    0 30
+
+/tmp/glimpse-stage2-inspect --quiet \
+    "$HOME/Videos/Clips/Gungun.mp4" \
+    /tmp/glimpse-stage-frame.rgba \
+    0 30
+```
 
 The contents depend on the detected layout:
 
