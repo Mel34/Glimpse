@@ -2,6 +2,7 @@
 #include <limits.h>
 #include <pthread.h>
 #include <stdint.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,6 +22,21 @@
 #include <libavutil/pixdesc.h>
 
 static enum AVPixelFormat hw_format = AV_PIX_FMT_NONE;
+static int verbose_output;
+static int quiet_output;
+static char renderer_name[256] = "unknown";
+
+static int diagnostic_printf(const char *format, ...)
+{
+    if (!verbose_output)
+        return 0;
+
+    va_list args;
+    va_start(args, format);
+    int result = vprintf(format, args);
+    va_end(args);
+    return result;
+}
 
 static void log_av_error(const char *what, int err)
 {
@@ -176,7 +192,7 @@ static int import_layer(
         return -1;
     }
 
-    printf("Layer %d EGL import: %dx%d, texture=%u, modifier=0x%016" PRIx64 "\n",
+    diagnostic_printf("Layer %d EGL import: %dx%d, texture=%u, modifier=0x%016" PRIx64 "\n",
            layer_index, imported_width, imported_height, texture, modifier);
 
     *image_out = image;
@@ -394,21 +410,21 @@ static int render_nv12(GLuint y_texture, GLuint uv_texture,
             nonblack++;
     }
 
-    printf("\nGPU shader rendering result\n");
-    printf("Output: %dx%d RGBA8 framebuffer\n", width, height);
+    diagnostic_printf("\nGPU shader rendering result\n");
+    diagnostic_printf("Output: %dx%d RGBA8 framebuffer\n", width, height);
 
     for (int c = 0; c < 3; c++) {
         const char *name = c == 0 ? "R" : c == 1 ? "G" : "B";
-        printf("%s: min=%u max=%u mean=%.2f\n",
+        diagnostic_printf("%s: min=%u max=%u mean=%.2f\n",
                name, minimum[c], maximum[c],
                (double)sums[c] / (double)pixel_count);
     }
 
-    printf("Non-black pixels: %zu / %zu (%.2f%%)\n",
+    diagnostic_printf("Non-black pixels: %zu / %zu (%.2f%%)\n",
            nonblack, pixel_count,
            100.0 * (double)nonblack / (double)pixel_count);
 
-    printf("Center pixel: R=%u G=%u B=%u\n",
+    diagnostic_printf("Center pixel: R=%u G=%u B=%u\n",
            pixels[((size_t)(height / 2) * width + width / 2) * 4],
            pixels[((size_t)(height / 2) * width + width / 2) * 4 + 1],
            pixels[((size_t)(height / 2) * width + width / 2) * 4 + 2]);
@@ -426,7 +442,7 @@ static int render_nv12(GLuint y_texture, GLuint uv_texture,
             fprintf(stderr, "Writing GPU framebuffer dump failed\n");
             dump_ok = 0;
         } else {
-            printf("GPU framebuffer saved: %s\n", dump_path);
+            diagnostic_printf("GPU framebuffer saved: %s\n", dump_path);
         }
     }
 
@@ -644,9 +660,9 @@ static int inspect_10bit_samples(GLuint y_texture, GLuint uv_texture,
         }
     }
 
-    printf("\n10-bit imported texture sample inspection\n");
-    printf("Samples reconstructed from normalized R16 texture values\n");
-    printf("Chroma samples counted once per 2x2 luma block\n");
+    diagnostic_printf("\n10-bit imported texture sample inspection\n");
+    diagnostic_printf("Samples reconstructed from normalized R16 texture values\n");
+    diagnostic_printf("Chroma samples counted once per 2x2 luma block\n");
 
     for (int c = 0; c < 3; c++) {
         if (counts[c] == 0) {
@@ -655,7 +671,7 @@ static int inspect_10bit_samples(GLuint y_texture, GLuint uv_texture,
             continue;
         }
 
-        printf("%s: min=%u max=%u, low 6 bits zero=%.2f%%, "
+        diagnostic_printf("%s: min=%u max=%u, low 6 bits zero=%.2f%%, "
                "values >1023=%.2f%% (%zu samples)\n",
                names[c], minimum[c], maximum[c],
                100.0 * (double)low_six_zero[c] / (double)counts[c],
@@ -713,7 +729,7 @@ static int inspect_10bit_samples(GLuint y_texture, GLuint uv_texture,
                 fprintf(stderr, "Writing 10-bit sample dump failed\n");
                 valid = 0;
             } else {
-                printf("10-bit yuv420p10le samples saved: %s (%zu bytes)\n",
+                diagnostic_printf("10-bit yuv420p10le samples saved: %s (%zu bytes)\n",
                        dump_path, raw_size);
             }
         }
@@ -721,10 +737,10 @@ static int inspect_10bit_samples(GLuint y_texture, GLuint uv_texture,
         free(raw);
     }
 
-    printf("Interpretation: a high proportion of values with the low "
+    diagnostic_printf("Interpretation: a high proportion of values with the low "
            "six bits zero is consistent with left-aligned 10-bit samples; "
            "values at or below 1023 are consistent with right alignment.\n");
-    printf("This is sample-layout inspection only, not a color-correctness "
+    diagnostic_printf("This is sample-layout inspection only, not a color-correctness "
            "or 10-bit rendering validation.\n");
 
     free(pixels);
@@ -878,7 +894,7 @@ static int self_test_layout_validation(void)
             return 1;
         }
 
-        printf("PASS: %s layout classification\n", cases[i].name);
+        diagnostic_printf("PASS: %s layout classification\n", cases[i].name);
     }
 
     AVDRMFrameDescriptor malformed = { 0 };
@@ -897,8 +913,8 @@ static int self_test_layout_validation(void)
         return 1;
     }
 
-    printf("PASS: malformed descriptor rejected\n");
-    printf("All DRM layout validation self-tests passed\n");
+    diagnostic_printf("PASS: malformed descriptor rejected\n");
+    diagnostic_printf("All DRM layout validation self-tests passed\n");
     return 0;
 }
 
@@ -921,7 +937,7 @@ static int test_egl_import(const AVDRMFrameDescriptor *desc,
         return -1;
     }
 
-    printf("\nEGL version: %d.%d\n", major, minor);
+    diagnostic_printf("\nEGL version: %d.%d\n", major, minor);
 
     const char *extensions = eglQueryString(display, EGL_EXTENSIONS);
     if (!extensions ||
@@ -1006,7 +1022,10 @@ static int test_egl_import(const AVDRMFrameDescriptor *desc,
     }
 
     const char *renderer = (const char *)glGetString(GL_RENDERER);
-    printf("OpenGL renderer: %s\n", renderer ? renderer : "(unknown)");
+    if (renderer)
+        snprintf(renderer_name, sizeof(renderer_name), "%s", renderer);
+    diagnostic_printf("OpenGL renderer: %s\n",
+                      renderer ? renderer : "(unknown)");
 
     if (!renderer || strstr(renderer, "llvmpipe") ||
         strstr(renderer, "softpipe")) {
@@ -1047,13 +1066,14 @@ static int test_egl_import(const AVDRMFrameDescriptor *desc,
     }
 
     if (result == 0 && nv12_layout) {
-        fprintf(stderr, "\nAttempting NV12 shader rendering...\n");
+        if (verbose_output)
+            fprintf(stderr, "\nAttempting NV12 shader rendering...\n");
         result = render_nv12(
             textures[0], textures[1], frame_width, frame_height, dump_path);
         if (result == 0)
-            printf("NV12 shader rendering and framebuffer verification succeeded\n");
+            diagnostic_printf("NV12 shader rendering and framebuffer verification succeeded\n");
     } else if (result == 0) {
-        printf("\n10-bit R16 + GR32 EGL import and GL texture "
+        diagnostic_printf("\n10-bit R16 + GR32 EGL import and GL texture "
                "creation succeeded\n");
         result = inspect_10bit_samples(
             textures[0], textures[1], frame_width, frame_height, dump_path);
@@ -1161,8 +1181,8 @@ static int query_egl_dma_buf_support(
         return -1;
     }
 
-    printf("\nEGL DMA-BUF format and modifier support\n");
-    printf("Advertised DMA-BUF formats: %d\n", returned_formats);
+    diagnostic_printf("\nEGL DMA-BUF format and modifier support\n");
+    diagnostic_printf("Advertised DMA-BUF formats: %d\n", returned_formats);
 
     for (size_t i = 0; i < sizeof(targets) / sizeof(targets[0]); i++) {
         EGLint egl_format = (EGLint)targets[i].format;
@@ -1175,7 +1195,7 @@ static int query_egl_dma_buf_support(
             }
         }
 
-        printf("\n%s (0x%08x): %s\n",
+        diagnostic_printf("\n%s (0x%08x): %s\n",
                targets[i].name, targets[i].format,
                supported ? "advertised" : "not advertised");
 
@@ -1192,7 +1212,7 @@ static int query_egl_dma_buf_support(
         }
 
         if (modifier_count <= 0) {
-            printf("  No modifiers advertised\n");
+            diagnostic_printf("  No modifiers advertised\n");
             continue;
         }
 
@@ -1222,10 +1242,10 @@ static int query_egl_dma_buf_support(
             continue;
         }
 
-        printf("  Advertised modifiers: %d\n", returned_modifiers);
+        diagnostic_printf("  Advertised modifiers: %d\n", returned_modifiers);
 
         for (EGLint j = 0; j < returned_modifiers; j++) {
-            printf("    0x%016" PRIx64 " external_only=%s\n",
+            diagnostic_printf("    0x%016" PRIx64 " external_only=%s\n",
                    (uint64_t)modifiers[j],
                    external_only[j] ? "yes" : "no");
         }
@@ -1260,16 +1280,16 @@ static int query_egl_dma_buf_support(
                     }
                 }
 
-                printf("  Frame layer %d plane %d modifier "
+                diagnostic_printf("  Frame layer %d plane %d modifier "
                        "0x%016" PRIx64 ": %s",
                        layer_index, plane_index, frame_modifier,
                        modifier_supported ? "supported" : "NOT supported");
 
                 if (modifier_supported)
-                    printf(" (external_only=%s)",
+                    diagnostic_printf(" (external_only=%s)",
                            frame_external_only ? "yes" : "no");
 
-                printf("\n");
+                diagnostic_printf("\n");
             }
         }
 
@@ -1295,11 +1315,11 @@ static int process_decoded_frame(AVFrame *frame,
         return -1;
     }
 
-    printf("Selected decoded frame: %llu\n", frame_index);
-    printf("\nDecoded frame: %dx%d format=%s\n",
+    diagnostic_printf("Selected decoded frame: %llu\n", frame_index);
+    diagnostic_printf("\nDecoded frame: %dx%d format=%s\n",
            frame->width, frame->height,
            av_get_pix_fmt_name(frame->format));
-    printf("Frame metadata: colorspace=%d range=%d chroma_location=%d\n",
+    diagnostic_printf("Frame metadata: colorspace=%d range=%d chroma_location=%d\n",
            frame->colorspace, frame->color_range,
            frame->chroma_location);
 
@@ -1308,7 +1328,8 @@ static int process_decoded_frame(AVFrame *frame,
         goto frame_cleanup;
     }
 
-    fprintf(stderr, "Attempting direct DRM PRIME mapping...\n");
+    if (verbose_output)
+        fprintf(stderr, "Attempting direct DRM PRIME mapping...\n");
 
     drm->format = AV_PIX_FMT_DRM_PRIME;
 
@@ -1334,17 +1355,17 @@ static int process_decoded_frame(AVFrame *frame,
     if (layout_status < 0)
         goto frame_cleanup;
 
-    printf("\nDRM PRIME descriptor\n");
-    printf("Objects: %d\n", desc->nb_objects);
-    printf("Layers:  %d\n", desc->nb_layers);
+    diagnostic_printf("\nDRM PRIME descriptor\n");
+    diagnostic_printf("Objects: %d\n", desc->nb_objects);
+    diagnostic_printf("Layers:  %d\n", desc->nb_layers);
 
     for (int i = 0; i < desc->nb_objects; i++) {
         const AVDRMObjectDescriptor *obj = &desc->objects[i];
 
-        printf("\nObject %d:\n", i);
-        printf("  fd:        %d\n", obj->fd);
-        printf("  size:      %" PRIu64 "\n", obj->size);
-        printf("  modifier:  0x%016" PRIx64 "\n",
+        diagnostic_printf("\nObject %d:\n", i);
+        diagnostic_printf("  fd:        %d\n", obj->fd);
+        diagnostic_printf("  size:      %" PRIu64 "\n", obj->size);
+        diagnostic_printf("  modifier:  0x%016" PRIx64 "\n",
                obj->format_modifier);
     }
 
@@ -1353,22 +1374,22 @@ static int process_decoded_frame(AVFrame *frame,
         char fourcc[5];
         print_fourcc(layer->format, fourcc);
 
-        printf("\nLayer %d:\n", i);
-        printf("  format:    %s (0x%08x)\n",
+        diagnostic_printf("\nLayer %d:\n", i);
+        diagnostic_printf("  format:    %s (0x%08x)\n",
                fourcc, layer->format);
-        printf("  planes:    %d\n", layer->nb_planes);
+        diagnostic_printf("  planes:    %d\n", layer->nb_planes);
 
         for (int p = 0; p < layer->nb_planes; p++) {
             const AVDRMPlaneDescriptor *plane = &layer->planes[p];
 
-            printf("  plane %d: object=%d offset=%td pitch=%td\n",
+            diagnostic_printf("  plane %d: object=%d offset=%td pitch=%td\n",
                    p, plane->object_index,
                    plane->offset, plane->pitch);
         }
     }
 
     if (layout_status == 0) {
-        printf("\nRejecting unsupported DRM layout: "
+        diagnostic_printf("\nRejecting unsupported DRM layout: "
                "skipping EGL capability query and import\n");
         frame_status = 2;
     } else {
@@ -1377,13 +1398,14 @@ static int process_decoded_frame(AVFrame *frame,
             goto frame_cleanup;
         }
 
-        fprintf(stderr, "\nAttempting EGL DMA-BUF import...\n");
+        if (verbose_output)
+            fprintf(stderr, "\nAttempting EGL DMA-BUF import...\n");
         if (test_egl_import(
                 desc, frame->width, frame->height, dump_path) < 0) {
             fprintf(stderr, "EGL DMA-BUF import test failed\n");
             goto frame_cleanup;
         }
-        printf("%s EGL DMA-BUF import and GL texture creation succeeded\n",
+        diagnostic_printf("%s EGL DMA-BUF import and GL texture creation succeeded\n",
                is_nv12_drm_layout(desc) ? "NV12" : "10-bit R16 + GR32");
         frame_status = 0;
     }
@@ -1616,12 +1638,12 @@ static void *decode_producer_thread(void *opaque)
         goto cleanup;
     }
 
-    printf("VAAPI decoder: %s\n", codec->name);
+    diagnostic_printf("VAAPI decoder: %s\n", codec->name);
     for (int i = 0; ; i++) {
         const AVCodecHWConfig *config = avcodec_get_hw_config(codec, i);
         if (!config)
             break;
-        printf("Hardware config: format=%s device=%d methods=0x%x\n",
+        diagnostic_printf("Hardware config: format=%s device=%d methods=0x%x\n",
                av_get_pix_fmt_name(config->pix_fmt),
                config->device_type, config->methods);
     }
@@ -1785,44 +1807,61 @@ cleanup:
 int main(int argc, char **argv)
 {
     if (argc == 2 &&
-        strcmp(argv[1], "--self-test-layout-validation") == 0)
+        strcmp(argv[1], "--self-test-layout-validation") == 0) {
+        verbose_output = 1;
         return self_test_layout_validation();
+    }
 
-    if (argc < 2 || argc > 5) {
+    int arg_index = 1;
+    if (argc > arg_index && strcmp(argv[arg_index], "--verbose") == 0) {
+        verbose_output = 1;
+        arg_index++;
+    } else if (argc > arg_index &&
+               strcmp(argv[arg_index], "--quiet") == 0) {
+        quiet_output = 1;
+        arg_index++;
+    } else if (argc > arg_index &&
+               strcmp(argv[arg_index], "--summary") == 0) {
+        arg_index++;
+    }
+
+    int positional_count = argc - arg_index;
+    if (positional_count < 1 || positional_count > 4) {
         fprintf(stderr,
-                "Usage: %s VIDEO [GPU_OUTPUT [FRAME_INDEX [FRAME_COUNT]]]\n"
+                "Usage: %s [--summary|--verbose|--quiet] VIDEO "
+                "[GPU_OUTPUT [FRAME_INDEX [FRAME_COUNT]]]\n"
                 "       %s --self-test-layout-validation\n",
                 argv[0], argv[0]);
         return 2;
     }
 
-    const char *dump_path = argc >= 3
-        ? argv[2]
+    const char *dump_path = positional_count >= 2
+        ? argv[arg_index + 1]
         : "/tmp/glimpse-stage-gpu-output.bin";
 
     unsigned long long target_frame = 0;
-    if (argc >= 4) {
+    if (positional_count >= 3) {
         char *end = NULL;
-        if (argv[3][0] == '-') {
+        if (argv[arg_index + 2][0] == '-') {
             fprintf(stderr, "FRAME_INDEX must be non-negative\n");
             return 2;
         }
-        target_frame = strtoull(argv[3], &end, 10);
-        if (end == argv[3] || *end != '\0') {
-            fprintf(stderr, "Invalid FRAME_INDEX: %s\n", argv[3]);
+        target_frame = strtoull(argv[arg_index + 2], &end, 10);
+        if (end == argv[arg_index + 2] || *end != '\0') {
+            fprintf(stderr, "Invalid FRAME_INDEX: %s\n", argv[arg_index + 2]);
             return 2;
         }
     }
 
     unsigned long long frame_count = 1;
-    if (argc == 5) {
+    if (positional_count == 4) {
         char *end = NULL;
-        if (argv[4][0] == '-') {
+        if (argv[arg_index + 3][0] == '-') {
             fprintf(stderr, "FRAME_COUNT must be positive\n");
             return 2;
         }
-        frame_count = strtoull(argv[4], &end, 10);
-        if (end == argv[4] || *end != '\0' ||
+        frame_count = strtoull(argv[arg_index + 3], &end, 10);
+        if (end == argv[arg_index + 3] || *end != '\0' ||
             frame_count == 0 || frame_count > 300) {
             fprintf(stderr, "FRAME_COUNT must be between 1 and 300\n");
             return 2;
@@ -1837,7 +1876,7 @@ int main(int argc, char **argv)
 
     ProducerArgs producer_args = {
         .queue = &queue,
-        .video_path = argv[1],
+        .video_path = argv[arg_index],
         .target_frame = target_frame,
         .frame_count = frame_count,
     };
@@ -1884,8 +1923,8 @@ int main(int argc, char **argv)
             output_path = frame_dump_path;
         }
 
-        printf("\nRendering queued frame %llu (%llu/%llu)\n",
-               item.index, processed_frames + 1, frame_count);
+        diagnostic_printf("\nRendering queued frame %llu (%llu/%llu)\n",
+                          item.index, processed_frames + 1, frame_count);
         int frame_result = process_decoded_frame(
             item.frame, output_path, item.index);
         av_frame_free(&item.frame);
@@ -1918,10 +1957,36 @@ int main(int argc, char **argv)
                 "Requested %llu frames, but rendered %llu\n",
                 frame_count, processed_frames);
     } else if (!renderer_failed) {
-        printf("\nPipeline test passed: %llu/%llu frames decoded, queued, "
-               "rendered, and GPU-completed\n",
-               processed_frames, frame_count);
+        if (verbose_output) {
+            diagnostic_printf(
+                "\nPipeline test passed: %llu/%llu frames decoded, queued, "
+                "rendered, and GPU-completed\n",
+                processed_frames, frame_count);
+        }
         exit_status = 0;
+    }
+
+    if (exit_status == 0) {
+        if (quiet_output) {
+            fprintf(stdout, "PASS: %llu/%llu frames\n",
+                    processed_frames, frame_count);
+        } else if (!verbose_output) {
+            fprintf(stdout,
+                    "Stage 5 pipeline: PASS\n"
+                    "Frames completed: %llu/%llu\n"
+                    "Queue capacity: %d\n"
+                    "GPU renderer: %s\n",
+                    processed_frames, frame_count,
+                    FRAME_QUEUE_CAPACITY, renderer_name);
+        }
+    } else if (quiet_output) {
+        fprintf(stderr, "FAIL: pipeline stopped after %llu/%llu frames\n",
+                processed_frames, frame_count);
+    } else if (!verbose_output) {
+        fprintf(stderr,
+                "Stage 5 pipeline: FAIL (%llu/%llu frames completed; "
+                "see diagnostics above)\n",
+                processed_frames, frame_count);
     }
 
     frame_queue_destroy(&queue);
