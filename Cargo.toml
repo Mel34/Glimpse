@@ -9,6 +9,7 @@ members = [
 version = "0.1.0"
 authors = ["Glimpse Contributors"]
 edition = "2021"
+rust-version = "1.83"
 license = "LGPL-2.1-or-later"
 repository = "https://github.com/Mel34/Glimpse"
 description = "Clean, predictable Linux media player in Rust using GTK4, libadwaita, and an evolving in-process playback engine"
