@@ -19,6 +19,7 @@ default = []
 # Optional native audio and FFmpeg linking features.
 audio-cpal = ["dep:cpal"]
 ffmpeg-system = ["dep:ffmpeg-the-third"]
+vaapi-dmabuf = ["ffmpeg-system"]
 
 [dependencies]
 # ffmpeg-the-third 6.x supports system FFmpeg 5.1 through 9.0.

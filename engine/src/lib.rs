@@ -8,6 +8,8 @@ pub mod demuxer;
 pub mod presenter;
 pub mod queue;
 pub mod types;
+#[cfg(feature = "vaapi-dmabuf")]
+pub mod vaapi;
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;

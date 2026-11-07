@@ -13,6 +13,8 @@ use gtk4::{
 };
 
 use glimpse_engine::{Player, PlayerState};
+#[cfg(feature = "vaapi-dmabuf-preview")]
+use glimpse_engine::vaapi::{decode_first_vaapi_dmabuf, VaapiDmaBufFrame};
 use crate::controls::{create_floating_bottom_bar, ControlBarWidgets};
 use crate::interaction::{attach_seekbar_wheel, attach_window_volume_wheel, VideoClickStateMachine};
 use crate::track_menu::create_track_popover;
@@ -900,6 +902,46 @@ fn trigger_open_file_dialog(
     });
 }
 
+
+#[cfg(feature = "vaapi-dmabuf-preview")]
+fn import_vaapi_dmabuf_frame(
+    display: &gdk4::Display,
+    frame: VaapiDmaBufFrame,
+) -> Result<gdk4::Texture, String> {
+    let formats = display.dmabuf_formats();
+    if !formats.contains(frame.fourcc(), frame.modifier()) {
+        return Err(format!(
+            "GDK does not advertise NV12 with modifier 0x{:016x}",
+            frame.modifier()
+        ));
+    }
+
+    let y = frame.plane(0).ok_or("Missing Y plane")?;
+    let uv = frame.plane(1).ok_or("Missing UV plane")?;
+
+    let builder = unsafe {
+        gdk4::DmabufTextureBuilder::new()
+            .set_display(display)
+            .set_width(frame.width())
+            .set_height(frame.height())
+            .set_fourcc(frame.fourcc())
+            .set_modifier(frame.modifier())
+            .set_n_planes(2)
+            .set_fd(0, y.fd)
+            .set_stride(0, y.stride)
+            .set_offset(0, y.offset)
+            .set_fd(1, uv.fd)
+            .set_stride(1, uv.stride)
+            .set_offset(1, uv.offset)
+    };
+
+    unsafe {
+        builder
+            .build_with_release_func(frame.into_release_callback())
+            .map_err(|error| format!("GDK DMA-BUF texture import failed: {error}"))
+    }
+}
+
 /// Routine to load video into GTK4 MediaFile and Glimpse engine for playback
 fn load_and_play_file(
     path: &str,
@@ -934,7 +976,17 @@ fn load_and_play_file(
     let media = MediaFile::for_file(&file);
     media.set_loop(true);
     picture.set_paintable(Some(&media));
-    media.play();
+
+    #[cfg(feature = "vaapi-dmabuf-preview")]
+    let vaapi_preview_requested =
+        std::env::var_os("GLIMPSE_VAAPI_DMABUF_PREVIEW").as_deref() == Some(std::ffi::OsStr::new("1"));
+
+    #[cfg(not(feature = "vaapi-dmabuf-preview"))]
+    let vaapi_preview_requested = false;
+
+    if !vaapi_preview_requested {
+        media.play();
+    }
 
     // Duration update when container metadata arrives
     let seekbar_dur = bottom_controls.seekbar.clone();
@@ -1032,6 +1084,30 @@ fn load_and_play_file(
     });
 
     *media_holder.borrow_mut() = Some(media);
+
+    #[cfg(feature = "vaapi-dmabuf-preview")]
+    if vaapi_preview_requested {
+        let render_node = std::env::var("GLIMPSE_DRI_RENDER_NODE")
+            .unwrap_or_else(|_| "/dev/dri/renderD128".to_string());
+        let preview_result = decode_first_vaapi_dmabuf(path, &render_node)
+            .and_then(|frame| import_vaapi_dmabuf_frame(&picture.display(), frame));
+
+        match preview_result {
+            Ok(texture) => {
+                picture.set_paintable(Some(&texture));
+                window.set_title(Some(&format!(
+                    "Glimpse - {} [VAAPI DMA-BUF first-frame preview]",
+                    file_name
+                )));
+            }
+            Err(error) => {
+                eprintln!("VAAPI DMA-BUF preview unavailable; using GTK MediaFile: {error}");
+                if let Some(ref media) = *media_holder.borrow() {
+                    media.play();
+                }
+            }
+        }
+    }
 
     // Initialize Glimpse engine for stream probing and audio master clock tracking
     match Player::open(path) {

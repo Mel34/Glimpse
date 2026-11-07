@@ -4,11 +4,10 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Glimpse - Modern Linux video player with GTK4 and libadwaita"
 
-[[bin]]
-name = "glimpse"
-path = "src/main.rs"
+[features]
+default = []
+vaapi-dmabuf-preview = ["glimpse-engine/vaapi-dmabuf"]
 
 [dependencies]
 glimpse-engine = { path = "../engine" }
