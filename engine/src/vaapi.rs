@@ -237,23 +237,27 @@ fn validate_and_describe(
         let height = u32::try_from(frame.height)
             .map_err(|_| "DRM PRIME frame height is out of range".to_string())?;
 
+        let modifier = object.format_modifier;
+        let fd = object.fd;
+        let planes = [
+            DmaBufPlane {
+                fd,
+                stride: y_stride,
+                offset: y_offset,
+            },
+            DmaBufPlane {
+                fd,
+                stride: uv_stride,
+                offset: uv_offset,
+            },
+        ];
+
         Ok(VaapiDmaBufFrame {
             _owner: mapped,
             width,
             height,
-            modifier: object.format_modifier,
-            planes: [
-                DmaBufPlane {
-                    fd: object.fd,
-                    stride: y_stride,
-                    offset: y_offset,
-                },
-                DmaBufPlane {
-                    fd: object.fd,
-                    stride: uv_stride,
-                    offset: uv_offset,
-                },
-            ],
+            modifier,
+            planes,
         })
     }
 }
