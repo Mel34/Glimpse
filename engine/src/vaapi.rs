@@ -185,7 +185,7 @@ fn validate_and_describe(
 ) -> Result<VaapiDmaBufFrame, String> {
     unsafe {
         let frame = &*mapped.as_ptr();
-        if frame.format != ffi::AVPixelFormat::AV_PIX_FMT_DRM_PRIME as i32
+        if frame.format != ffi::AVPixelFormat::AV_PIX_FMT_DRM_PRIME.0 as i32
             || frame.data[0].is_null()
         {
             return Err("FFmpeg returned an invalid DRM PRIME frame".into());
@@ -471,7 +471,7 @@ fn map_vaapi_frame(decoded: OwnedFrame) -> Result<VaapiDmaBufFrame, String> {
     let mut mapped = OwnedFrame::allocate()?;
     unsafe {
         (*mapped.as_mut_ptr()).format =
-            ffi::AVPixelFormat::AV_PIX_FMT_DRM_PRIME as i32;
+            ffi::AVPixelFormat::AV_PIX_FMT_DRM_PRIME.0 as i32;
     }
 
     let map_result = unsafe {
