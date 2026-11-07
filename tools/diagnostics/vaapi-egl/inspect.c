@@ -210,14 +210,18 @@ static int wait_for_gpu_completion(void)
 {
     GLsync fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
     if (!fence) {
-        fprintf(stderr, "Creating OpenGL completion fence failed\\n");
+        fprintf(stderr, "Creating OpenGL completion fence failed\n");
         return -1;
     }
     glFlush();
-    GLenum status = glClientWaitSync(fence, GL_SYNC_FLUSH_COMMANDS_BIT, GL_TIMEOUT_IGNORED);
+    GLenum status;
+    do {
+        status = glClientWaitSync(
+            fence, GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000ULL);
+    } while (status == GL_TIMEOUT_EXPIRED);
     glDeleteSync(fence);
     if (status != GL_ALREADY_SIGNALED && status != GL_CONDITION_SATISFIED) {
-        fprintf(stderr, "Waiting for OpenGL completion fence failed (status=0x%x)\\n", status);
+        fprintf(stderr, "Waiting for OpenGL completion fence failed (status=0x%x)\n", status);
         return -1;
     }
     return 0;
@@ -1284,7 +1288,7 @@ static int process_decoded_frame(AVFrame *frame,
     int frame_status = 1;
 
     if (!drm) {
-        fprintf(stderr, "Allocating DRM frame failed\\n");
+        fprintf(stderr, "Allocating DRM frame failed\n");
         return -1;
     }
 
@@ -1407,7 +1411,7 @@ int main(int argc, char **argv)
         : "/tmp/glimpse-stage-gpu-output.bin";
 
     unsigned long long target_frame = 0;
-    if (argc == 4) {
+    if (argc >= 4) {
         char *end = NULL;
         if (argv[3][0] == '-') {
             fprintf(stderr, "FRAME_INDEX must be non-negative\n");
@@ -1425,12 +1429,12 @@ int main(int argc, char **argv)
     if (argc == 5) {
         char *end = NULL;
         if (argv[4][0] == '-') {
-            fprintf(stderr, "FRAME_COUNT must be positive\\n");
+            fprintf(stderr, "FRAME_COUNT must be positive\n");
             return 2;
         }
         frame_count = strtoull(argv[4], &end, 10);
         if (end == argv[4] || *end != '\0' || frame_count == 0 || frame_count > 300) {
-            fprintf(stderr, "FRAME_COUNT must be between 1 and 300\\n");
+            fprintf(stderr, "FRAME_COUNT must be between 1 and 300\n");
             return 2;
         }
     }
@@ -1560,12 +1564,12 @@ int main(int argc, char **argv)
                     int written = snprintf(frame_dump_path, sizeof(frame_dump_path),
                                            "%s.frame-%llu", dump_path, frame_index);
                     if (written < 0 || (size_t)written >= sizeof(frame_dump_path)) {
-                        fprintf(stderr, "Frame output path is too long\\n");
+                        fprintf(stderr, "Frame output path is too long\n");
                         goto cleanup;
                     }
                     output_path = frame_dump_path;
                 }
-                printf("\\nProcessing frame %llu (%llu/%llu)\\n",
+                printf("\nProcessing frame %llu (%llu/%llu)\n",
                        frame_index, processed_frames + 1, frame_count);
                 int frame_result = process_decoded_frame(frame, output_path, frame_index);
                 if (frame_result != 0) {
@@ -1586,11 +1590,11 @@ int main(int argc, char **argv)
     }
 
     if (processed_frames != frame_count) {
-        fprintf(stderr, "Requested %llu frames starting at %llu, but only %llu were available\\n",
+        fprintf(stderr, "Requested %llu frames starting at %llu, but only %llu were available\n",
                 frame_count, target_frame, processed_frames);
         goto cleanup;
     }
-    printf("\\nSynchronization test passed: %llu/%llu frames imported, rendered, and completed\\n",
+    printf("\nSynchronization test passed: %llu/%llu frames imported, rendered, and completed\n",
            processed_frames, frame_count);
     exit_status = 0;
 
