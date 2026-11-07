@@ -312,8 +312,9 @@ The decoded frame metadata reported by FFmpeg was:
 | HEVC Main10 | 2 (unspecified) | 1 (limited) | 1 (left) |
 | VP9 Profile 2 | 5 (BT.470BG) | 1 (limited) | 1 (left) |
 
-These are FFmpeg enum values. The diagnostic reports the metadata but does
-not yet apply it to color conversion.
+These are FFmpeg enum values. Stage 6 now resolves the matrix, range, bit
+depth, and chroma location into shader parameters. Unspecified values use the
+documented defaults described below.
 
 The HEVC Main10 frame 1000 and VP9 Profile 2 frame 0 both produced exact
 10-bit sample matches against their software-decoded references in the
@@ -374,25 +375,54 @@ Build, then run both pure metadata/layout self-tests:
 /tmp/glimpse-stage6-inspect --self-test-color-conversion
 ```
 
-Hardware validation should cover:
+### Stage 6 validation record
 
-1. H.264 or AV1 NV12 with BT.709 limited range; compare the RGBA output with
-   an FFmpeg software reference using matching matrix, range, and chroma
-   location.
-2. HEVC Main10 with its reported metadata; compare both the planar 10-bit
-   sample dump and the new RGBA output against software decoding.
-3. VP9 Profile 2 with its reported metadata; repeat both comparisons.
-4. A frame with unspecified metadata, confirming the selected defaults are
-   reported and applied.
-5. A frame whose format/modifier cannot be imported as a 2D texture, confirming
-   that it is classified as fallback-required rather than treated as a fatal
-   format-conversion success.
+Validated on the AMD Radeon RX 6700 XT with Mesa radeonsi. GPU RGBA8
+framebuffer captures were compared against FFmpeg software RGB24 references
+for the same decoded frames, using matching matrix, range, and chroma
+location. The bottom-up OpenGL readback orientation was the matching
+orientation in every case.
+
+| Codec / profile | Format and metadata | Frames | Overall MAE range | P95 / P99 |
+|---|---|---:|---:|---:|
+| H.264 High | NV12, BT.709 limited | 0, 30, 120 | 1.1126–1.1340 | 2 / 3 |
+| HEVC Main10 | R16/GR32, BT.709 fallback, limited | 120, 240 | 1.7366–2.0121 | 3–4 / 4–8 |
+| VP9 Profile 2 | R16/GR32, BT.470BG limited | 0, 30 | 1.2221–1.2467 | 3 / 4 |
+
+Across these comparisons, the proportion of channel samples differing by
+more than 5 was 0.0402%–1.9692%. The largest observed mean error was HEVC
+Main10 frame 120; its second sample, frame 240, was substantially closer
+(MAE 1.7366, P95 3, P99 4).
+
+The HEVC Main10 frame 0 sample was independently checked against software
+decoding and contained black picture content (software Y samples were all
+64). Its GPU output was also black. The renderer now treats successful
+framebuffer readback and dump creation as success, without requiring
+non-black pixels or per-channel variation; black and uniform-color frames
+are valid video.
+
+The pure color-resolver self-test covers BT.709 limited-range 8-bit,
+BT.2020 non-constant-luminance limited-range 10-bit, BT.470BG full-range
+10-bit, unspecified-metadata defaults, and rejection of unsupported
+BT.2020 constant-luminance metadata. The VP9 hardware comparison additionally
+validates the BT.470BG limited-range 10-bit shader path. Full-range and
+BT.2020 are currently validated at the resolver-parameter level, not by
+separate GPU/reference clip comparisons.
+
+The layout/fallback self-test covers recognized NV12 and 10-bit layouts,
+unsupported layouts, malformed descriptors, and EGL modifier outcomes:
+2D-texture importable, external-only, and unavailable. Runtime capability
+checks apply the same classifier to the actual frame modifier. The tested
+GPU's real modifier was supported and imported successfully; an actual
+unsupported modifier was not available for hardware testing.
 
 Stage 6 does not connect the hardware path to the application playback
 pipeline. It provides the reusable conversion policy and diagnostic evidence
-needed before Stage 7 integration. Color correctness must be established by
-software-reference comparisons on each supported format/metadata combination;
-successful shader execution alone is not sufficient.
+needed before Stage 7 integration. The shader performs Y'CbCr matrix/range
+conversion and chroma positioning; this is not full transfer-function or
+primary conversion, HDR tone mapping, or dynamic-metadata processing.
+Color correctness claims are limited to the tested formats, metadata, GPU,
+driver, and reference comparisons above.
 
 ## Stage 5 bounded decode/render pipeline
 
