@@ -1496,20 +1496,22 @@ static int process_decoded_frame(AVFrame *frame,
         goto frame_cleanup;
     }
 
-    diagnostic_printf(
-        "Resolved color: Kr=%.4f Kb=%.4f range Y=%.1f..%.1f "
-        "chroma_center=%.1f chroma_scale=%.1f bit_depth=%d\n",
-        color.kr, color.kb, color.y_offset,
-        color.y_offset + color.y_scale, color.chroma_offset,
-        color.chroma_scale, color.bit_depth);
-    if (color.used_default_colorspace ||
-        color.used_default_range ||
-        color.used_default_chroma_location) {
+    if (layout_status == 1) {
         diagnostic_printf(
-            "Color metadata defaults used: matrix=%s range=%s chroma=%s\n",
-            color.used_default_colorspace ? "yes" : "no",
-            color.used_default_range ? "yes" : "no",
-            color.used_default_chroma_location ? "yes" : "no");
+            "Resolved color: Kr=%.4f Kb=%.4f range Y=%.1f..%.1f "
+            "chroma_center=%.1f chroma_scale=%.1f bit_depth=%d\n",
+            color.kr, color.kb, color.y_offset,
+            color.y_offset + color.y_scale, color.chroma_offset,
+            color.chroma_scale, color.bit_depth);
+        if (color.used_default_colorspace ||
+            color.used_default_range ||
+            color.used_default_chroma_location) {
+            diagnostic_printf(
+                "Color metadata defaults used: matrix=%s range=%s chroma=%s\n",
+                color.used_default_colorspace ? "yes" : "no",
+                color.used_default_range ? "yes" : "no",
+                color.used_default_chroma_location ? "yes" : "no");
+        }
     }
 
     diagnostic_printf("\nDRM PRIME descriptor\n");
