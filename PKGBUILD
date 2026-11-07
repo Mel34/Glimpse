@@ -8,8 +8,8 @@ url="https://github.com/Mel34/Glimpse"
 license=('LGPL-2.1-or-later')
 depends=(
   'ffmpeg'
-  'gtk4'
-  'libadwaita'
+  'gtk4>=4.14'
+  'libadwaita>=1.5'
   'alsa-lib'
   'libpulse'
 )

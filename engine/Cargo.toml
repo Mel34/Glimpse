@@ -1,8 +1,9 @@
 [package]
 name = "glimpse-engine"
-version = "0.1.0"
-edition = "2021"
-license = "LGPL-2.1-or-later"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 description = "Experimental in-process FFmpeg (libav*) media playback engine scaffold for Glimpse"
 
 [lib]
@@ -15,14 +16,13 @@ path = "src/bin/glimpse_probe.rs"
 
 [features]
 default = []
-# Optional native audio and FFmpeg linking features (kept optional to avoid header churn on modern Arch)
+# Optional native audio and FFmpeg linking features.
 audio-cpal = ["dep:cpal"]
 ffmpeg-system = ["dep:ffmpeg-the-third"]
 
 [dependencies]
-# ffmpeg-the-third 3.0 targets legacy FFmpeg headers; on modern Arch Linux (FFmpeg 7.1+/8.0),
-# it is made optional to prevent breaking cargo check/test on upstream FF_PROFILE/avcodec_close churn.
-ffmpeg-the-third = { version = "3.0", optional = true }
+# ffmpeg-the-third 6.x supports system FFmpeg 5.1 through 9.0.
+ffmpeg-the-third = { version = "6.0", optional = true }
 cpal = { version = "0.15", optional = true }
 crossbeam-channel = "0.5"
 thiserror = "1.0"

@@ -1,8 +1,9 @@
 [package]
 name = "glimpse"
-version = "0.1.0"
-edition = "2021"
-license = "LGPL-2.1-or-later"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 description = "Glimpse - Modern Linux video player with GTK4 and libadwaita"
 
 [[bin]]
@@ -11,11 +12,11 @@ path = "src/main.rs"
 
 [dependencies]
 glimpse-engine = { path = "../engine" }
-gtk4 = { version = "0.8", features = ["v4_12"] }
-adw = { version = "0.6", package = "libadwaita", features = ["v1_5"] }
+gtk4 = { version = "0.11", features = ["v4_14"] }
+adw = { version = "0.9", package = "libadwaita", features = ["v1_5"] }
 crossbeam-channel = "0.5"
 tracing = "0.1"
 tracing-subscriber = "0.3"
-gio = "0.19"
-glib = "0.19"
-gdk4 = "0.8"
+gio = "0.22"
+glib = "0.22"
+gdk4 = { version = "0.11", features = ["v4_14"] }
