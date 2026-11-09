@@ -6,7 +6,7 @@ use adw::{Application, ApplicationWindow};
 use gdk4::DragAction;
 use gio::SimpleAction;
 use gtk4::{
-    Align, Box as GtkBox, Button, DropTarget, EventControllerKey, EventControllerMotion,
+    Align, Box as GtkBox, Button, CheckButton, DropTarget, EventControllerKey, EventControllerMotion,
     FileDialog, FileFilter, GestureClick, Image, Label, MenuButton,
     Orientation, Overlay, Picture, Separator, Settings, Stack, StackTransitionType, WindowHandle,
 };
@@ -1367,6 +1367,69 @@ fn create_main_menu_popover(
     sep.set_margin_top(4);
     sep.set_margin_bottom(4);
     vbox.append(&sep);
+
+    // Appearance follows the same three choices as GNOME Console.
+    let appearance_label = Label::new(Some("Appearance"));
+    appearance_label.set_halign(Align::Start);
+    appearance_label.add_css_class("heading");
+    appearance_label.set_margin_start(8);
+    vbox.append(&appearance_label);
+
+    let selected_scheme = crate::theme::load();
+    let system_colors = CheckButton::with_label("Use System Colors");
+    let light_colors = CheckButton::with_label("Use Light Colors");
+    let dark_colors = CheckButton::with_label("Use Dark Colors");
+
+    light_colors.set_group(Some(&system_colors));
+    dark_colors.set_group(Some(&system_colors));
+
+    system_colors.set_active(selected_scheme == crate::theme::ColorScheme::System);
+    light_colors.set_active(selected_scheme == crate::theme::ColorScheme::Light);
+    dark_colors.set_active(selected_scheme == crate::theme::ColorScheme::Dark);
+
+    let pop_close_system = popover.clone();
+    system_colors.connect_toggled(move |button| {
+        if button.is_active() {
+            let scheme = crate::theme::ColorScheme::System;
+            scheme.apply();
+            if let Err(error) = scheme.save() {
+                tracing::warn!(%error, "Could not save color scheme preference");
+            }
+            pop_close_system.popdown();
+        }
+    });
+    vbox.append(&system_colors);
+
+    let pop_close_light = popover.clone();
+    light_colors.connect_toggled(move |button| {
+        if button.is_active() {
+            let scheme = crate::theme::ColorScheme::Light;
+            scheme.apply();
+            if let Err(error) = scheme.save() {
+                tracing::warn!(%error, "Could not save color scheme preference");
+            }
+            pop_close_light.popdown();
+        }
+    });
+    vbox.append(&light_colors);
+
+    let pop_close_dark = popover.clone();
+    dark_colors.connect_toggled(move |button| {
+        if button.is_active() {
+            let scheme = crate::theme::ColorScheme::Dark;
+            scheme.apply();
+            if let Err(error) = scheme.save() {
+                tracing::warn!(%error, "Could not save color scheme preference");
+            }
+            pop_close_dark.popdown();
+        }
+    });
+    vbox.append(&dark_colors);
+
+    let appearance_sep = Separator::new(Orientation::Horizontal);
+    appearance_sep.set_margin_top(4);
+    appearance_sep.set_margin_bottom(4);
+    vbox.append(&appearance_sep);
 
     // 3. Keyboard Shortcuts (Ctrl+?)
     let btn_shortcuts = Button::new();
