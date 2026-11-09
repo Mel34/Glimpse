@@ -348,8 +348,8 @@ scale.volume-scale slider {
     background-color: var(--light-bg);
 }
 
-.themeswitcher overlay:hover .check {
-    background: @accent_fg_color;
-    color: @accent_bg_color;
+.themeswitcher .check.hovered {
+    background: @window_fg_color;
+    color: @window_bg_color;
 }
 
