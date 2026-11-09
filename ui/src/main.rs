@@ -3,6 +3,7 @@
 mod controls;
 mod interaction;
 mod track_menu;
+mod theme;
 mod window;
 mod video_texture;
 
@@ -23,8 +24,8 @@ fn main() -> glib::ExitCode {
         .build();
 
     app.connect_startup(|app| {
-        // Force Libadwaita Dark Theme so popovers, menus, and controls natively render dark
-        adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceDark);
+        // Respect the saved color scheme, defaulting to the desktop preference.
+        crate::theme::load().apply();
         gtk4::Window::set_default_icon_name("com.github.Mel34.Glimpse");
 
         let provider = gtk4::CssProvider::new();
