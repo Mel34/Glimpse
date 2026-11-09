@@ -62,7 +62,7 @@ impl Player {
         if let Some(dur) = initial_duration {
             let _ = event_tx.send(Event::DurationKnown(dur));
         }
-        let _ = event_tx.send(Event::TracksChanged(discovered_tracks));
+        let _ = event_tx.send(Event::TracksChanged(discovered_tracks.clone()));
         let _ = event_tx.send(Event::StateChanged(PlayerState::Paused));
 
         Ok((Player {
@@ -97,42 +97,51 @@ impl Player {
                 self.clock.resume();
                 let _ = self.event_sender.send(Event::StateChanged(PlayerState::Playing));
             } else {
-                let initial_volume = if self.audio_enabled.load(Ordering::Acquire) { self.volume() } else { 0.0 };
+                let initial_volume = if self.audio_enabled.load(Ordering::Acquire) {
+                    self.volume()
+                } else {
+                    0.0
+                };
                 let mut start_position = *self.seek_position.lock();
                 let selected_audio = self.tracks.lock().active_audio.map(|track| track.0);
                 let mut reset_position = false;
                 let mut session = self.audio_session.lock();
-            if session.as_ref().is_some_and(AudioPlaybackHandle::is_finished) {
-                let reached_eof = session.as_ref().is_some_and(AudioPlaybackHandle::reached_end_of_stream);
-                session.take();
-                if reached_eof {
-                    start_position = Duration::ZERO;
-                    reset_position = true;
-                    self.clock.reset(0.0);
-                }
-            }
-            let _ = self.event_sender.send(Event::StateChanged(PlayerState::Playing));
-            if session.is_none() {
-                let playback = AudioPlaybackSession::new(Arc::clone(&self.clock));
-                match playback.spawn_from(
-                    self.path.clone(),
-                    initial_volume,
-                    start_position,
-                    selected_audio,
-                    self.event_sender.clone(),
-                ) {
-                    Ok(handle) => *session = Some(handle),
-                    Err(error) => {
-                        *state = PlayerState::Paused;
-                        self.clock.pause();
-                        let _ = self.event_sender.send(Event::StateChanged(PlayerState::Paused));
-                        let _ = self.event_sender.send(Event::Error(error));
+
+                if session.as_ref().is_some_and(AudioPlaybackHandle::is_finished) {
+                    let reached_eof = session
+                        .as_ref()
+                        .is_some_and(AudioPlaybackHandle::reached_end_of_stream);
+                    session.take();
+                    if reached_eof {
+                        start_position = Duration::ZERO;
+                        reset_position = true;
+                        self.clock.reset(0.0);
                     }
                 }
-            } else if let Some(handle) = session.as_ref() {
-                handle.resume();
-            }
-            drop(session);
+
+                let _ = self.event_sender.send(Event::StateChanged(PlayerState::Playing));
+                if session.is_none() {
+                    let playback = AudioPlaybackSession::new(Arc::clone(&self.clock));
+                    match playback.spawn_from(
+                        self.path.clone(),
+                        initial_volume,
+                        start_position,
+                        selected_audio,
+                        self.event_sender.clone(),
+                    ) {
+                        Ok(handle) => *session = Some(handle),
+                        Err(error) => {
+                            *state = PlayerState::Paused;
+                            self.clock.pause();
+                            let _ = self.event_sender.send(Event::StateChanged(PlayerState::Paused));
+                            let _ = self.event_sender.send(Event::Error(error));
+                        }
+                    }
+                } else if let Some(handle) = session.as_ref() {
+                    handle.resume();
+                }
+
+                drop(session);
                 if reset_position {
                     *self.seek_position.lock() = Duration::ZERO;
                 }
