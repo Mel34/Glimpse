@@ -28,6 +28,11 @@ name = "glimpse_player_lifecycle_probe"
 path = "src/bin/glimpse_player_lifecycle_probe.rs"
 required-features = ["audio-pipewire", "ffmpeg-system"]
 
+[[bin]]
+name = "glimpse_av_sync_probe"
+path = "src/bin/glimpse_av_sync_probe.rs"
+required-features = ["audio-pipewire", "ffmpeg-system"]
+
 [features]
 default = []
 # Native integrations remain optional so the GTK playback baseline builds independently.
