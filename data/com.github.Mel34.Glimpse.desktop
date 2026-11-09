@@ -5,5 +5,5 @@ Exec=glimpse %U
 Terminal=false
 Type=Application
 Icon=com.github.Mel34.Glimpse
-Categories=AudioVideo;Player;Recorder;
+Categories=AudioVideo;Player;
 MimeType=video/mp4;video/x-matroska;video/quicktime;video/webm;audio/mp4;audio/mpeg;
