@@ -17,6 +17,9 @@ use std::time::Duration;
 use crossbeam_channel::{bounded, Receiver, Sender};
 use parking_lot::Mutex;
 
+#[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
+use audio_playback::{AudioPlaybackHandle, AudioPlaybackSession};
+
 pub use audio::{AudioSink, MockAudioSink};
 #[cfg(feature = "audio-pipewire")]
 pub use audio::{PipeWireAudioSink, PipeWireAudioSinkStats};
@@ -32,6 +35,9 @@ pub struct Player {
     volume: Arc<Mutex<f32>>,
     current_serial: Arc<Mutex<Serial>>,
     event_sender: Sender<Event>,
+    path: String,
+    #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
+    audio_session: Mutex<Option<AudioPlaybackHandle>>,
     #[allow(dead_code)]
     running: Arc<AtomicBool>,
 }
@@ -65,6 +71,9 @@ impl Player {
             volume,
             current_serial,
             event_sender: event_tx,
+            path: path_or_uri.to_owned(),
+            #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
+            audio_session: Mutex::new(None),
             running,
         }, event_rx))
     }
@@ -73,6 +82,21 @@ impl Player {
         let mut state = self.state.lock();
         *state = PlayerState::Playing;
         self.clock.resume();
+
+        #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
+        {
+            let mut session = self.audio_session.lock();
+            if session.is_none() {
+                let playback = AudioPlaybackSession::new(Arc::clone(&self.clock));
+                match playback.spawn(self.path.clone(), self.volume(), self.event_sender.clone()) {
+                    Ok(handle) => *session = Some(handle),
+                    Err(error) => { let _ = self.event_sender.send(Event::Error(error)); }
+                }
+            } else if let Some(handle) = session.as_ref() {
+                handle.resume();
+            }
+        }
+
         let _ = self.event_sender.send(Event::StateChanged(PlayerState::Playing));
     }
 
@@ -80,6 +104,10 @@ impl Player {
         let mut state = self.state.lock();
         *state = PlayerState::Paused;
         self.clock.pause();
+        #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
+        if let Some(handle) = self.audio_session.lock().as_ref() {
+            handle.pause();
+        }
         let _ = self.event_sender.send(Event::StateChanged(PlayerState::Paused));
     }
 
@@ -96,6 +124,10 @@ impl Player {
         let clamped = volume.clamp(0.0, 1.0);
         let mut v = self.volume.lock();
         *v = clamped;
+        #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
+        if let Some(handle) = self.audio_session.lock().as_ref() {
+            handle.set_volume(clamped);
+        }
     }
 
     pub fn volume(&self) -> f32 {
