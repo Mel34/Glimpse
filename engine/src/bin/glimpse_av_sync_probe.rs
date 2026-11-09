@@ -55,10 +55,6 @@ fn run(path: &str) -> Result<(), String> {
 
     let clock = Arc::new(MasterClock::new());
     let (event_sender, events) = bounded(64);
-    let audio_session = AudioPlaybackSession::new(Arc::clone(&clock));
-    let audio_handle = audio_session.spawn(path.to_owned(), 1.0, event_sender)?;
-    wait_for_audio_clock(&clock, &audio_handle, &events)?;
-
     let serial = Serial(0);
     let queues = PacketQueues::new(128, PACKET_QUEUE_BYTES);
     let frame_queue = Arc::new(VideoFrameQueue::new(16, FRAME_QUEUE_BYTES));
@@ -84,6 +80,13 @@ fn run(path: &str) -> Result<(), String> {
             ))
             .map_err(|error| format!("Could not start video demux worker: {error}"))?,
     );
+
+    // Start demuxing and prepare the video path before audio begins advancing
+    // the master clock, so opening the video decoder cannot make the first
+    // frames appear artificially late.
+    let audio_session = AudioPlaybackSession::new(Arc::clone(&clock));
+    let audio_handle = audio_session.spawn(path.to_owned(), 1.0, event_sender)?;
+    wait_for_audio_clock(&clock, &audio_handle, &events)?;
 
     let mut scheduler = VideoScheduler::new(Arc::clone(&clock));
     let mut displayed_drift_ms = Vec::new();
