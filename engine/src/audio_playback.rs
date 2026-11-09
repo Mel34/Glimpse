@@ -187,8 +187,8 @@ impl AudioPlaybackReport {
 
 /// Runs a complete audio-only session through FFmpeg and native PipeWire.
 ///
-/// This is the engine-owned implementation used by both diagnostics and the
-/// eventual player integration. Video/subtitle packets are drained for now;
+/// This is the engine-owned implementation used by Player and the standalone
+/// diagnostics. Video/subtitle packets are drained for now;
 /// unified audio/video demux consumption is the next pipeline milestone.
 fn run_file(path: &str, clock: Arc<MasterClock>) -> Result<AudioPlaybackReport, String> {
     run_file_control(path, clock, Arc::new(PlaybackControl {
