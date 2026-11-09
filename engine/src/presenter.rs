@@ -40,7 +40,7 @@ impl VideoScheduler {
         }
     }
 
-    pub fn schedule(&mut self, frame_pts: f64, frame_duration: f64) -> ScheduleAction {
+    pub fn schedule(&mut self, frame_pts: f64, _frame_duration: f64) -> ScheduleAction {
         let master_pts = self.clock.get_pts();
         let drift = frame_pts - master_pts;
 
@@ -50,7 +50,7 @@ impl VideoScheduler {
 
         if drift > 0.005 {
             ScheduleAction::Wait(Duration::from_secs_f64(drift))
-        } else if drift >= -self.max_drift_threshold_secs.max(frame_duration) {
+        } else if drift >= -self.max_drift_threshold_secs {
             self.total_displayed += 1;
             ScheduleAction::ShowNow
         } else {
