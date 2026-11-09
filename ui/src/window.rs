@@ -6,7 +6,7 @@ use adw::{Application, ApplicationWindow};
 use gdk4::DragAction;
 use gio::SimpleAction;
 use gtk4::{
-    Align, Box as GtkBox, Button, DropTarget, EventControllerKey, EventControllerMotion,
+    Align, Box as GtkBox, Button, DropTarget, EventControllerKey, EventControllerMotion, EventControllerLegacy,
     FileDialog, FileFilter, GestureClick, Image, Label, MenuButton,
     Orientation, Overlay, Picture, Separator, Settings, Stack, StackTransitionType, WindowHandle,
 };
@@ -436,33 +436,37 @@ impl GlimpseWindow {
             },
         );
 
-        // Pointer dragging owns the seekbar until release. Commit one seek at the final value.
-        let seekbar_gesture = GestureClick::new();
-        seekbar_gesture.set_button(1);
-        seekbar_gesture.set_propagation_phase(gtk4::PropagationPhase::Capture);
-        // Observe the pointer sequence without claiming it from GtkRange.
-        seekbar_gesture.set_exclusive(false);
-        let seekbar_drag_start = Rc::clone(&bottom_controls.seekbar_dragging);
-        seekbar_gesture.connect_pressed(move |_, _, _, _| {
-            seekbar_drag_start.set(true);
-        });
-
-        let seekbar_drag_end = Rc::clone(&bottom_controls.seekbar_dragging);
+        // Observe pointer events without claiming GTK's native GtkRange gesture.
+        let seekbar_events = gtk4::EventControllerLegacy::new();
+        seekbar_events.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        let seekbar_drag_state = Rc::clone(&bottom_controls.seekbar_dragging);
         let seekbar_for_release = bottom_controls.seekbar.clone();
         let p_seekbar_release = Rc::clone(&player);
         let v_seekbar_release = Rc::clone(&video_playback);
-        seekbar_gesture.connect_released(move |_, _, _, _| {
-            seekbar_drag_end.set(false);
-            let target = Duration::from_secs_f64(seekbar_for_release.value().max(0.0));
-            if let Some(ref p) = *p_seekbar_release.borrow() { p.seek(target); }
-            if let Some(ref mut video) = *v_seekbar_release.borrow_mut() { video.seek(target); }
+        seekbar_events.connect_event(move |_, event| {
+            match event.event_type() {
+                gdk4::EventType::ButtonPress => {
+                    if event.downcast_ref::<gdk4::ButtonEvent>()
+                        .is_some_and(|button| button.button() == 1)
+                    {
+                        seekbar_drag_state.set(true);
+                    }
+                }
+                gdk4::EventType::ButtonRelease => {
+                    if event.downcast_ref::<gdk4::ButtonEvent>()
+                        .is_some_and(|button| button.button() == 1)
+                        && seekbar_drag_state.replace(false)
+                    {
+                        let target = Duration::from_secs_f64(seekbar_for_release.value().max(0.0));
+                        if let Some(ref p) = *p_seekbar_release.borrow() { p.seek(target); }
+                        if let Some(ref mut video) = *v_seekbar_release.borrow_mut() { video.seek(target); }
+                    }
+                }
+                _ => {}
+            }
+            glib::Propagation::Proceed
         });
-
-        let seekbar_drag_cancel = Rc::clone(&bottom_controls.seekbar_dragging);
-        seekbar_gesture.connect_stopped(move |_| {
-            seekbar_drag_cancel.set(false);
-        });
-        bottom_controls.seekbar.add_controller(seekbar_gesture);
+        bottom_controls.seekbar.add_controller(seekbar_events);
 
         // Non-drag changes (keyboard, accessibility) seek immediately. During a pointer
         // drag, update only the elapsed-time preview; the release handler commits the seek.
