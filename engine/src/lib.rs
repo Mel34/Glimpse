@@ -86,6 +86,7 @@ impl Player {
 
         #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
         {
+            let initial_volume = self.volume();
             let mut session = self.audio_session.lock();
             if session.as_ref().is_some_and(AudioPlaybackHandle::is_finished) {
                 session.take();
@@ -93,11 +94,12 @@ impl Player {
             }
             if session.is_none() {
                 let playback = AudioPlaybackSession::new(Arc::clone(&self.clock));
-                match playback.spawn(self.path.clone(), self.volume(), self.event_sender.clone()) {
+                match playback.spawn(self.path.clone(), initial_volume, self.event_sender.clone()) {
                     Ok(handle) => *session = Some(handle),
                     Err(error) => {
                         *state = PlayerState::Paused;
                         self.clock.pause();
+                        let _ = self.event_sender.send(Event::StateChanged(PlayerState::Paused));
                         let _ = self.event_sender.send(Event::Error(error));
                     }
                 }
@@ -130,8 +132,10 @@ impl Player {
 
     pub fn set_volume(&self, volume: f32) {
         let clamped = volume.clamp(0.0, 1.0);
-        let mut v = self.volume.lock();
-        *v = clamped;
+        {
+            let mut v = self.volume.lock();
+            *v = clamped;
+        }
         #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
         if let Some(handle) = self.audio_session.lock().as_ref() {
             handle.set_volume(clamped);
