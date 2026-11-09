@@ -159,6 +159,15 @@ impl VideoDecoder {
                 Err(error) => return Err(format!("Video frame decoding failed: {error}")),
             }
 
+            // timestamp() reads FFmpeg's best_effort_timestamp, so it is
+            // already the fallback when the frame's explicit PTS is absent.
+            // If neither timestamp is available, drop this frame rather than
+            // aborting otherwise playable media or inventing a sync position.
+            let Some(timestamp) = decoded.pts().or_else(|| decoded.timestamp()) else {
+                tracing::warn!("Skipping decoded video frame without PTS or best-effort timestamp");
+                continue;
+            };
+
             let needs_scaler = backend.scaler.as_ref().map_or(true, |scaler| {
                 scaler.input().format != decoded.format()
                     || scaler.input().width != decoded.width()
@@ -200,10 +209,6 @@ impl VideoDecoder {
                     .copy_from_slice(&source[source_start..source_start + stride]);
             }
 
-            let timestamp = decoded
-                .pts()
-                .or_else(|| decoded.timestamp())
-                .ok_or_else(|| "Decoded video frame has no presentation timestamp".to_string())?;
             let pts = timestamp as f64 * backend.time_base_num as f64
                 / backend.time_base_den as f64;
             let frame = VideoFrameData {
@@ -217,7 +222,7 @@ impl VideoDecoder {
             };
             frame_queue
                 .push(frame, serial, stride * height as usize)
-                .map_err(|_| "Decoded frame queue was aborted or frame exceeded its byte capacity".to_string())?;
+                .map_err(|_| "Decoded frame queue was aborted".to_string())?;
         }
         Ok(())
     }
@@ -524,7 +529,7 @@ impl AudioDecoder {
                 serial,
                 byte_size,
             )
-            .map_err(|_| "Decoded audio queue was aborted or PCM block exceeded its byte capacity".to_string())?;
+            .map_err(|_| "Decoded audio queue was aborted".to_string())?;
         Ok(())
     }
 
