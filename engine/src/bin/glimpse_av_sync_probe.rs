@@ -131,8 +131,7 @@ fn run(path: &str) -> Result<(), String> {
                 continue;
             }
             decoded_frames += 1;
-            let (drift_ms, dropped) =
-                match schedule_frame(&mut scheduler, &clock, tagged_frame.item) {
+            let (drift_ms, dropped) = match schedule_frame(&mut scheduler, &clock, tagged_frame.item) {
                 Ok(result) => result,
                 Err(error) => {
                     queues.abort();
@@ -174,8 +173,7 @@ fn run(path: &str) -> Result<(), String> {
             continue;
         }
         decoded_frames += 1;
-        let (drift_ms, dropped) =
-            schedule_frame(&mut scheduler, &clock, tagged_frame.item)?;
+        let (drift_ms, dropped) = schedule_frame(&mut scheduler, &clock, tagged_frame.item)?;
         if dropped {
             dropped_lateness_ms.push((-drift_ms).max(0.0));
         } else {
