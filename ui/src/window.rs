@@ -576,10 +576,11 @@ impl GlimpseWindow {
         let top_motion = top_controls.clone();
         let bottom_motion = bottom_controls.container.clone();
         let timer_motion = Rc::clone(&hide_timer);
+        let popovers_motion = Rc::clone(&popovers_motion);
         let pointer_enter = Rc::clone(&last_pointer_position);
         motion.connect_enter(move |_, x, y| {
             pointer_enter.set(Some((x, y)));
-            reveal_and_schedule_controls(&top_motion, &bottom_motion, &timer_motion);
+            reveal_and_schedule_controls(&top_motion, &bottom_motion, &timer_motion, &popovers_motion);
         });
         let top_motion = top_controls.clone();
         let bottom_motion = bottom_controls.container.clone();
@@ -591,7 +592,7 @@ impl GlimpseWindow {
                 .unwrap_or(true);
             if moved {
                 pointer_motion.set(Some((x, y)));
-                reveal_and_schedule_controls(&top_motion, &bottom_motion, &timer_motion);
+                reveal_and_schedule_controls(&top_motion, &bottom_motion, &timer_motion, &popovers_motion);
             }
         });
         let pointer_leave = Rc::clone(&last_pointer_position);
@@ -603,8 +604,14 @@ impl GlimpseWindow {
         let top_fullscreen = top_controls.clone();
         let bottom_fullscreen = bottom_controls.container.clone();
         let timer_fullscreen = Rc::clone(&hide_timer);
+        let popovers_fullscreen = Rc::clone(&bottom_controls.open_popovers);
         window.connect_fullscreened_notify(move |_| {
-            reveal_and_schedule_controls(&top_fullscreen, &bottom_fullscreen, &timer_fullscreen);
+            reveal_and_schedule_controls(
+                &top_fullscreen,
+                &bottom_fullscreen,
+                &timer_fullscreen,
+                &popovers_fullscreen,
+            );
         });
 
         // =====================================================================
@@ -678,6 +685,7 @@ impl GlimpseWindow {
             &picture,
             &bottom_controls,
         );
+        crate::controls::track_popover_visibility(&loader_popover, &bottom_controls.open_popovers);
         loader_menu_btn.set_popover(Some(&loader_popover));
 
         let player_popover = create_main_menu_popover(
@@ -687,6 +695,7 @@ impl GlimpseWindow {
             &picture,
             &bottom_controls,
         );
+        crate::controls::track_popover_visibility(&player_popover, &bottom_controls.open_popovers);
         menu_btn.set_popover(Some(&player_popover));
 
         // Actions: Open, New Window, Shortcuts, About
@@ -1152,6 +1161,7 @@ fn load_and_play_file(
                         }
                     },
                 );
+                crate::controls::track_popover_visibility(&popover, &bottom_controls.open_popovers);
                 bottom_controls.settings_button.set_popover(Some(&popover));
             }
 
@@ -1210,6 +1220,7 @@ mod media_source_tests {
 fn reveal_and_schedule_controls(
     top: &GtkBox, bottom: &GtkBox,
     timer: &Rc<RefCell<Option<glib::SourceId>>>,
+    open_popovers: &Rc<Cell<usize>>,
 ) {
     top.set_opacity(1.0); bottom.set_opacity(1.0);
     top.set_can_target(true); bottom.set_can_target(true);
@@ -1218,8 +1229,21 @@ fn reveal_and_schedule_controls(
     let top_hide = top.clone();
     let bottom_hide = bottom.clone();
     let timer_slot = Rc::clone(timer);
+    let popovers = Rc::clone(open_popovers);
+    let top_reschedule = top.clone();
+    let bottom_reschedule = bottom.clone();
+    let timer_reschedule = Rc::clone(timer);
     let source = glib::timeout_add_local_once(Duration::from_secs(3), move || {
         *timer_slot.borrow_mut() = None;
+        if popovers.get() > 0 {
+            reveal_and_schedule_controls(
+                &top_reschedule,
+                &bottom_reschedule,
+                &timer_reschedule,
+                &popovers,
+            );
+            return;
+        }
         top_hide.set_opacity(0.0);
         bottom_hide.set_opacity(0.0);
         top_hide.set_can_target(false);
