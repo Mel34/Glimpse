@@ -112,6 +112,19 @@ impl Player {
         let _ = self.event_sender.send(Event::StateChanged(PlayerState::Playing));
     }
 
+    /// Stops the active audio session and resets the playback position.
+    pub fn stop(&self) {
+        let mut state = self.state.lock();
+        #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
+        if let Some(mut handle) = self.audio_session.lock().take() {
+            handle.stop();
+        }
+        self.clock.reset(0.0);
+        self.clock.pause();
+        *state = PlayerState::Paused;
+        let _ = self.event_sender.send(Event::StateChanged(PlayerState::Paused));
+    }
+
     pub fn pause(&self) {
         let mut state = self.state.lock();
         *state = PlayerState::Paused;
