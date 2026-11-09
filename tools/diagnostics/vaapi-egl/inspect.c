@@ -1,5 +1,6 @@
 #include <inttypes.h>
 #include <limits.h>
+#include <glob.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,6 +27,146 @@ static void log_av_error(const char *what, int err)
     char msg[AV_ERROR_MAX_STRING_SIZE];
     av_strerror(err, msg, sizeof(msg));
     fprintf(stderr, "%s: %s\n", what, msg);
+}
+
+static int chroma_dimension(int dimension)
+{
+    return dimension / 2 + dimension % 2;
+}
+
+static int create_vaapi_device(AVBufferRef **device_out, char **render_node_out)
+{
+    const char *configured_node = getenv("GLIMPSE_DRM_RENDER_NODE");
+    if (configured_node && configured_node[0] != '\0') {
+        int ret = av_hwdevice_ctx_create(
+            device_out, AV_HWDEVICE_TYPE_VAAPI, configured_node, NULL, 0);
+        if (ret < 0) {
+            log_av_error("Creating VAAPI device from GLIMPSE_DRM_RENDER_NODE", ret);
+            return -1;
+        }
+
+        *render_node_out = strdup(configured_node);
+        if (!*render_node_out) {
+            av_buffer_unref(device_out);
+            fprintf(stderr, "Could not copy configured DRM render-node path\n");
+            return -1;
+        }
+        printf("Selected VAAPI render node: %s\n", *render_node_out);
+        return 0;
+    }
+
+    glob_t matches = { 0 };
+    int glob_result = glob("/dev/dri/renderD*", 0, NULL, &matches);
+    if (glob_result != 0) {
+        fprintf(stderr,
+                "Could not enumerate /dev/dri/renderD*; set "
+                "GLIMPSE_DRM_RENDER_NODE to a VAAPI render node\n");
+        globfree(&matches);
+        return -1;
+    }
+
+    for (size_t i = 0; i < matches.gl_pathc; i++) {
+        AVBufferRef *device = NULL;
+        int ret = av_hwdevice_ctx_create(
+            &device, AV_HWDEVICE_TYPE_VAAPI, matches.gl_pathv[i], NULL, 0);
+        if (ret < 0)
+            continue;
+
+        *render_node_out = strdup(matches.gl_pathv[i]);
+        if (!*render_node_out) {
+            av_buffer_unref(&device);
+            globfree(&matches);
+            fprintf(stderr, "Could not copy selected DRM render-node path\n");
+            return -1;
+        }
+
+        *device_out = device;
+        printf("Selected VAAPI render node: %s\n", *render_node_out);
+        globfree(&matches);
+        return 0;
+    }
+
+    globfree(&matches);
+    fprintf(stderr,
+            "No accessible VAAPI render node found; set "
+            "GLIMPSE_DRM_RENDER_NODE to select one explicitly\n");
+    return -1;
+}
+
+static EGLDisplay get_egl_display_for_render_node(const char *render_node)
+{
+    const char *extensions = eglQueryString(EGL_NO_DISPLAY, EGL_EXTENSIONS);
+    if (!extensions ||
+        !strstr(extensions, "EGL_EXT_device_enumeration") ||
+        !strstr(extensions, "EGL_EXT_device_query") ||
+        !strstr(extensions, "EGL_EXT_platform_device")) {
+        fprintf(stderr,
+                "EGL device/render-node extensions are required to match "
+                "EGL with VAAPI device %s\n", render_node);
+        return EGL_NO_DISPLAY;
+    }
+
+    PFNEGLQUERYDEVICESEXTPROC query_devices =
+        (PFNEGLQUERYDEVICESEXTPROC)eglGetProcAddress("eglQueryDevicesEXT");
+    PFNEGLQUERYDEVICESTRINGEXTPROC query_device_string =
+        (PFNEGLQUERYDEVICESTRINGEXTPROC)
+            eglGetProcAddress("eglQueryDeviceStringEXT");
+    PFNEGLGETPLATFORMDISPLAYEXTPROC get_platform_display =
+        (PFNEGLGETPLATFORMDISPLAYEXTPROC)
+            eglGetProcAddress("eglGetPlatformDisplayEXT");
+
+    if (!query_devices || !query_device_string || !get_platform_display) {
+        fprintf(stderr, "Required EGL device-selection entry points unavailable\n");
+        return EGL_NO_DISPLAY;
+    }
+
+    EGLint device_count = 0;
+    if (!query_devices(0, NULL, &device_count) || device_count <= 0) {
+        fprintf(stderr, "Could not enumerate EGL devices: 0x%x\n", eglGetError());
+        return EGL_NO_DISPLAY;
+    }
+
+    EGLDeviceEXT *devices = calloc((size_t)device_count, sizeof(*devices));
+    if (!devices) {
+        fprintf(stderr, "Could not allocate EGL device list\n");
+        return EGL_NO_DISPLAY;
+    }
+
+    EGLint actual_count = 0;
+    if (!query_devices(device_count, devices, &actual_count)) {
+        fprintf(stderr, "Could not retrieve EGL devices: 0x%x\n", eglGetError());
+        free(devices);
+        return EGL_NO_DISPLAY;
+    }
+
+    EGLDisplay display = EGL_NO_DISPLAY;
+    for (EGLint i = 0; i < actual_count; i++) {
+        const char *device_extensions = query_device_string(
+            devices[i], EGL_EXTENSIONS);
+        if (!device_extensions ||
+            !strstr(device_extensions, "EGL_EXT_device_drm_render_node"))
+            continue;
+
+        const char *candidate = query_device_string(
+            devices[i], EGL_DRM_RENDER_NODE_FILE_EXT);
+        if (candidate && strcmp(candidate, render_node) == 0) {
+            display = get_platform_display(
+                EGL_PLATFORM_DEVICE_EXT, devices[i], NULL);
+            if (display != EGL_NO_DISPLAY)
+                printf("Matched EGL device render node: %s\n", candidate);
+            break;
+        }
+    }
+
+    free(devices);
+
+    if (display == EGL_NO_DISPLAY) {
+        fprintf(stderr,
+                "No EGL device matches VAAPI render node %s; refusing to "
+                "continue with a potentially different GPU\n", render_node);
+    }
+
+    return display;
 }
 
 static enum AVPixelFormat get_hw_format(
@@ -473,9 +614,7 @@ static int inspect_10bit_samples(GLuint y_texture, GLuint uv_texture,
         "    output_samples = vec4(y, uv.r, uv.g, 1.0);\n"
         "}\n";
 
-    if (width <= 0 || height <= 0 ||
-        (width & 1) != 0 || (height & 1) != 0 ||
-        !dump_path ||
+    if (width <= 0 || height <= 0 || !dump_path ||
         (size_t)width > SIZE_MAX / (size_t)height / (4 * sizeof(float))) {
         fprintf(stderr, "Invalid or oversized 10-bit inspection dimensions\n");
         return -1;
@@ -667,7 +806,10 @@ static int inspect_10bit_samples(GLuint y_texture, GLuint uv_texture,
      * left-aligned, so shift right by six. Preserve GL readback row order;
      * the comparison tool checks both vertical orientations.
      */
-    size_t raw_size = pixel_count * 3;
+    size_t chroma_width = (size_t)chroma_dimension(width);
+    size_t chroma_height = (size_t)chroma_dimension(height);
+    size_t chroma_samples = chroma_width * chroma_height;
+    size_t raw_size = pixel_count * 2 + chroma_samples * 4;
     uint8_t *raw = malloc(raw_size);
     if (!raw) {
         fprintf(stderr, "Could not allocate 10-bit sample dump\n");
@@ -897,20 +1039,30 @@ static int self_test_layout_validation(void)
     }
 
     printf("PASS: malformed descriptor rejected\n");
+
+    if (chroma_dimension(720) != 360 ||
+        chroma_dimension(721) != 361 ||
+        chroma_dimension(1080) != 540 ||
+        chroma_dimension(1081) != 541 ||
+        chroma_dimension(1) != 1) {
+        fprintf(stderr, "FAIL: 4:2:0 chroma dimension rounding\n");
+        return 1;
+    }
+    printf("PASS: even and odd 4:2:0 chroma dimensions\n");
     printf("All DRM layout validation self-tests passed\n");
     return 0;
 }
 
 static int test_egl_import(const AVDRMFrameDescriptor *desc,
                            int frame_width, int frame_height,
-                           const char *dump_path)
+                           const char *dump_path,
+                           const char *render_node)
 {
-    EGLDisplay display = eglGetPlatformDisplay(
-        EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, NULL);
+    EGLDisplay display = get_egl_display_for_render_node(render_node);
 
     if (display == EGL_NO_DISPLAY) {
-        fprintf(stderr, "Could not get surfaceless EGL display: 0x%x\n",
-                eglGetError());
+        fprintf(stderr, "Could not get EGL display for VAAPI render node %s: 0x%x\n",
+                render_node, eglGetError());
         return -1;
     }
 
@@ -1038,10 +1190,12 @@ static int test_egl_import(const AVDRMFrameDescriptor *desc,
         frame_width, frame_height, 0, &images[0], &textures[0]);
 
     if (result == 0) {
+        int chroma_width = chroma_dimension(frame_width);
+        int chroma_height = chroma_dimension(frame_height);
         result = import_layer(
             display, create_image, destroy_image, image_to_texture,
-        desc, &desc->layers[1],
-            frame_width / 2, frame_height / 2, 1,
+            desc, &desc->layers[1],
+            chroma_width, chroma_height, 1,
             &images[1], &textures[1]);
     }
 
@@ -1083,7 +1237,8 @@ static void print_fourcc(uint32_t f, char out[5])
 }
 
 static int query_egl_dma_buf_support(
-    const AVDRMFrameDescriptor *desc)
+    const AVDRMFrameDescriptor *desc,
+    const char *render_node)
 {
     static const struct {
         uint32_t format;
@@ -1095,12 +1250,11 @@ static int query_egl_dma_buf_support(
         { DRM_FORMAT_GR1616, "GR32" },
     };
 
-    EGLDisplay display = eglGetPlatformDisplay(
-        EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, NULL);
+    EGLDisplay display = get_egl_display_for_render_node(render_node);
 
     if (display == EGL_NO_DISPLAY) {
-        fprintf(stderr, "Could not get EGL display for format query: 0x%x\n",
-                eglGetError());
+        fprintf(stderr, "Could not get EGL display for VAAPI render node %s: 0x%x\n",
+                render_node, eglGetError());
         return -1;
     }
 
@@ -1283,6 +1437,7 @@ static int query_egl_dma_buf_support(
 
 static int process_decoded_frame(AVFrame *frame,
                                   const char *dump_path,
+                                  const char *render_node,
                                   unsigned long long frame_index)
 {
     AVFrame *drm = av_frame_alloc();
@@ -1371,14 +1526,15 @@ static int process_decoded_frame(AVFrame *frame,
                "skipping EGL capability query and import\n");
         frame_status = 2;
     } else {
-        if (query_egl_dma_buf_support(desc) < 0) {
+        if (query_egl_dma_buf_support(desc, render_node) < 0) {
             fprintf(stderr, "EGL DMA-BUF capability query failed\n");
             goto frame_cleanup;
         }
 
         fprintf(stderr, "\nAttempting EGL DMA-BUF import...\n");
         if (test_egl_import(
-                desc, frame->width, frame->height, dump_path) < 0) {
+                desc, frame->width, frame->height, dump_path,
+                render_node) < 0) {
             fprintf(stderr, "EGL DMA-BUF import test failed\n");
             goto frame_cleanup;
         }
@@ -1443,6 +1599,7 @@ int main(int argc, char **argv)
 
     AVFormatContext *fmt = NULL;
     AVBufferRef *device = NULL;
+    char *render_node = NULL;
     AVCodecContext *dec = NULL;
     AVPacket *pkt = NULL;
     AVFrame *frame = NULL;
@@ -1494,13 +1651,8 @@ int main(int argc, char **argv)
         goto cleanup;
     }
 
-    ret = av_hwdevice_ctx_create(
-        &device, AV_HWDEVICE_TYPE_VAAPI,
-        "/dev/dri/renderD128", NULL, 0);
-    if (ret < 0) {
-        log_av_error("Creating VAAPI device", ret);
+    if (create_vaapi_device(&device, &render_node) < 0)
         goto cleanup;
-    }
 
     dec = avcodec_alloc_context3(codec);
     if (!dec) {
@@ -1573,7 +1725,8 @@ int main(int argc, char **argv)
                 }
                 printf("\nProcessing frame %llu (%llu/%llu)\n",
                        frame_index, processed_frames + 1, frame_count);
-                int frame_result = process_decoded_frame(frame, output_path, frame_index);
+                int frame_result = process_decoded_frame(
+                    frame, output_path, render_node, frame_index);
                 if (frame_result != 0) {
                     if (frame_result == 2)
                         exit_status = 2;
@@ -1605,6 +1758,7 @@ cleanup:
     av_packet_free(&pkt);
     avcodec_free_context(&dec);
     av_buffer_unref(&device);
+    free(render_node);
     avformat_close_input(&fmt);
 
     return exit_status;

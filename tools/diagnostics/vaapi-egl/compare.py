@@ -8,10 +8,12 @@ from pathlib import Path
 
 def compare_10bit_orientation(label, actual, reference, width, height,
                               flipped):
+    chroma_width = (width + 1) // 2
+    chroma_height = (height + 1) // 2
     planes = (
         ("Y", width, height),
-        ("U", width // 2, height // 2),
-        ("V", width // 2, height // 2),
+        ("U", chroma_width, chroma_height),
+        ("V", chroma_width, chroma_height),
     )
     offset = 0
     print(f"\n{label}")
@@ -50,7 +52,8 @@ def compare_10bit_orientation(label, actual, reference, width, height,
 
 
 def compare_10bit(actual, reference, width, height):
-    expected_size = width * height * 3
+    chroma_samples = ((width + 1) // 2) * ((height + 1) // 2)
+    expected_size = (width * height + 2 * chroma_samples) * 2
     if len(actual) != expected_size:
         raise ValueError(
             f"GPU dump: expected {expected_size} bytes, got {len(actual)}"
@@ -135,8 +138,6 @@ def main():
     reference = args.reference_rgb24.read_bytes()
 
     if args.format == "yuv420p10le":
-        if args.width % 2 or args.height % 2:
-            parser.error("yuv420p10le requires even width and height")
         try:
             compare_10bit(gpu, reference, args.width, args.height)
         except ValueError as error:
