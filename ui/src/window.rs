@@ -436,6 +436,16 @@ impl GlimpseWindow {
             },
         );
 
+        // The seek handler belongs to the window, not an individual media load.
+        let p_seekbar = Rc::clone(&player);
+        let v_seekbar = Rc::clone(&video_playback);
+        bottom_controls.seekbar.connect_change_value(move |_, _, val| {
+            let target = Duration::from_secs_f64(val.max(0.0));
+            if let Some(ref p) = *p_seekbar.borrow() { p.seek(target); }
+            if let Some(ref mut video) = *v_seekbar.borrow_mut() { video.seek(target); }
+            glib::Propagation::Proceed
+        });
+
         // Rule 4: Mouse wheel over window body adjusts volume in 5% steps
         let p_vol_wheel = Rc::clone(&player);
         let p_vol_wheel_value = Rc::clone(&player);
@@ -891,21 +901,13 @@ fn load_and_play_file(
     window.set_title(Some(&format!("Glimpse - {}", file_name)));
     bottom_controls.title_label.set_text(file_name);
 
-    // Stop previous custom decoder before replacing the media source.
+    // Retire both playback paths before attempting to open the replacement.
     video_playback.borrow_mut().take();
-
-    // Stop previous engine playback before replacing the source.
-    if let Some(ref old_p) = *player.borrow() { old_p.stop(); }
+    if let Some(old_player) = player.borrow_mut().take() {
+        old_player.stop();
+    }
 
     picture.set_paintable(gdk4::Paintable::NONE);
-
-    let p_seek = Rc::clone(player);    let v_seek = Rc::clone(video_playback);
-    bottom_controls.seekbar.connect_change_value(move |_, _, val| {
-        let target = Duration::from_secs_f64(val.max(0.0));
-        if let Some(ref p) = *p_seek.borrow() { p.seek(target); }
-        if let Some(ref mut video) = *v_seek.borrow_mut() { video.seek(target); }
-        glib::Propagation::Proceed
-    });
 
     // Initialize Glimpse engine for stream probing and audio master clock tracking
     match Player::open(path) {
@@ -971,14 +973,20 @@ fn load_and_play_file(
                 );
                 bottom_controls.settings_button.set_popover(Some(&popover));
             }
+
+            stack.set_visible_child_name("player");
         }
         Err(e) => {
-            eprintln!("Engine probe note: {}", e);
+            eprintln!("Could not open media: {}", e);
+            window.set_title(Some("Glimpse"));
+            bottom_controls.title_label.set_text("No media loaded");
+            bottom_controls.elapsed_label.set_text("0:00");
+            bottom_controls.duration_label.set_text("0:00");
+            bottom_controls.seekbar.set_range(0.0, 100.0);
+            bottom_controls.seekbar.set_value(0.0);
+            stack.set_visible_child_name("loader");
         }
     }
-
-    // Switch view from loader to player
-    stack.set_visible_child_name("player");
 }
 
 fn reveal_and_schedule_controls(
