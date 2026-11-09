@@ -93,6 +93,7 @@ impl Player {
         {
             let initial_volume = if self.audio_enabled.load(Ordering::Acquire) { self.volume() } else { 0.0 };
             let mut start_position = *self.seek_position.lock();
+            let selected_audio = self.tracks.lock().active_audio.map(|track| track.0);
             let mut reset_position = false;
             let mut session = self.audio_session.lock();
             if session.as_ref().is_some_and(AudioPlaybackHandle::is_finished) {
@@ -111,6 +112,7 @@ impl Player {
                     self.path.clone(),
                     initial_volume,
                     start_position,
+                    selected_audio,
                     self.event_sender.clone(),
                 ) {
                     Ok(handle) => *session = Some(handle),
@@ -185,6 +187,7 @@ impl Player {
                         self.path.clone(),
                         initial_volume,
                         clamped,
+                        self.tracks.lock().active_audio.map(|track| track.0),
                         self.event_sender.clone(),
                     ) {
                         Ok(handle) => *session = Some(handle),
@@ -236,15 +239,60 @@ impl Player {
     }
 
     pub fn select_audio(&self, id: Option<TrackId>) {
+        let updated_tracks = {
+            let mut tracks = self.tracks.lock();
+            if id.is_some_and(|selected| !tracks.audio_tracks.iter().any(|track| track.id == selected)) {
+                return;
+            }
+            if tracks.active_audio == id {
+                return;
+            }
+            tracks.active_audio = id;
+            tracks.clone()
+        };
+
         self.audio_enabled.store(id.is_some(), Ordering::Release);
+
         #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
-        if let Some(handle) = self.audio_session.lock().as_ref() {
-            handle.set_volume(if id.is_some() { self.volume() } else { 0.0 });
+        if let Some(selected_track) = id {
+            let mut state = self.state.lock();
+            let was_playing = *state == PlayerState::Playing;
+            let position = Duration::from_secs_f64(self.clock.get_pts());
+            *self.seek_position.lock() = position;
+
+            let mut session = self.audio_session.lock();
+            if let Some(mut previous) = session.take() {
+                previous.stop();
+            }
+            self.clock.reset(position.as_secs_f64());
+
+            if was_playing {
+                let playback = AudioPlaybackSession::new(Arc::clone(&self.clock));
+                match playback.spawn_from(
+                    self.path.clone(),
+                    self.volume(),
+                    position,
+                    Some(selected_track.0),
+                    self.event_sender.clone(),
+                ) {
+                    Ok(handle) => *session = Some(handle),
+                    Err(error) => {
+                        *state = PlayerState::Paused;
+                        self.clock.pause();
+                        let _ = self.event_sender.send(Event::StateChanged(PlayerState::Paused));
+                        let _ = self.event_sender.send(Event::Error(error));
+                    }
+                }
+            } else {
+                self.clock.pause();
+            }
+        } else {
+            if let Some(handle) = self.audio_session.lock().as_ref() {
+                handle.set_volume(0.0);
+            }
         }
 
-        let mut t = self.tracks.lock();
-        t.active_audio = id;
-        let _ = self.event_sender.send(Event::TracksChanged(t.clone()));
+        let _ = self.event_sender.send(Event::TracksChanged(updated_tracks));
     }
 
     pub fn select_subtitle(&self, id: Option<TrackId>) {
