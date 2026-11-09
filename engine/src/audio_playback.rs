@@ -505,3 +505,38 @@ fn update_audio_clock(sink: &PipeWireAudioSink, clock: &MasterClock, submitted_e
         (stats.device_delay_ms / 1_000.0).max(0.0),
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completed_worker_is_detected_even_without_a_completion_signal() {
+        let worker = thread::spawn(|| {});
+        while !worker.is_finished() {
+            thread::yield_now();
+        }
+
+        let handle = AudioPlaybackHandle {
+            control: Arc::new(PlaybackControl::default()),
+            worker: Some(worker),
+        };
+
+        assert!(handle.is_finished());
+        assert!(!handle.reached_end_of_stream());
+    }
+
+    #[test]
+    fn natural_eof_is_distinguished_from_other_worker_completion() {
+        let control = Arc::new(PlaybackControl::default());
+        control.finished.store(true, Ordering::Release);
+        control.ended.store(true, Ordering::Release);
+        let handle = AudioPlaybackHandle {
+            control,
+            worker: None,
+        };
+
+        assert!(handle.is_finished());
+        assert!(handle.reached_end_of_stream());
+    }
+}
