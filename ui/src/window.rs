@@ -984,57 +984,65 @@ fn load_and_play_file(
     // Stop previous engine playback before replacing the source.
     if let Some(ref old_p) = *player.borrow() { old_p.stop(); }
 
-    // Stop previous media if any
+    // Stop previous GTK media only in the legacy playback configuration.
+    #[cfg(not(feature = "experimental-engine"))]
     if let Some(ref old_m) = *media_holder.borrow() {
         old_m.pause();
     }
     *media_holder.borrow_mut() = None;
 
-    // Create native GTK4 MediaFile for real video decoding & audio output
-    let file = if path.starts_with("file://") || path.contains("://") {
-        gio::File::for_uri(path)
-    } else {
-        gio::File::for_path(path)
-    };
-
-    let media = MediaFile::for_file(&file);
-    media.set_loop(true);
-    picture.set_paintable(Some(&media));
     #[cfg(not(feature = "experimental-engine"))]
-    media.play();
+    {
+        // GTK MediaFile is retained only for the legacy playback path.
+        let file = if path.starts_with("file://") || path.contains("://") {
+            gio::File::for_uri(path)
+        } else {
+            gio::File::for_path(path)
+        };
 
-    // Duration update when container metadata arrives
-    let seekbar_dur = bottom_controls.seekbar.clone();
-    let dur_label = bottom_controls.duration_label.clone();
-    media.connect_duration_notify(move |m| {
-        let dur_micros = m.duration();
-        if dur_micros > 0 {
-            let dur_secs = dur_micros as f64 / 1_000_000.0;
-            seekbar_dur.set_range(0.0, dur_secs);
-            dur_label.set_text(&crate::controls::format_duration(Duration::from_micros(dur_micros as u64)));
+        let media = MediaFile::for_file(&file);
+        media.set_loop(true);
+        picture.set_paintable(Some(&media));
+        #[cfg(not(feature = "experimental-engine"))]
+        media.play();
+
+        // Duration update when container metadata arrives
+        let seekbar_dur = bottom_controls.seekbar.clone();
+        let dur_label = bottom_controls.duration_label.clone();
+        media.connect_duration_notify(move |m| {
+            let dur_micros = m.duration();
+            if dur_micros > 0 {
+                let dur_secs = dur_micros as f64 / 1_000_000.0;
+                seekbar_dur.set_range(0.0, dur_secs);
+                dur_label.set_text(&crate::controls::format_duration(Duration::from_micros(dur_micros as u64)));
+            }
+        });
+
+        // Check if duration is already known immediately
+        let initial_dur = media.duration();
+        if initial_dur > 0 {
+            let dur_secs = initial_dur as f64 / 1_000_000.0;
+            bottom_controls.seekbar.set_range(0.0, dur_secs);
+            bottom_controls.duration_label.set_text(&crate::controls::format_duration(Duration::from_micros(initial_dur as u64)));
         }
-    });
 
-    // Check if duration is already known immediately
-    let initial_dur = media.duration();
-    if initial_dur > 0 {
-        let dur_secs = initial_dur as f64 / 1_000_000.0;
-        bottom_controls.seekbar.set_range(0.0, dur_secs);
-        bottom_controls.duration_label.set_text(&crate::controls::format_duration(Duration::from_micros(initial_dur as u64)));
+        // GTK-owned timeline is used only by the legacy playback path.
+        #[cfg(not(feature = "experimental-engine"))]
+        let seekbar_pos = bottom_controls.seekbar.clone();
+        #[cfg(not(feature = "experimental-engine"))]
+        let el_label = bottom_controls.elapsed_label.clone();
+        #[cfg(not(feature = "experimental-engine"))]
+        media.connect_timestamp_notify(move |m| {
+            let ts_micros = m.timestamp();
+            let ts_secs = ts_micros as f64 / 1_000_000.0;
+            seekbar_pos.set_value(ts_secs);
+            el_label.set_text(&crate::controls::format_duration(Duration::from_micros(ts_micros.max(0) as u64)));
+        });
+
+
     }
-
-    // GTK-owned timeline is used only by the legacy playback path.
-    #[cfg(not(feature = "experimental-engine"))]
-    let seekbar_pos = bottom_controls.seekbar.clone();
-    #[cfg(not(feature = "experimental-engine"))]
-    let el_label = bottom_controls.elapsed_label.clone();
-    #[cfg(not(feature = "experimental-engine"))]
-    media.connect_timestamp_notify(move |m| {
-        let ts_micros = m.timestamp();
-        let ts_secs = ts_micros as f64 / 1_000_000.0;
-        seekbar_pos.set_value(ts_secs);
-        el_label.set_text(&crate::controls::format_duration(Duration::from_micros(ts_micros.max(0) as u64)));
-    });
+    #[cfg(feature = "experimental-engine")]
+    picture.set_paintable(gdk4::Paintable::NONE);
 
     // Seek both engine timelines together when the experimental engine is active.
     #[cfg(not(feature = "experimental-engine"))]
@@ -1057,70 +1065,83 @@ fn load_and_play_file(
         });
     }
 
-    // Volume & Mute UI reflection
-    let v_icon_m = bottom_controls.volume_icon.clone();
-    let v_btn_m = bottom_controls.volume_button.clone();
-    let v_slider_m = bottom_controls.volume_slider.clone();
-    let v_pct_m = bottom_controls.volume_percent_label.clone();
-    media.connect_volume_notify(move |m| {
-        crate::controls::update_volume_indicator(
-            &v_icon_m,
-            &v_btn_m,
-            &v_slider_m,
-            &v_pct_m,
-            m.volume(),
-            m.is_muted(),
-        );
-    });
+    #[cfg(not(feature = "experimental-engine"))]
+    {
+        // Volume & Mute UI reflection
+        let v_icon_m = bottom_controls.volume_icon.clone();
+        let v_btn_m = bottom_controls.volume_button.clone();
+        let v_slider_m = bottom_controls.volume_slider.clone();
+        let v_pct_m = bottom_controls.volume_percent_label.clone();
+        media.connect_volume_notify(move |m| {
+            crate::controls::update_volume_indicator(
+                &v_icon_m,
+                &v_btn_m,
+                &v_slider_m,
+                &v_pct_m,
+                m.volume(),
+                m.is_muted(),
+            );
+        });
 
-    let v_icon_mut = bottom_controls.volume_icon.clone();
-    let v_btn_mut = bottom_controls.volume_button.clone();
-    let v_slider_mut = bottom_controls.volume_slider.clone();
-    let v_pct_mut = bottom_controls.volume_percent_label.clone();
-    media.connect_muted_notify(move |m| {
-        crate::controls::update_volume_indicator(
-            &v_icon_mut,
-            &v_btn_mut,
-            &v_slider_mut,
-            &v_pct_mut,
-            m.volume(),
-            m.is_muted(),
-        );
-    });
+        let v_icon_mut = bottom_controls.volume_icon.clone();
+        let v_btn_mut = bottom_controls.volume_button.clone();
+        let v_slider_mut = bottom_controls.volume_slider.clone();
+        let v_pct_mut = bottom_controls.volume_percent_label.clone();
+        media.connect_muted_notify(move |m| {
+            crate::controls::update_volume_indicator(
+                &v_icon_mut,
+                &v_btn_mut,
+                &v_slider_mut,
+                &v_pct_mut,
+                m.volume(),
+                m.is_muted(),
+            );
+        });
 
-    // Window size clamps strictly to video aspect ratio (no letterbox margins)
-    let win_aspect = window.clone();
-    let has_resized = Rc::new(RefCell::new(false));
-    let has_resized_c = Rc::clone(&has_resized);
-    media.connect_prepared_notify(move |m| {
-        if *has_resized_c.borrow() {
-            return;
-        }
-        let iw = m.intrinsic_width();
-        let ih = m.intrinsic_height();
-        if iw > 0 && ih > 0 {
-            *has_resized_c.borrow_mut() = true;
-            let aspect = iw as f64 / ih as f64;
-            let (tw, th) = if aspect >= 1.0 {
-                let w = (iw as i32).clamp(640, 1080);
-                let h = (w as f64 / aspect).round() as i32;
-                (w, h)
-            } else {
-                let h = (ih as i32).clamp(540, 800);
-                let w = (h as f64 * aspect).round() as i32;
-                (w, h)
-            };
-            win_aspect.set_default_size(tw, th);
-        }
-    });
+        // Window size clamps strictly to video aspect ratio (no letterbox margins)
+        let win_aspect = window.clone();
+        let has_resized = Rc::new(RefCell::new(false));
+        let has_resized_c = Rc::clone(&has_resized);
+        media.connect_prepared_notify(move |m| {
+            if *has_resized_c.borrow() {
+                return;
+            }
+            let iw = m.intrinsic_width();
+            let ih = m.intrinsic_height();
+            if iw > 0 && ih > 0 {
+                *has_resized_c.borrow_mut() = true;
+                let aspect = iw as f64 / ih as f64;
+                let (tw, th) = if aspect >= 1.0 {
+                    let w = (iw as i32).clamp(640, 1080);
+                    let h = (w as f64 / aspect).round() as i32;
+                    (w, h)
+                } else {
+                    let h = (ih as i32).clamp(540, 800);
+                    let w = (h as f64 * aspect).round() as i32;
+                    (w, h)
+                };
+                win_aspect.set_default_size(tw, th);
+            }
+        });
 
-    *media_holder.borrow_mut() = Some(media.clone());
+        *media_holder.borrow_mut() = Some(media.clone());
+
+    }
 
     // Initialize Glimpse engine for stream probing and audio master clock tracking
     match Player::open(path) {
         Ok((p, _event_rx)) => {
             p.play();
             *player.borrow_mut() = Some(p);
+
+            // The engine owns duration metadata in the experimental playback path.
+            if let Some(duration) = p.duration() {
+                let seconds = duration.as_secs_f64();
+                bottom_controls.seekbar.set_range(0.0, seconds);
+                bottom_controls.duration_label.set_text(
+                    &crate::controls::format_duration(duration),
+                );
+            }
 
             // Setup track popover with Rule 5 (Subtitles OFF by default)
             if let Some(ref current_p) = *player.borrow() {

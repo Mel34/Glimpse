@@ -266,6 +266,9 @@ fn schedule_frames(
     elapsed_label: gtk4::Label,
 ) {
     let mut pending: Option<VideoFrameData> = None;
+    // A fresh scheduler must show its first decoded frame even when the master
+    // clock is paused at the seek target and cannot advance to that frame's PTS.
+    let mut present_first_frame = true;
     let mut displayed_frames = 0u64;
     let mut dropped_frames = 0u64;
 
@@ -297,13 +300,14 @@ fn schedule_frames(
             };
             let master_pts = clock.get_pts();
             let lateness = master_pts - frame.pts;
-            if lateness > 0.040 {
+            if !present_first_frame && lateness > 0.040 {
                 pending = None;
                 dropped_frames += 1;
                 continue;
             }
-            if frame.pts <= master_pts + 0.005 {
+            if present_first_frame || frame.pts <= master_pts + 0.005 {
                 let frame = pending.take().expect("pending frame was checked");
+                present_first_frame = false;
                 let bytes = glib::Bytes::from_owned(frame.rgba_data.as_ref().clone());
                 let texture = gdk4::MemoryTexture::new(
                     frame.width as i32,
