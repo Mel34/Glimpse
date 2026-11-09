@@ -36,6 +36,7 @@ pub struct Player {
     current_serial: Arc<Mutex<Serial>>,
     event_sender: Sender<Event>,
     path: String,
+    seek_position: Arc<Mutex<Duration>>,
     #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
     audio_session: Mutex<Option<AudioPlaybackHandle>>,
     #[allow(dead_code)]
@@ -72,6 +73,7 @@ impl Player {
             current_serial,
             event_sender: event_tx,
             path: path_or_uri.to_owned(),
+            seek_position: Arc::new(Mutex::new(Duration::ZERO)),
             #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
             audio_session: Mutex::new(None),
             running,
@@ -86,15 +88,26 @@ impl Player {
         #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
         {
             let initial_volume = self.volume();
+            let mut start_position = *self.seek_position.lock();
             let mut session = self.audio_session.lock();
             if session.as_ref().is_some_and(AudioPlaybackHandle::is_finished) {
+                let reached_eof = session.as_ref().is_some_and(AudioPlaybackHandle::reached_end_of_stream);
                 session.take();
-                self.clock.reset(0.0);
+                if reached_eof {
+                    start_position = Duration::ZERO;
+                    *self.seek_position.lock() = Duration::ZERO;
+                    self.clock.reset(0.0);
+                }
             }
             let _ = self.event_sender.send(Event::StateChanged(PlayerState::Playing));
             if session.is_none() {
                 let playback = AudioPlaybackSession::new(Arc::clone(&self.clock));
-                match playback.spawn(self.path.clone(), initial_volume, self.event_sender.clone()) {
+                match playback.spawn_from(
+                    self.path.clone(),
+                    initial_volume,
+                    start_position,
+                    self.event_sender.clone(),
+                ) {
                     Ok(handle) => *session = Some(handle),
                     Err(error) => {
                         *state = PlayerState::Paused;
@@ -120,6 +133,7 @@ impl Player {
             handle.stop();
         }
         self.clock.reset(0.0);
+        *self.seek_position.lock() = Duration::ZERO;
         self.clock.pause();
         *state = PlayerState::Paused;
         let _ = self.event_sender.send(Event::StateChanged(PlayerState::Paused));
@@ -137,11 +151,44 @@ impl Player {
     }
 
     pub fn seek(&self, to: Duration) {
+        let mut state = self.state.lock();
+        let clamped = clamp_seek_target(to, *self.duration.lock());
+        let was_playing = *state == PlayerState::Playing;
+        *self.seek_position.lock() = clamped;
+        self.clock.reset(clamped.as_secs_f64());
+
+        #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
+        {
+            let initial_volume = self.volume();
+            let mut session = self.audio_session.lock();
+            if let Some(mut previous) = session.take() {
+                let restart = was_playing && !previous.is_finished();
+                previous.stop();
+                if restart {
+                    let playback = AudioPlaybackSession::new(Arc::clone(&self.clock));
+                    match playback.spawn_from(
+                        self.path.clone(),
+                        initial_volume,
+                        clamped,
+                        self.event_sender.clone(),
+                    ) {
+                        Ok(handle) => *session = Some(handle),
+                        Err(error) => {
+                            *state = PlayerState::Paused;
+                            self.clock.pause();
+                            let _ = self.event_sender.send(Event::StateChanged(PlayerState::Paused));
+                            let _ = self.event_sender.send(Event::Error(error));
+                        }
+                    }
+                } else if *state == PlayerState::Ended {
+                    *state = PlayerState::Paused;
+                    let _ = self.event_sender.send(Event::StateChanged(PlayerState::Paused));
+                }
+            }
+        }
+
         let mut serial = self.current_serial.lock();
         *serial = serial.next();
-
-        let clamped = clamp_seek_target(to, *self.duration.lock());
-        self.clock.reset(clamped.as_secs_f64());
         let _ = self.event_sender.send(Event::PositionChanged(clamped));
     }
 
