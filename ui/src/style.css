@@ -100,12 +100,12 @@ window.glimpse-window {
 
 /* Circular Close Button (Strict 24x24 px circular geometry) */
 button.header-close-button {
-    min-width: 24px;
-    min-height: 24px;
+    min-width: 28px;
+    min-height: 28px;
     padding: 0;
     margin: 0;
     border-radius: 9999px;
-    background-color: rgba(255, 255, 255, 0.14);
+    background-color: rgba(255, 255, 255, 0.26);
     color: #ffffff;
     box-shadow: none;
     border: none;
@@ -228,12 +228,13 @@ popover label.dim-label,
 
 /* Vertical Volume Slider in Popover */
 scale.volume-scale {
-    min-height: 120px;
-    padding: 0 4px;
+    min-width: 24px;
+    min-height: 140px;
+    padding: 0;
 }
 
 scale.volume-scale trough {
-    min-width: 6px;
+    min-width: 4px;
     background-color: rgba(255, 255, 255, 0.2);
     border-radius: 9999px;
 }
@@ -244,11 +245,14 @@ scale.volume-scale highlight {
 }
 
 scale.volume-scale slider {
-    min-width: 14px;
-    min-height: 14px;
+    min-width: 16px;
+    min-height: 16px;
     border-radius: 9999px;
     background-color: #ffffff;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
 }
 
 
+
+.menu-popover checkbutton { min-height: 32px; padding: 4px 8px; }
+.menu-popover checkbutton radio { min-width: 16px; min-height: 16px; margin: 0 8px 0 0; padding: 0; }

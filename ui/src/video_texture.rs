@@ -5,20 +5,13 @@ use std::sync::Arc;
 use std::time::Duration;
 use gtk4::prelude::RangeExt;
 
-#[cfg(feature = "experimental-engine")]
 use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(feature = "experimental-engine")]
 use std::thread::{self, JoinHandle};
-#[cfg(feature = "experimental-engine")]
 use crossbeam_channel::{bounded, Receiver, Sender, TryRecvError};
-#[cfg(feature = "experimental-engine")]
 use glimpse_engine::decoder::{VideoDecoder, VideoFrameQueue};
-#[cfg(feature = "experimental-engine")]
 use glimpse_engine::demuxer::{demux_file_from, PacketQueues};
-#[cfg(feature = "experimental-engine")]
 use glimpse_engine::{Serial, VideoFrameData};
 
-#[cfg(feature = "experimental-engine")]
 struct PlaybackRun {
     queues: PacketQueues,
     cancelled: Arc<AtomicBool>,
@@ -26,42 +19,31 @@ struct PlaybackRun {
 }
 
 pub struct VideoPlaybackHandle {
-    #[cfg(feature = "experimental-engine")]
-    path: String,
-    #[cfg(feature = "experimental-engine")]
-    tracks: TrackList,
-    #[cfg(feature = "experimental-engine")]
-    picture: gtk4::Picture,
-    #[cfg(feature = "experimental-engine")]
-    clock: Arc<MasterClock>,
-    #[cfg(feature = "experimental-engine")]
-    seekbar: gtk4::Scale,
-    #[cfg(feature = "experimental-engine")]
-    elapsed_label: gtk4::Label,
-    #[cfg(feature = "experimental-engine")]
-    run: Option<PlaybackRun>,
+        path: String,
+        tracks: TrackList,
+        picture: gtk4::Picture,
+        clock: Arc<MasterClock>,
+        seekbar: gtk4::Scale,
+        elapsed_label: gtk4::Label,
+        run: Option<PlaybackRun>,
 }
 
 impl VideoPlaybackHandle {
     pub fn seek(&mut self, target: Duration) {
-        #[cfg(feature = "experimental-engine")]
-        {
+                {
             self.stop_run();
             if let Err(error) = self.start_run(target) {
                 tracing::error!(%error, "Could not restart video after seek");
             }
         }
-        #[cfg(not(feature = "experimental-engine"))]
-        let _ = target;
+                let _ = target;
     }
 
     pub fn stop(&mut self) {
-        #[cfg(feature = "experimental-engine")]
-        self.stop_run();
+                self.stop_run();
     }
 
-    #[cfg(feature = "experimental-engine")]
-    fn stop_run(&mut self) {
+        fn stop_run(&mut self) {
         if let Some(mut run) = self.run.take() {
             run.cancelled.store(true, Ordering::Release);
             run.queues.abort();
@@ -71,8 +53,7 @@ impl VideoPlaybackHandle {
         }
     }
 
-    #[cfg(feature = "experimental-engine")]
-    fn start_run(&mut self, start_position: Duration) -> Result<(), String> {
+        fn start_run(&mut self, start_position: Duration) -> Result<(), String> {
         let video_stream_index = self.tracks.video_tracks.first()
             .map(|track| track.id.0)
             .ok_or_else(|| "The media has no video stream".to_string())?;
@@ -108,42 +89,24 @@ impl Drop for VideoPlaybackHandle {
 }
 
 pub fn present_continuous_frames(
-    path: &str,
-    tracks: TrackList,
-    picture: &gtk4::Picture,
-    clock: Arc<MasterClock>,
-    seekbar: &gtk4::Scale,
-    elapsed_label: &gtk4::Label,
+    path: &str, tracks: TrackList, picture: &gtk4::Picture, clock: Arc<MasterClock>,
+    seekbar: &gtk4::Scale, elapsed_label: &gtk4::Label,
 ) -> Option<VideoPlaybackHandle> {
-    #[cfg(feature = "experimental-engine")]
-    {
-        if tracks.video_tracks.is_empty() {
-            tracing::warn!("Engine video path skipped: no video stream");
-            return None;
-        }
-        let mut handle = VideoPlaybackHandle {
-            path: path.to_owned(),
-            tracks,
-            picture: picture.clone(),
-            clock,
-            seekbar: seekbar.clone(),
-            elapsed_label: elapsed_label.clone(),
-            run: None,
-        };
-        if let Err(error) = handle.start_run(Duration::ZERO) {
-            tracing::error!(%error, "Could not start engine video playback");
-            return None;
-        }
-        Some(handle)
+    if tracks.video_tracks.is_empty() {
+        tracing::warn!("Engine video path skipped: no video stream");
+        return None;
     }
-    #[cfg(not(feature = "experimental-engine"))]
-    {
-        let _ = (path, tracks, picture, clock, seekbar, elapsed_label);
-        None
+    let mut handle = VideoPlaybackHandle {
+        path: path.to_owned(), tracks, picture: picture.clone(), clock,
+        seekbar: seekbar.clone(), elapsed_label: elapsed_label.clone(), run: None,
+    };
+    if let Err(error) = handle.start_run(Duration::ZERO) {
+        tracing::error!(%error, "Could not start engine video playback");
+        return None;
     }
+    Some(handle)
 }
 
-#[cfg(feature = "experimental-engine")]
 fn spawn_decoder_worker(
     path: String,
     tracks: TrackList,
@@ -167,7 +130,6 @@ fn spawn_decoder_worker(
         .map_err(|error| format!("Could not start video decoder: {error}"))
 }
 
-#[cfg(feature = "experimental-engine")]
 fn decode_continuously(
     path: &str,
     tracks: &TrackList,
@@ -227,7 +189,6 @@ fn decode_continuously(
     }
 }
 
-#[cfg(feature = "experimental-engine")]
 fn forward_decoded_frames(
     frame_queue: &VideoFrameQueue,
     sender: &Sender<Result<VideoFrameData, String>>,
@@ -256,7 +217,6 @@ fn forward_decoded_frames(
     true
 }
 
-#[cfg(feature = "experimental-engine")]
 fn schedule_frames(
     receiver: Receiver<Result<VideoFrameData, String>>,
     picture: gtk4::Picture,

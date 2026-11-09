@@ -9,12 +9,8 @@ description = "Glimpse - Modern Linux video player with GTK4 and libadwaita"
 name = "glimpse"
 path = "src/main.rs"
 
-[features]
-default = []
-experimental-engine = ["glimpse-engine/ffmpeg-system", "glimpse-engine/audio-pipewire"]
-
 [dependencies]
-glimpse-engine = { path = "../engine" }
+glimpse-engine = { path = "../engine", features = ["ffmpeg-system", "audio-pipewire"] }
 gtk4 = { version = "0.8", features = ["v4_12"] }
 adw = { version = "0.6", package = "libadwaita", features = ["v1_5"] }
 crossbeam-channel = "0.5"

@@ -7,7 +7,7 @@ use gdk4::DragAction;
 use gio::SimpleAction;
 use gtk4::{
     Align, Box as GtkBox, Button, DropTarget, EventControllerKey, EventControllerMotion,
-    FileDialog, FileFilter, GestureClick, Image, Label, MediaFile, MenuButton,
+    FileDialog, FileFilter, GestureClick, Image, Label, MenuButton,
     Orientation, Overlay, Picture, Separator, Settings, Stack, StackTransitionType, WindowHandle,
 };
 
@@ -20,7 +20,6 @@ use crate::video_texture::VideoPlaybackHandle;
 pub struct GlimpseWindow {
     window: ApplicationWindow,
     player: Rc<RefCell<Option<Player>>>,
-    media_file: Rc<RefCell<Option<MediaFile>>>,
     video_playback: Rc<RefCell<Option<VideoPlaybackHandle>>>,
     bottom_controls: ControlBarWidgets,
     picture: Picture,
@@ -46,7 +45,6 @@ impl GlimpseWindow {
         window.add_css_class("glimpse-window");
 
         let player: Rc<RefCell<Option<Player>>> = Rc::new(RefCell::new(None));
-        let media_file: Rc<RefCell<Option<MediaFile>>> = Rc::new(RefCell::new(None));
         let video_playback: Rc<RefCell<Option<VideoPlaybackHandle>>> = Rc::new(RefCell::new(None));
         let video_playback_on_close = Rc::clone(&video_playback);
         let player_on_close = Rc::clone(&player);
@@ -233,7 +231,7 @@ impl GlimpseWindow {
         let menu_btn = MenuButton::new();
         menu_btn.set_icon_name("open-menu-symbolic");
         menu_btn.add_css_class("flat");
-        menu_btn.add_css_class("header-button");
+        menu_btn.add_css_class("osd-icon-button");
         menu_btn.set_size_request(28, 28);
         menu_btn.set_can_focus(false);
         menu_btn.set_tooltip_text(Some("Main Menu"));
@@ -319,7 +317,6 @@ impl GlimpseWindow {
         let click_gesture = GestureClick::new();
         click_gesture.set_button(1); // Left mouse button only
 
-        let m_toggle = Rc::clone(&media_file);
         let p_toggle = Rc::clone(&player);
         let v_toggle = Rc::clone(&video_playback);
         let win_click = window.clone();
@@ -353,33 +350,19 @@ impl GlimpseWindow {
             }
 
             if n_press == 1 {
-                let m_action = Rc::clone(&m_toggle);
                 let p_action = Rc::clone(&p_toggle);
                 let v_action = Rc::clone(&v_toggle);
                 let w_fs = win_rel.clone();
-
                 VideoClickStateMachine::handle_click(
-                    Rc::clone(&click_state_rel),
-                    1,
+                    Rc::clone(&click_state_rel), 1,
                     move || {
-                        if cfg!(feature = "experimental-engine") {
-                            if let Some(ref p) = *p_action.borrow() {
-                                if p.state() == PlayerState::Playing {
-                                    p.pause();
-                                } else {
-                                    if p.state() == PlayerState::Ended {
-                                        if let Some(ref mut video) = *v_action.borrow_mut() {
-                                            video.seek(Duration::ZERO);
-                                        }
-                                    }
-                                    p.play();
+                        if let Some(ref p) = *p_action.borrow() {
+                            if p.state() == PlayerState::Playing { p.pause(); }
+                            else {
+                                if p.state() == PlayerState::Ended {
+                                    if let Some(ref mut video) = *v_action.borrow_mut() { video.seek(Duration::ZERO); }
                                 }
-                            }
-                        } else if let Some(ref m) = *m_action.borrow() {
-                            if m.is_playing() {
-                                m.pause();
-                            } else {
-                                m.play();
+                                p.play();
                             }
                         }
                     },
@@ -443,7 +426,6 @@ impl GlimpseWindow {
         picture.add_controller(drag_gesture);
 
         // Rule 3: Mouse wheel over seekbar seeks in 5s steps (consumed)
-        let m_seek_wheel = Rc::clone(&media_file);
         let p_seek_wheel = Rc::clone(&player);
         let p_duration_wheel = Rc::clone(&player);
         let p_position_wheel = Rc::clone(&player);
@@ -451,31 +433,15 @@ impl GlimpseWindow {
 
         attach_seekbar_wheel(
             &bottom_controls.seekbar,
-            {
-                let m = Rc::clone(&media_file);
-                move || {
-                    if cfg!(feature = "experimental-engine") { p_duration_wheel.borrow().as_ref().and_then(Player::duration) } else { m.borrow().as_ref().map(|m| Duration::from_micros(m.duration().max(0) as u64)) }
-                }
-            },
-            {
-                let m = Rc::clone(&media_file);
-                move || {
-                    if cfg!(feature = "experimental-engine") { p_position_wheel.borrow().as_ref().map(Player::position).unwrap_or(Duration::ZERO) } else { m.borrow().as_ref().map(|m| Duration::from_micros(m.timestamp().max(0) as u64)).unwrap_or(Duration::ZERO) }
-                }
-            },
+            move || p_duration_wheel.borrow().as_ref().and_then(Player::duration),
+            move || p_position_wheel.borrow().as_ref().map(Player::position).unwrap_or(Duration::ZERO),
             move |target_pos| {
-                if !cfg!(feature = "experimental-engine") {
-                    if let Some(ref m) = *m_seek_wheel.borrow() {
-                        m.seek((target_pos.as_secs_f64() * 1_000_000.0) as i64);
-                    }
-                }
                 if let Some(ref p) = *p_seek_wheel.borrow() { p.seek(target_pos); }
                 if let Some(ref mut video) = *v_seek_wheel.borrow_mut() { video.seek(target_pos); }
             },
         );
 
         // Rule 4: Mouse wheel over window body adjusts volume in 5% steps
-        let m_vol_wheel = Rc::clone(&media_file);
         let p_vol_wheel = Rc::clone(&player);
         let p_vol_wheel_value = Rc::clone(&player);
         let win_ref = window.clone().upcast::<gtk4::Window>();
@@ -487,21 +453,8 @@ impl GlimpseWindow {
 
         attach_window_volume_wheel(
             &win_ref,
-            {
-                let m = Rc::clone(&media_file);
-                move || {
-                    if cfg!(feature = "experimental-engine") {
-                        p_vol_wheel_value.borrow().as_ref().map(Player::volume).unwrap_or(1.0)
-                    } else {
-                        m.borrow().as_ref().map(|m| m.volume() as f32).unwrap_or(1.0)
-                    }
-                }
-            },
+            move || p_vol_wheel_value.borrow().as_ref().map(Player::volume).unwrap_or(1.0),
             move |new_vol| {
-                if let Some(ref m) = *m_vol_wheel.borrow() {
-                    m.set_volume(new_vol as f64);
-                    m.set_muted(new_vol <= 0.001);
-                }
                 if let Some(ref p) = *p_vol_wheel.borrow() {
                     p.set_volume(new_vol);
                 }
@@ -517,7 +470,6 @@ impl GlimpseWindow {
         );
 
         // Volume Popover Slider: connects user slider dragging to engine & updates indicator
-        let m_vol_slider = Rc::clone(&media_file);
         let p_vol_slider = Rc::clone(&player);
         let v_icon_sl = bottom_controls.volume_icon.clone();
         let v_btn_sl = bottom_controls.volume_button.clone();
@@ -525,10 +477,6 @@ impl GlimpseWindow {
         let v_pct_sl = bottom_controls.volume_percent_label.clone();
         bottom_controls.volume_slider.connect_change_value(move |_, _, new_val| {
             let val = new_val.clamp(0.0, 1.0);
-            if let Some(ref m) = *m_vol_slider.borrow() {
-                m.set_volume(val);
-                m.set_muted(val <= 0.001);
-            }
             if let Some(ref p) = *p_vol_slider.borrow() {
                 p.set_volume(val as f32);
             }
@@ -543,15 +491,31 @@ impl GlimpseWindow {
             glib::Propagation::Proceed
         });
 
-        // Autohide controls on inactivity
+        let hide_timer: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
         let motion = EventControllerMotion::new();
-        let top_ref = top_controls.clone();
-        let btm_ref = bottom_controls.container.clone();
+        let top_motion = top_controls.clone();
+        let bottom_motion = bottom_controls.container.clone();
+        let timer_motion = Rc::clone(&hide_timer);
+        let window_motion = window.clone();
         motion.connect_motion(move |_, _, _| {
-            top_ref.set_opacity(1.0);
-            btm_ref.set_opacity(1.0);
+            reveal_and_schedule_controls(&window_motion, &top_motion, &bottom_motion, &timer_motion);
         });
         player_overlay.add_controller(motion);
+
+        let top_fullscreen = top_controls.clone();
+        let bottom_fullscreen = bottom_controls.container.clone();
+        let timer_fullscreen = Rc::clone(&hide_timer);
+        window.connect_fullscreened_notify(move |win| {
+            if win.is_fullscreen() {
+                reveal_and_schedule_controls(win, &top_fullscreen, &bottom_fullscreen, &timer_fullscreen);
+            } else {
+                if let Some(source) = timer_fullscreen.borrow_mut().take() { source.remove(); }
+                top_fullscreen.set_opacity(1.0);
+                bottom_fullscreen.set_opacity(1.0);
+                top_fullscreen.set_can_target(true);
+                bottom_fullscreen.set_can_target(true);
+            }
+        });
 
         // =====================================================================
         // DRAG AND DROP & FILE OPEN CONTROLLERS
@@ -573,7 +537,6 @@ impl GlimpseWindow {
         let win_for_drop = window.clone();
         let stack_for_drop = stack.clone();
         let player_for_drop = Rc::clone(&player);
-        let media_for_drop = Rc::clone(&media_file);
         let video_for_drop = Rc::clone(&video_playback);
         let picture_for_drop = picture.clone();
         let bottom_for_drop = bottom_controls.clone();
@@ -605,7 +568,6 @@ impl GlimpseWindow {
         let win_for_dialog = window.clone();
         let stack_for_dialog = stack.clone();
         let player_for_dialog = Rc::clone(&player);
-        let media_for_dialog = Rc::clone(&media_file);
         let video_for_dialog = Rc::clone(&video_playback);
         let picture_for_dialog = picture.clone();
         let bottom_for_dialog = bottom_controls.clone();
@@ -627,7 +589,6 @@ impl GlimpseWindow {
             &window,
             &stack,
             &player,
-            &media_file,
             &video_playback,
             &picture,
             &bottom_controls,
@@ -638,7 +599,6 @@ impl GlimpseWindow {
             &window,
             &stack,
             &player,
-            &media_file,
             &video_playback,
             &picture,
             &bottom_controls,
@@ -650,7 +610,6 @@ impl GlimpseWindow {
         let win_act = window.clone();
         let stack_act = stack.clone();
         let player_act = Rc::clone(&player);
-        let media_act = Rc::clone(&media_file);
         let video_act = Rc::clone(&video_playback);
         let pic_act = picture.clone();
         let btm_act = bottom_controls.clone();
@@ -702,13 +661,11 @@ impl GlimpseWindow {
         // Keyboard Shortcuts: Space (play/pause), F (fullscreen), Escape (unfullscreen), etc.
         let key_controller = EventControllerKey::new();
         key_controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
-        let m_keys = Rc::clone(&media_file);
         let p_keys = Rc::clone(&player);
         let win_keys = window.clone();
         let win_open_k = window.clone();
         let stack_open_k = stack.clone();
         let p_open_k = Rc::clone(&player);
-        let m_open_k = Rc::clone(&media_file);
         let video_open_k = Rc::clone(&video_playback);
         let pic_open_k = picture.clone();
         let btm_open_k = bottom_controls.clone();
@@ -717,18 +674,14 @@ impl GlimpseWindow {
             match keyval {
                 // Space: Play / Pause toggle
                 gdk4::Key::space => {
-                    if cfg!(feature = "experimental-engine") {
-                        if let Some(ref p) = *p_keys.borrow() {
-                            if p.state() == PlayerState::Playing { p.pause(); }
-                            else {
-                                if p.state() == PlayerState::Ended {
-                                    if let Some(ref mut video) = *video_open_k.borrow_mut() { video.seek(Duration::ZERO); }
-                                }
-                                p.play();
+                    if let Some(ref p) = *p_keys.borrow() {
+                        if p.state() == PlayerState::Playing { p.pause(); }
+                        else {
+                            if p.state() == PlayerState::Ended {
+                                if let Some(ref mut video) = *video_open_k.borrow_mut() { video.seek(Duration::ZERO); }
                             }
+                            p.play();
                         }
-                    } else if let Some(ref m) = *m_keys.borrow() {
-                        if m.is_playing() { m.pause(); } else { m.play(); }
                     }
                     glib::Propagation::Stop
                 }
@@ -756,7 +709,6 @@ impl GlimpseWindow {
                         &win_open_k,
                         &stack_open_k,
                         &p_open_k,
-                        &m_open_k,
                         &video_open_k,
                         &pic_open_k,
                         &btm_open_k,
@@ -765,41 +717,26 @@ impl GlimpseWindow {
                 }
                 // Left Arrow: Seek -5s
                 gdk4::Key::Left => {
-                    if cfg!(feature = "experimental-engine") {
-                        if let Some(ref p) = *p_keys.borrow() {
-                            let target = p.position().saturating_sub(Duration::from_secs(5));
-                            p.seek(target);
-                            if let Some(ref mut video) = *video_open_k.borrow_mut() { video.seek(target); }
-                        }
-                    } else if let Some(ref m) = *m_keys.borrow() {
-                        let cur = m.timestamp(); m.seek((cur - 5_000_000).max(0));
+                    if let Some(ref p) = *p_keys.borrow() {
+                        let target = p.position().saturating_sub(Duration::from_secs(5));
+                        p.seek(target);
+                        if let Some(ref mut video) = *video_open_k.borrow_mut() { video.seek(target); }
                     }
                     glib::Propagation::Stop
                 }
                 // Right Arrow: Seek +5s
                 gdk4::Key::Right => {
-                    if cfg!(feature = "experimental-engine") {
-                        if let Some(ref p) = *p_keys.borrow() {
-                            let next = p.position() + Duration::from_secs(5);
-                            let target = p.duration().map(|d| next.min(d)).unwrap_or(next);
-                            p.seek(target);
-                            if let Some(ref mut video) = *video_open_k.borrow_mut() { video.seek(target); }
-                        }
-                    } else if let Some(ref m) = *m_keys.borrow() {
-                        let cur = m.timestamp(); let dur = m.duration();
-                        let max_ts = if dur > 0 { dur } else { i64::MAX };
-                        m.seek((cur + 5_000_000).min(max_ts));
+                    if let Some(ref p) = *p_keys.borrow() {
+                        let next = p.position() + Duration::from_secs(5);
+                        let target = p.duration().map(|d| next.min(d)).unwrap_or(next);
+                        p.seek(target);
+                        if let Some(ref mut video) = *video_open_k.borrow_mut() { video.seek(target); }
                     }
                     glib::Propagation::Stop
                 }
                 // Up Arrow: Volume +5%
                 gdk4::Key::Up => {
-                    let v = if cfg!(feature = "experimental-engine") {
-                        if let Some(ref p) = *p_keys.borrow() { ((p.volume() + 0.05).min(1.0)) as f64 } else { 1.0 }
-                    } else {
-                        m_keys.borrow().as_ref().map(|m| (m.volume() + 0.05).min(1.0)).unwrap_or(1.0_f64)
-                    };
-                    if let Some(ref m) = *m_keys.borrow() { m.set_volume(v); m.set_muted(v <= 0.001); }
+                    let v = p_keys.borrow().as_ref().map(|p| (p.volume() + 0.05).min(1.0) as f64).unwrap_or(1.0);
                     if let Some(ref p) = *p_keys.borrow() { p.set_volume(v as f32); }
                     crate::controls::update_volume_indicator(
                         &btm_open_k.volume_icon, &btm_open_k.volume_button,
@@ -810,12 +747,7 @@ impl GlimpseWindow {
                 }
                 // Down Arrow: Volume -5%
                 gdk4::Key::Down => {
-                    let v = if cfg!(feature = "experimental-engine") {
-                        if let Some(ref p) = *p_keys.borrow() { ((p.volume() - 0.05).max(0.0)) as f64 } else { 1.0 }
-                    } else {
-                        m_keys.borrow().as_ref().map(|m| (m.volume() - 0.05).max(0.0)).unwrap_or(1.0_f64)
-                    };
-                    if let Some(ref m) = *m_keys.borrow() { m.set_volume(v); m.set_muted(v <= 0.001); }
+                    let v = p_keys.borrow().as_ref().map(|p| (p.volume() - 0.05).max(0.0) as f64).unwrap_or(1.0);
                     if let Some(ref p) = *p_keys.borrow() { p.set_volume(v as f32); }
                     crate::controls::update_volume_indicator(
                         &btm_open_k.volume_icon, &btm_open_k.volume_button,
@@ -826,24 +758,14 @@ impl GlimpseWindow {
                 }
                 // 'm' or 'M': Toggle mute
                 gdk4::Key::m | gdk4::Key::M => {
-                    if cfg!(feature = "experimental-engine") {
-                        if let Some(ref p) = *p_keys.borrow() {
-                            let muted = p.volume() > 0.001;
-                            let volume = if muted { 0.0 } else { 1.0 };
-                            p.set_volume(volume);
-                            crate::controls::update_volume_indicator(
-                                &btm_open_k.volume_icon, &btm_open_k.volume_button,
-                                &btm_open_k.volume_slider, &btm_open_k.volume_percent_label,
-                                volume as f64, muted,
-                            );
-                        }
-                    } else if let Some(ref m) = *m_keys.borrow() {
-                        let is_muted = !m.is_muted();
-                        m.set_muted(is_muted);
+                    if let Some(ref p) = *p_keys.borrow() {
+                        let muted = p.volume() > 0.001;
+                        let volume = if muted { 0.0 } else { 1.0 };
+                        p.set_volume(volume);
                         crate::controls::update_volume_indicator(
                             &btm_open_k.volume_icon, &btm_open_k.volume_button,
                             &btm_open_k.volume_slider, &btm_open_k.volume_percent_label,
-                            m.volume(), is_muted,
+                            volume as f64, muted,
                         );
                     }
                     glib::Propagation::Stop
@@ -856,7 +778,6 @@ impl GlimpseWindow {
         Self {
             window,
             player,
-            media_file,
             video_playback,
             bottom_controls,
             picture,
@@ -874,7 +795,6 @@ impl GlimpseWindow {
             &self.window,
             &self.stack,
             &self.player,
-            &self.media_file,
             &self.video_playback,
             &self.picture,
             &self.bottom_controls,
@@ -885,10 +805,6 @@ impl GlimpseWindow {
     #[allow(dead_code)]
     pub fn close_file(&self) {
         self.video_playback.borrow_mut().take();
-        if let Some(ref m) = *self.media_file.borrow() {
-            m.pause();
-        }
-        *self.media_file.borrow_mut() = None;
         self.picture.set_paintable(gdk4::Paintable::NONE);
 
         if let Some(ref p) = *self.player.borrow() {
@@ -914,7 +830,6 @@ fn trigger_open_file_dialog(
     window: &ApplicationWindow,
     stack: &Stack,
     player: &Rc<RefCell<Option<Player>>>,
-    media_holder: &Rc<RefCell<Option<MediaFile>>>,
     video_playback: &Rc<RefCell<Option<VideoPlaybackHandle>>>,
     picture: &Picture,
     bottom_controls: &ControlBarWidgets,
@@ -933,7 +848,6 @@ fn trigger_open_file_dialog(
     let win_cb = window.clone();
     let stack_cb = stack.clone();
     let player_cb = Rc::clone(player);
-    let media_cb = Rc::clone(media_holder);
     let video_cb = Rc::clone(video_playback);
     let pic_cb = picture.clone();
     let bottom_cb = bottom_controls.clone();
@@ -947,7 +861,6 @@ fn trigger_open_file_dialog(
                         &win_cb,
                         &stack_cb,
                         &player_cb,
-                        &media_cb,
                         &video_cb,
                         &pic_cb,
                         &bottom_cb,
@@ -958,13 +871,12 @@ fn trigger_open_file_dialog(
     });
 }
 
-/// Routine to load video into GTK4 MediaFile and Glimpse engine for playback
+/// Load a media file into the Glimpse playback engine.
 fn load_and_play_file(
     path: &str,
     window: &ApplicationWindow,
     stack: &Stack,
     player: &Rc<RefCell<Option<Player>>>,
-    media_holder: &Rc<RefCell<Option<MediaFile>>>,
     video_playback: &Rc<RefCell<Option<VideoPlaybackHandle>>>,
     picture: &Picture,
     bottom_controls: &ControlBarWidgets,
@@ -983,145 +895,16 @@ fn load_and_play_file(
     // Stop previous engine playback before replacing the source.
     if let Some(ref old_p) = *player.borrow() { old_p.stop(); }
 
-    // Stop previous GTK media only in the legacy playback configuration.
-    #[cfg(not(feature = "experimental-engine"))]
-    if let Some(ref old_m) = *media_holder.borrow() {
-        old_m.pause();
-    }
-    *media_holder.borrow_mut() = None;
-
-    #[cfg(not(feature = "experimental-engine"))]
-    {
-        // GTK MediaFile is retained only for the legacy playback path.
-        let file = if path.starts_with("file://") || path.contains("://") {
-            gio::File::for_uri(path)
-        } else {
-            gio::File::for_path(path)
-        };
-
-        let media = MediaFile::for_file(&file);
-        media.set_loop(true);
-        picture.set_paintable(Some(&media));
-        #[cfg(not(feature = "experimental-engine"))]
-        media.play();
-
-        // Duration update when container metadata arrives
-        let seekbar_dur = bottom_controls.seekbar.clone();
-        let dur_label = bottom_controls.duration_label.clone();
-        media.connect_duration_notify(move |m| {
-            let dur_micros = m.duration();
-            if dur_micros > 0 {
-                let dur_secs = dur_micros as f64 / 1_000_000.0;
-                seekbar_dur.set_range(0.0, dur_secs);
-                dur_label.set_text(&crate::controls::format_duration(Duration::from_micros(dur_micros as u64)));
-            }
-        });
-
-        // Check if duration is already known immediately
-        let initial_dur = media.duration();
-        if initial_dur > 0 {
-            let dur_secs = initial_dur as f64 / 1_000_000.0;
-            bottom_controls.seekbar.set_range(0.0, dur_secs);
-            bottom_controls.duration_label.set_text(&crate::controls::format_duration(Duration::from_micros(initial_dur as u64)));
-        }
-
-        // GTK-owned timeline is used only by the legacy playback path.
-        #[cfg(not(feature = "experimental-engine"))]
-        let seekbar_pos = bottom_controls.seekbar.clone();
-        #[cfg(not(feature = "experimental-engine"))]
-        let el_label = bottom_controls.elapsed_label.clone();
-        #[cfg(not(feature = "experimental-engine"))]
-        media.connect_timestamp_notify(move |m| {
-            let ts_micros = m.timestamp();
-            let ts_secs = ts_micros as f64 / 1_000_000.0;
-            seekbar_pos.set_value(ts_secs);
-            el_label.set_text(&crate::controls::format_duration(Duration::from_micros(ts_micros.max(0) as u64)));
-        });
-
-        let m_seek = media.clone();
-        bottom_controls.seekbar.connect_change_value(move |_, _, val| {
-            m_seek.seek((val * 1_000_000.0) as i64);
-            glib::Propagation::Proceed
-        });
-    }
-    #[cfg(feature = "experimental-engine")]
     picture.set_paintable(gdk4::Paintable::NONE);
 
-    // Seek both engine timelines together when the experimental engine is active.
-    #[cfg(feature = "experimental-engine")]
-    {
-        let p_seek = Rc::clone(player);
-        let v_seek = Rc::clone(video_playback);
-        bottom_controls.seekbar.connect_change_value(move |_, _, val| {
-            let target = Duration::from_secs_f64(val.max(0.0));
-            if let Some(ref p) = *p_seek.borrow() { p.seek(target); }
-            if let Some(ref mut video) = *v_seek.borrow_mut() { video.seek(target); }
-            glib::Propagation::Proceed
-        });
-    }
-
-    #[cfg(not(feature = "experimental-engine"))]
-    {
-        // Volume & Mute UI reflection
-        let v_icon_m = bottom_controls.volume_icon.clone();
-        let v_btn_m = bottom_controls.volume_button.clone();
-        let v_slider_m = bottom_controls.volume_slider.clone();
-        let v_pct_m = bottom_controls.volume_percent_label.clone();
-        media.connect_volume_notify(move |m| {
-            crate::controls::update_volume_indicator(
-                &v_icon_m,
-                &v_btn_m,
-                &v_slider_m,
-                &v_pct_m,
-                m.volume(),
-                m.is_muted(),
-            );
-        });
-
-        let v_icon_mut = bottom_controls.volume_icon.clone();
-        let v_btn_mut = bottom_controls.volume_button.clone();
-        let v_slider_mut = bottom_controls.volume_slider.clone();
-        let v_pct_mut = bottom_controls.volume_percent_label.clone();
-        media.connect_muted_notify(move |m| {
-            crate::controls::update_volume_indicator(
-                &v_icon_mut,
-                &v_btn_mut,
-                &v_slider_mut,
-                &v_pct_mut,
-                m.volume(),
-                m.is_muted(),
-            );
-        });
-
-        // Window size clamps strictly to video aspect ratio (no letterbox margins)
-        let win_aspect = window.clone();
-        let has_resized = Rc::new(RefCell::new(false));
-        let has_resized_c = Rc::clone(&has_resized);
-        media.connect_prepared_notify(move |m| {
-            if *has_resized_c.borrow() {
-                return;
-            }
-            let iw = m.intrinsic_width();
-            let ih = m.intrinsic_height();
-            if iw > 0 && ih > 0 {
-                *has_resized_c.borrow_mut() = true;
-                let aspect = iw as f64 / ih as f64;
-                let (tw, th) = if aspect >= 1.0 {
-                    let w = (iw as i32).clamp(640, 1080);
-                    let h = (w as f64 / aspect).round() as i32;
-                    (w, h)
-                } else {
-                    let h = (ih as i32).clamp(540, 800);
-                    let w = (h as f64 * aspect).round() as i32;
-                    (w, h)
-                };
-                win_aspect.set_default_size(tw, th);
-            }
-        });
-
-        *media_holder.borrow_mut() = Some(media.clone());
-
-    }
+    let p_seek = Rc::clone(player);
+    let v_seek = Rc::clone(video_playback);
+    bottom_controls.seekbar.connect_change_value(move |_, _, val| {
+        let target = Duration::from_secs_f64(val.max(0.0));
+        if let Some(ref p) = *p_seek.borrow() { p.seek(target); }
+        if let Some(ref mut video) = *v_seek.borrow_mut() { video.seek(target); }
+        glib::Propagation::Proceed
+    });
 
     // Initialize Glimpse engine for stream probing and audio master clock tracking
     match Player::open(path) {
@@ -1197,6 +980,27 @@ fn load_and_play_file(
     stack.set_visible_child_name("player");
 }
 
+fn reveal_and_schedule_controls(
+    window: &ApplicationWindow, top: &GtkBox, bottom: &GtkBox,
+    timer: &Rc<RefCell<Option<glib::SourceId>>>,
+) {
+    top.set_opacity(1.0); bottom.set_opacity(1.0);
+    top.set_can_target(true); bottom.set_can_target(true);
+    if let Some(source) = timer.borrow_mut().take() { source.remove(); }
+    if window.is_fullscreen() {
+        let win_hide = window.clone(); let top_hide = top.clone(); let bottom_hide = bottom.clone();
+        let timer_slot = Rc::clone(timer);
+        let source = glib::timeout_add_local_once(Duration::from_secs(2), move || {
+            *timer_slot.borrow_mut() = None;
+            if win_hide.is_fullscreen() {
+                top_hide.set_opacity(0.0); bottom_hide.set_opacity(0.0);
+                top_hide.set_can_target(false); bottom_hide.set_can_target(false);
+            }
+        });
+        *timer.borrow_mut() = Some(source);
+    }
+}
+
 /// Modal dialog showing the keyboard shortcuts list
 fn show_shortcuts_dialog(parent: &ApplicationWindow) {
     let dialog = gtk4::Window::builder()
@@ -1262,7 +1066,6 @@ fn create_main_menu_popover(
     window: &ApplicationWindow,
     stack: &Stack,
     player: &Rc<RefCell<Option<Player>>>,
-    media_file: &Rc<RefCell<Option<MediaFile>>>,
     video_playback: &Rc<RefCell<Option<VideoPlaybackHandle>>>,
     picture: &Picture,
     bottom_controls: &ControlBarWidgets,
@@ -1323,13 +1126,12 @@ fn create_main_menu_popover(
     let win_op = window.clone();
     let stack_op = stack.clone();
     let p_op = Rc::clone(player);
-    let m_op = Rc::clone(media_file);
     let video_op = Rc::clone(video_playback);
     let pic_op = picture.clone();
     let btm_op = bottom_controls.clone();
     btn_open.connect_clicked(move |_| {
         pop_close2.popdown();
-        trigger_open_file_dialog(&win_op, &stack_op, &p_op, &m_op, &video_op, &pic_op, &btm_op);
+        trigger_open_file_dialog(&win_op, &stack_op, &p_op, &video_op, &pic_op, &btm_op);
     });
     vbox.append(&btn_open);
 

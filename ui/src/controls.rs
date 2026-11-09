@@ -68,7 +68,7 @@ pub fn create_floating_bottom_bar() -> ControlBarWidgets {
 
     let volume_slider = Scale::with_range(Orientation::Vertical, 0.0, 1.0, 0.02);
     volume_slider.set_inverted(true); // 1.0 at the top, 0.0 at the bottom
-    volume_slider.set_size_request(-1, 130);
+    volume_slider.set_size_request(24, 140);
     volume_slider.set_value(1.0);
     volume_slider.set_draw_value(false);
     volume_slider.add_css_class("volume-scale");
