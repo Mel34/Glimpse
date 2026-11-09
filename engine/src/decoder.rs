@@ -13,6 +13,36 @@ use crate::types::Serial;
 
 pub type VideoFrameQueue = BoundedQueue<VideoFrameData>;
 
+/// Prefer the decoder's explicit PTS, falling back to FFmpeg's best-effort timestamp.
+fn select_video_timestamp(pts: Option<i64>, best_effort_timestamp: Option<i64>) -> Option<i64> {
+    pts.or(best_effort_timestamp)
+}
+
+#[cfg(test)]
+mod video_timestamp_tests {
+    use super::select_video_timestamp;
+
+    #[test]
+    fn explicit_pts_takes_precedence_over_best_effort_timestamp() {
+        assert_eq!(select_video_timestamp(Some(42), Some(43)), Some(42));
+    }
+
+    #[test]
+    fn best_effort_timestamp_is_used_when_pts_is_missing() {
+        assert_eq!(select_video_timestamp(None, Some(43)), Some(43));
+    }
+
+    #[test]
+    fn zero_pts_is_preserved() {
+        assert_eq!(select_video_timestamp(Some(0), Some(43)), Some(0));
+    }
+
+    #[test]
+    fn frame_is_skipped_when_both_timestamps_are_missing() {
+        assert_eq!(select_video_timestamp(None, None), None);
+    }
+}
+
 #[cfg(feature = "ffmpeg-system")]
 struct FfmpegDecoderState {
     decoder: ffmpeg_the_third::decoder::Video,
@@ -163,7 +193,7 @@ impl VideoDecoder {
             // already the fallback when the frame's explicit PTS is absent.
             // If neither timestamp is available, drop this frame rather than
             // aborting otherwise playable media or inventing a sync position.
-            let Some(timestamp) = decoded.pts().or_else(|| decoded.timestamp()) else {
+            let Some(timestamp) = select_video_timestamp(decoded.pts(), decoded.timestamp()) else {
                 tracing::warn!("Skipping decoded video frame without PTS or best-effort timestamp");
                 continue;
             };
