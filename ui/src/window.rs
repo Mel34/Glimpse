@@ -885,7 +885,11 @@ fn trigger_open_file_dialog(
 
 /// Keep the engine event stream alive and surface asynchronous playback failures.
 fn watch_player_events(receiver: crossbeam_channel::Receiver<Event>, window: ApplicationWindow) {
+    let window = window.downgrade();
     glib::timeout_add_local(Duration::from_millis(50), move || {
+        let Some(window) = window.upgrade() else {
+            return glib::ControlFlow::Break;
+        };
         loop {
             match receiver.try_recv() {
                 Ok(Event::Error(error)) => {
