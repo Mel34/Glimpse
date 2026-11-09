@@ -166,18 +166,18 @@ unsafe extern "C" fn select_vaapi_format(
     formats: *const ffi::AVPixelFormat,
 ) -> ffi::AVPixelFormat {
     if formats.is_null() {
-        return ffi::AVPixelFormat::AV_PIX_FMT_NONE;
+        return ffi::AVPixelFormat::NONE;
     }
 
     let mut current = formats;
-    while *current != ffi::AVPixelFormat::AV_PIX_FMT_NONE {
-        if *current == ffi::AVPixelFormat::AV_PIX_FMT_VAAPI {
+    while *current != ffi::AVPixelFormat::NONE {
+        if *current == ffi::AVPixelFormat::VAAPI {
             return *current;
         }
         current = current.add(1);
     }
 
-    ffi::AVPixelFormat::AV_PIX_FMT_NONE
+    ffi::AVPixelFormat::NONE
 }
 
 fn validate_and_describe(
@@ -185,7 +185,7 @@ fn validate_and_describe(
 ) -> Result<VaapiDmaBufFrame, String> {
     unsafe {
         let frame = &*mapped.as_ptr();
-        if frame.format != ffi::AVPixelFormat::AV_PIX_FMT_DRM_PRIME.0 as i32
+        if frame.format != ffi::AVPixelFormat::DRM_PRIME.0 as i32
             || frame.data[0].is_null()
         {
             return Err("FFmpeg returned an invalid DRM PRIME frame".into());
@@ -270,7 +270,7 @@ fn codec_supports_vaapi(codec: *const ffi::AVCodec) -> bool {
             return false;
         }
         let config = unsafe { &*config };
-        if config.device_type == ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI
+        if config.device_type == ffi::AVHWDeviceType::VAAPI
             && (config.methods & HW_CONFIG_METHOD_DEVICE_CTX) != 0
         {
             return true;
@@ -331,7 +331,7 @@ pub fn decode_first_vaapi_dmabuf(
     let stream_index = unsafe {
         ffi::av_find_best_stream(
             format.0,
-            ffi::AVMediaType::AVMEDIA_TYPE_VIDEO,
+            ffi::AVMediaType::VIDEO,
             -1,
             -1,
             ptr::null_mut(),
@@ -357,7 +357,7 @@ pub fn decode_first_vaapi_dmabuf(
     let device_result = unsafe {
         ffi::av_hwdevice_ctx_create(
             &mut device_ptr,
-            ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI,
+            ffi::AVHWDeviceType::VAAPI,
             render_node.as_ptr(),
             ptr::null_mut(),
             0,
@@ -475,7 +475,7 @@ fn map_vaapi_frame(decoded: OwnedFrame) -> Result<VaapiDmaBufFrame, String> {
     let mut mapped = OwnedFrame::allocate()?;
     unsafe {
         (*mapped.as_mut_ptr()).format =
-            ffi::AVPixelFormat::AV_PIX_FMT_DRM_PRIME.0 as i32;
+            ffi::AVPixelFormat::DRM_PRIME.0 as i32;
     }
 
     let map_result = unsafe {
