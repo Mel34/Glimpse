@@ -19,13 +19,13 @@ struct PlaybackRun {
 }
 
 pub struct VideoPlaybackHandle {
-        path: String,
-        tracks: TrackList,
-        picture: gtk4::Picture,
-        clock: Arc<MasterClock>,
-        seekbar: gtk4::Scale,
-        elapsed_label: gtk4::Label,
-        run: Option<PlaybackRun>,
+    path: String,
+    tracks: TrackList,
+    picture: gtk4::Picture,
+    clock: Arc<MasterClock>,
+    seekbar: gtk4::Scale,
+    elapsed_label: gtk4::Label,
+    run: Option<PlaybackRun>,
 }
 
 impl VideoPlaybackHandle {
@@ -86,8 +86,12 @@ impl Drop for VideoPlaybackHandle {
 }
 
 pub fn present_continuous_frames(
-    path: &str, tracks: TrackList, picture: &gtk4::Picture, clock: Arc<MasterClock>,
-    seekbar: &gtk4::Scale, elapsed_label: &gtk4::Label,
+    path: &str,
+    tracks: TrackList,
+    picture: &gtk4::Picture,
+    clock: Arc<MasterClock>,
+    seekbar: &gtk4::Scale,
+    elapsed_label: &gtk4::Label,
 ) -> Option<VideoPlaybackHandle> {
     if tracks.video_tracks.is_empty() {
         tracing::warn!("Engine video path skipped: no video stream");
