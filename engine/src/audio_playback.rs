@@ -16,7 +16,7 @@ use crate::clock::MasterClock;
 use crate::decoder::{
     AudioDecoder, AudioFrameData, AudioFrameQueue, AUDIO_OUTPUT_CHANNELS, AUDIO_OUTPUT_RATE,
 };
-use crate::demuxer::{demux_file, DemuxStats, PacketQueues};
+use crate::demuxer::{DemuxStats, PacketQueues};
 use crate::types::{Event, Serial, TrackInfo, TrackList};
 
 const PACKET_QUEUE_BYTES: usize = 64 * 1024 * 1024;
