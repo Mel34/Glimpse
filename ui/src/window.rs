@@ -788,9 +788,9 @@ impl GlimpseWindow {
                 // Up Arrow: Volume +5%
                 gdk4::Key::Up => {
                     let v = if cfg!(feature = "experimental-engine") {
-                        if let Some(ref p) = *p_keys.borrow() { (p.volume() + 0.05).min(1.0) } else { 1.0 }
+                        if let Some(ref p) = *p_keys.borrow() { ((p.volume() + 0.05).min(1.0)) as f64 } else { 1.0 }
                     } else {
-                        m_keys.borrow().as_ref().map(|m| (m.volume() + 0.05).min(1.0) as f32).unwrap_or(1.0_f32)
+                        m_keys.borrow().as_ref().map(|m| (m.volume() + 0.05).min(1.0)).unwrap_or(1.0_f64)
                     };
                     if let Some(ref m) = *m_keys.borrow() { m.set_volume(v); m.set_muted(v <= 0.001); }
                     if let Some(ref p) = *p_keys.borrow() { p.set_volume(v as f32); }
@@ -804,9 +804,9 @@ impl GlimpseWindow {
                 // Down Arrow: Volume -5%
                 gdk4::Key::Down => {
                     let v = if cfg!(feature = "experimental-engine") {
-                        if let Some(ref p) = *p_keys.borrow() { (p.volume() - 0.05).max(0.0) } else { 1.0 }
+                        if let Some(ref p) = *p_keys.borrow() { ((p.volume() - 0.05).max(0.0)) as f64 } else { 1.0 }
                     } else {
-                        m_keys.borrow().as_ref().map(|m| (m.volume() - 0.05).max(0.0) as f32).unwrap_or(1.0_f32)
+                        m_keys.borrow().as_ref().map(|m| (m.volume() - 0.05).max(0.0)).unwrap_or(1.0_f64)
                     };
                     if let Some(ref m) = *m_keys.borrow() { m.set_volume(v); m.set_muted(v <= 0.001); }
                     if let Some(ref p) = *p_keys.borrow() { p.set_volume(v as f32); }
