@@ -522,6 +522,7 @@ impl GlimpseWindow {
         let v_btn_w = bottom_controls.volume_button.clone();
         let v_slider_w = bottom_controls.volume_slider.clone();
         let v_pct_w = bottom_controls.volume_percent_label.clone();
+        let last_volume_w = Rc::clone(&bottom_controls.last_nonzero_volume);
 
         attach_window_volume_wheel(
             &win_ref,
@@ -533,6 +534,7 @@ impl GlimpseWindow {
                 if let Some(ref p) = *p_vol_wheel.borrow() {
                     p.set_volume(new_vol);
                 }
+                crate::controls::remember_nonzero_volume(&last_volume_w, new_vol as f64);
                 crate::controls::update_volume_indicator(
                     &v_icon_w,
                     &v_btn_w,
@@ -550,11 +552,13 @@ impl GlimpseWindow {
         let v_btn_sl = bottom_controls.volume_button.clone();
         let v_slider_sl = bottom_controls.volume_slider.clone();
         let v_pct_sl = bottom_controls.volume_percent_label.clone();
+        let last_volume_sl = Rc::clone(&bottom_controls.last_nonzero_volume);
         bottom_controls.volume_slider.connect_change_value(move |_, _, new_val| {
             let val = new_val.clamp(0.0, 1.0);
             if let Some(ref p) = *p_vol_slider.borrow() {
                 p.set_volume(val as f32);
             }
+            crate::controls::remember_nonzero_volume(&last_volume_sl, val);
             crate::controls::update_volume_indicator(
                 &v_icon_sl,
                 &v_btn_sl,
@@ -752,6 +756,7 @@ impl GlimpseWindow {
         let video_open_k = Rc::clone(&video_playback);
         let pic_open_k = picture.clone();
         let btm_open_k = bottom_controls.clone();
+        let last_volume_keys = Rc::clone(&bottom_controls.last_nonzero_volume);
 
         key_controller.connect_key_pressed(move |_, keyval, _keycode, modifier| {
             match keyval {
@@ -828,6 +833,7 @@ impl GlimpseWindow {
                         if let Some(ref p) = *p_keys.borrow() {
                             p.set_volume(v as f32);
                         }
+                        crate::controls::remember_nonzero_volume(&last_volume_keys, v);
                         crate::controls::update_volume_indicator(
                             &btm_open_k.volume_icon,
                             &btm_open_k.volume_button,
@@ -850,6 +856,7 @@ impl GlimpseWindow {
                         if let Some(ref p) = *p_keys.borrow() {
                             p.set_volume(v as f32);
                         }
+                        crate::controls::remember_nonzero_volume(&last_volume_keys, v);
                         crate::controls::update_volume_indicator(
                             &btm_open_k.volume_icon,
                             &btm_open_k.volume_button,
@@ -865,8 +872,12 @@ impl GlimpseWindow {
                 gdk4::Key::m | gdk4::Key::M => {
                     if btm_open_k.volume_button.is_sensitive() {
                         if let Some(ref p) = *p_keys.borrow() {
-                            let muted = p.volume() > 0.001;
-                            let volume = if muted { 0.0 } else { 1.0 };
+                            let current_volume = p.volume() as f64;
+                            let muted = current_volume > 0.001;
+                            let volume = crate::controls::toggle_mute_volume(
+                                current_volume,
+                                &last_volume_keys,
+                            ) as f32;
                             p.set_volume(volume);
                             crate::controls::update_volume_indicator(
                                 &btm_open_k.volume_icon,
