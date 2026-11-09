@@ -436,13 +436,48 @@ impl GlimpseWindow {
             },
         );
 
-        // The seek handler belongs to the window, not an individual media load.
+        // Pointer dragging owns the seekbar until release. Commit one seek at the final value.
+        let seekbar_gesture = GestureClick::new();
+        seekbar_gesture.set_button(1);
+        seekbar_gesture.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        let seekbar_drag_start = Rc::clone(&bottom_controls.seekbar_dragging);
+        seekbar_gesture.connect_pressed(move |_, _, _, _| {
+            seekbar_drag_start.set(true);
+        });
+
+        let seekbar_drag_end = Rc::clone(&bottom_controls.seekbar_dragging);
+        let seekbar_for_release = bottom_controls.seekbar.clone();
+        let p_seekbar_release = Rc::clone(&player);
+        let v_seekbar_release = Rc::clone(&video_playback);
+        seekbar_gesture.connect_released(move |_, _, _, _| {
+            seekbar_drag_end.set(false);
+            let target = Duration::from_secs_f64(seekbar_for_release.value().max(0.0));
+            if let Some(ref p) = *p_seekbar_release.borrow() { p.seek(target); }
+            if let Some(ref mut video) = *v_seekbar_release.borrow_mut() { video.seek(target); }
+        });
+
+        let seekbar_drag_cancel = Rc::clone(&bottom_controls.seekbar_dragging);
+        seekbar_gesture.connect_stopped(move |_| {
+            seekbar_drag_cancel.set(false);
+        });
+        bottom_controls.seekbar.add_controller(seekbar_gesture);
+
+        // Non-drag changes (keyboard, accessibility) seek immediately. During a pointer
+        // drag, update only the elapsed-time preview; the release handler commits the seek.
         let p_seekbar = Rc::clone(&player);
         let v_seekbar = Rc::clone(&video_playback);
+        let seekbar_dragging = Rc::clone(&bottom_controls.seekbar_dragging);
+        let elapsed_seekbar = bottom_controls.elapsed_label.clone();
         bottom_controls.seekbar.connect_change_value(move |_, _, val| {
             let target = Duration::from_secs_f64(val.max(0.0));
-            if let Some(ref p) = *p_seekbar.borrow() { p.seek(target); }
-            if let Some(ref mut video) = *v_seekbar.borrow_mut() { video.seek(target); }
+            if seekbar_dragging.get() {
+                elapsed_seekbar.set_text(
+                    &crate::controls::format_duration(target),
+                );
+            } else {
+                if let Some(ref p) = *p_seekbar.borrow() { p.seek(target); }
+                if let Some(ref mut video) = *v_seekbar.borrow_mut() { video.seek(target); }
+            }
             glib::Propagation::Proceed
         });
 
@@ -1013,6 +1048,7 @@ fn load_and_play_file(
                     current_p.master_clock(),
                     &bottom_controls.seekbar,
                     &bottom_controls.elapsed_label,
+                    Rc::clone(&bottom_controls.seekbar_dragging),
                 );
 
                 // Check container stream video dimensions for immediate aspect ratio clamping
