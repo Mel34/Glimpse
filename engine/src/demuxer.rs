@@ -184,9 +184,7 @@ pub fn demux_file_from(
         };
 
         queue.push(demux_packet, serial, byte_size).map_err(|_| {
-            format!(
-                "Packet queue for stream {stream_index} was aborted or packet size ({byte_size} bytes) exceeds its configured capacity"
-            )
+            format!("Packet queue for stream {stream_index} was aborted")
         })?;
         stats.bytes_read = stats.bytes_read.saturating_add(byte_size as u64);
     }
