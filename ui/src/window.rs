@@ -1131,11 +1131,12 @@ fn load_and_play_file(
     // Initialize Glimpse engine for stream probing and audio master clock tracking
     match Player::open(path) {
         Ok((p, _event_rx)) => {
+            let duration = p.duration();
             p.play();
             *player.borrow_mut() = Some(p);
 
             // The engine owns duration metadata in the experimental playback path.
-            if let Some(duration) = p.duration() {
+            if let Some(duration) = duration {
                 let seconds = duration.as_secs_f64();
                 bottom_controls.seekbar.set_range(0.0, seconds);
                 bottom_controls.duration_label.set_text(
