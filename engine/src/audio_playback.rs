@@ -76,7 +76,7 @@ impl AudioPlaybackSession {
         initial_volume: f32,
         events: Sender<Event>,
     ) -> Result<AudioPlaybackHandle, String> {
-        self.spawn_from(path, initial_volume, Duration::ZERO, events)
+        self.spawn_from(path, initial_volume, Duration::ZERO, None, events)
     }
 
     pub fn spawn_from(
@@ -84,6 +84,7 @@ impl AudioPlaybackSession {
         path: String,
         initial_volume: f32,
         start_position: Duration,
+        selected_audio: Option<usize>,
         events: Sender<Event>,
     ) -> Result<AudioPlaybackHandle, String> {
         let control = Arc::new(PlaybackControl::default());
@@ -99,6 +100,7 @@ impl AudioPlaybackSession {
                         Arc::clone(&clock),
                         worker_control.clone(),
                         start_position,
+                        selected_audio,
                     )
                 }))
                 .unwrap_or_else(|_| Err("Audio playback worker panicked".to_string()));
@@ -196,7 +198,7 @@ fn run_file(path: &str, clock: Arc<MasterClock>) -> Result<AudioPlaybackReport, 
         queues: Mutex::new(None),
         finished: AtomicBool::new(false),
         ended: AtomicBool::new(false),
-    }), Duration::ZERO)
+    }), Duration::ZERO, None)
 }
 
 fn run_file_control(
@@ -204,10 +206,11 @@ fn run_file_control(
     clock: Arc<MasterClock>,
     control: Arc<PlaybackControl>,
     start_position: Duration,
+    selected_audio: Option<usize>,
 ) -> Result<AudioPlaybackReport, String> {
     let probe = crate::demuxer::probe_media(path)?;
-    let audio_track = select_audio_track(&probe.tracks)
-        .ok_or_else(|| "The media file has no audio stream".to_string())?;
+    let audio_track = select_audio_track(&probe.tracks, selected_audio)
+        .ok_or_else(|| "The selected audio stream is unavailable".to_string())?;
     let serial = Serial(0);
     let queues = PacketQueues::new(128, PACKET_QUEUE_BYTES);
     let frame_queue = Arc::new(AudioFrameQueue::new(64, AUDIO_FRAME_QUEUE_BYTES));
@@ -416,9 +419,9 @@ fn run_file_control(
     })
 }
 
-fn select_audio_track(tracks: &TrackList) -> Option<&TrackInfo> {
-    tracks.audio_tracks.iter()
-        .find(|track| Some(track.id) == tracks.active_audio)
+fn select_audio_track(tracks: &TrackList, selected_audio: Option<usize>) -> Option<&TrackInfo> {
+    selected_audio
+        .and_then(|index| tracks.audio_tracks.iter().find(|track| track.id.0 == index))
         .or_else(|| tracks.audio_tracks.iter().find(|track| track.is_default))
         .or_else(|| tracks.audio_tracks.first())
 }
