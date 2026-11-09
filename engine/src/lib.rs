@@ -271,9 +271,16 @@ impl Player {
 
         #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
         if let Some(selected_track) = id {
-            let was_playing = self.state() == PlayerState::Playing;
+            let current_state = self.state();
+            let was_playing = current_state == PlayerState::Playing;
             let mut state = self.state.lock();
-            let position = Duration::from_secs_f64(self.clock.get_pts());
+            let position = if current_state == PlayerState::Ended {
+                *state = PlayerState::Paused;
+                let _ = self.event_sender.send(Event::StateChanged(PlayerState::Paused));
+                Duration::ZERO
+            } else {
+                Duration::from_secs_f64(self.clock.get_pts())
+            };
             *self.seek_position.lock() = position;
 
             let mut session = self.audio_session.lock();
