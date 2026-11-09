@@ -1,6 +1,8 @@
 //! Engine-clock-driven video presentation through GTK4 textures.
 
 use glimpse_engine::{MasterClock, TrackList};
+use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 use gtk4::prelude::RangeExt;
@@ -25,6 +27,7 @@ pub struct VideoPlaybackHandle {
     clock: Arc<MasterClock>,
     seekbar: gtk4::Scale,
     elapsed_label: gtk4::Label,
+    seekbar_dragging: Rc<Cell<bool>>,
     run: Option<PlaybackRun>,
 }
 
@@ -73,6 +76,7 @@ impl VideoPlaybackHandle {
             Arc::clone(&cancelled),
             self.seekbar.clone(),
             self.elapsed_label.clone(),
+            Rc::clone(&self.seekbar_dragging),
         );
         self.run = Some(PlaybackRun { queues, cancelled, worker: Some(worker) });
         Ok(())
@@ -92,6 +96,7 @@ pub fn present_continuous_frames(
     clock: Arc<MasterClock>,
     seekbar: &gtk4::Scale,
     elapsed_label: &gtk4::Label,
+    seekbar_dragging: Rc<Cell<bool>>,
 ) -> Option<VideoPlaybackHandle> {
     if tracks.video_tracks.is_empty() {
         tracing::warn!("Engine video path skipped: no video stream");
@@ -99,7 +104,8 @@ pub fn present_continuous_frames(
     }
     let mut handle = VideoPlaybackHandle {
         path: path.to_owned(), tracks, picture: picture.clone(), clock,
-        seekbar: seekbar.clone(), elapsed_label: elapsed_label.clone(), run: None,
+        seekbar: seekbar.clone(), elapsed_label: elapsed_label.clone(),
+        seekbar_dragging, run: None,
     };
     if let Err(error) = handle.start_run(Duration::ZERO) {
         tracing::error!(%error, "Could not start engine video playback");
@@ -225,6 +231,7 @@ fn schedule_frames(
     cancelled: Arc<AtomicBool>,
     seekbar: gtk4::Scale,
     elapsed_label: gtk4::Label,
+    seekbar_dragging: Rc<Cell<bool>>,
 ) {
     let mut pending: Option<VideoFrameData> = None;
     // A fresh scheduler must show its first decoded frame even when the master
@@ -237,9 +244,13 @@ fn schedule_frames(
         if cancelled.load(Ordering::Acquire) {
             return glib::ControlFlow::Break;
         }
-        let position = clock.get_pts().max(0.0);
-        seekbar.set_value(position);
-        elapsed_label.set_text(&crate::controls::format_duration(Duration::from_secs_f64(position)));
+        if !seekbar_dragging.get() {
+            let position = clock.get_pts().max(0.0);
+            seekbar.set_value(position);
+            elapsed_label.set_text(
+                &crate::controls::format_duration(Duration::from_secs_f64(position)),
+            );
+        }
 
         loop {
             if pending.is_none() {
