@@ -460,6 +460,9 @@ impl GlimpseWindow {
             &win_ref,
             move || p_vol_wheel_value.borrow().as_ref().map(Player::volume).unwrap_or(1.0),
             move |new_vol| {
+                if !v_btn_w.is_sensitive() {
+                    return;
+                }
                 if let Some(ref p) = *p_vol_wheel.borrow() {
                     p.set_volume(new_vol);
                 }
@@ -749,6 +752,7 @@ impl GlimpseWindow {
                 }
                 // Up Arrow: Volume +5%
                 gdk4::Key::Up => {
+                    if btm_open_k.volume_button.is_sensitive() {
                     let v = p_keys.borrow().as_ref().map(|p| (p.volume() + 0.05).min(1.0) as f64).unwrap_or(1.0);
                     if let Some(ref p) = *p_keys.borrow() { p.set_volume(v as f32); }
                     crate::controls::update_volume_indicator(
@@ -756,10 +760,12 @@ impl GlimpseWindow {
                         &btm_open_k.volume_slider, &btm_open_k.volume_percent_label,
                         v, v <= 0.001,
                     );
+                    }
                     glib::Propagation::Stop
                 }
                 // Down Arrow: Volume -5%
                 gdk4::Key::Down => {
+                    if btm_open_k.volume_button.is_sensitive() {
                     let v = p_keys.borrow().as_ref().map(|p| (p.volume() - 0.05).max(0.0) as f64).unwrap_or(1.0);
                     if let Some(ref p) = *p_keys.borrow() { p.set_volume(v as f32); }
                     crate::controls::update_volume_indicator(
@@ -767,10 +773,12 @@ impl GlimpseWindow {
                         &btm_open_k.volume_slider, &btm_open_k.volume_percent_label,
                         v, v <= 0.001,
                     );
+                    }
                     glib::Propagation::Stop
                 }
                 // 'm' or 'M': Toggle mute
                 gdk4::Key::m | gdk4::Key::M => {
+                    if btm_open_k.volume_button.is_sensitive() {
                     if let Some(ref p) = *p_keys.borrow() {
                         let muted = p.volume() > 0.001;
                         let volume = if muted { 0.0 } else { 1.0 };
@@ -780,6 +788,7 @@ impl GlimpseWindow {
                             &btm_open_k.volume_slider, &btm_open_k.volume_percent_label,
                             volume as f64, muted,
                         );
+                    }
                     }
                     glib::Propagation::Stop
                 }
@@ -942,6 +951,14 @@ fn load_and_play_file(
 
     picture.set_paintable(gdk4::Paintable::NONE);
 
+    // Restore the normal control state while probing the replacement file.
+    // Keep the slider's value; this does not modify the Player volume.
+    crate::controls::set_audio_available(
+        bottom_controls,
+        true,
+        bottom_controls.volume_slider.value(),
+    );
+
     // Initialize the playback engine and retain its event stream.
     match Player::open(path) {
         Ok((p, event_rx)) => {
@@ -962,6 +979,11 @@ fn load_and_play_file(
             // Setup audio stream selection and report current subtitle support.
             if let Some(ref current_p) = *player.borrow() {
                 let tracks = current_p.tracks();
+                crate::controls::set_audio_available(
+                    bottom_controls,
+                    !tracks.audio_tracks.is_empty(),
+                    current_p.volume() as f64,
+                );
 
                 *video_playback.borrow_mut() = crate::video_texture::present_continuous_frames(
                     path,
