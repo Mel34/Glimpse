@@ -576,15 +576,16 @@ impl GlimpseWindow {
         let top_motion = top_controls.clone();
         let bottom_motion = bottom_controls.container.clone();
         let timer_motion = Rc::clone(&hide_timer);
-        let popovers_motion = Rc::clone(&popovers_motion);
+        let popovers_enter = Rc::clone(&bottom_controls.open_popovers);
         let pointer_enter = Rc::clone(&last_pointer_position);
         motion.connect_enter(move |_, x, y| {
             pointer_enter.set(Some((x, y)));
-            reveal_and_schedule_controls(&top_motion, &bottom_motion, &timer_motion, &popovers_motion);
+            reveal_and_schedule_controls(&top_motion, &bottom_motion, &timer_motion, &popovers_enter);
         });
         let top_motion = top_controls.clone();
         let bottom_motion = bottom_controls.container.clone();
         let timer_motion = Rc::clone(&hide_timer);
+        let popovers_motion = Rc::clone(&bottom_controls.open_popovers);
         let pointer_motion = Rc::clone(&last_pointer_position);
         motion.connect_motion(move |_, x, y| {
             let moved = pointer_motion.get()
@@ -789,6 +790,7 @@ impl GlimpseWindow {
         let top_keys = top_controls.clone();
         let bottom_keys = bottom_controls.container.clone();
         let timer_keys = Rc::clone(&hide_timer);
+        let popovers_keys = Rc::clone(&bottom_controls.open_popovers);
         let last_volume_keys = Rc::clone(&bottom_controls.last_nonzero_volume);
 
         key_controller.connect_key_pressed(move |_, keyval, _keycode, modifier| {
@@ -825,7 +827,7 @@ impl GlimpseWindow {
                 }
                 // Left Arrow: Seek -5s
                 gdk4::Key::Left => {
-                    reveal_and_schedule_controls(&top_keys, &bottom_keys, &timer_keys);
+                    reveal_and_schedule_controls(&top_keys, &bottom_keys, &timer_keys, &popovers_keys);
                     if let Some(ref p) = *p_keys.borrow() {
                         let target = p.position().saturating_sub(Duration::from_secs(5));
                         p.seek(target);
@@ -835,7 +837,7 @@ impl GlimpseWindow {
                 }
                 // Right Arrow: Seek +5s
                 gdk4::Key::Right => {
-                    reveal_and_schedule_controls(&top_keys, &bottom_keys, &timer_keys);
+                    reveal_and_schedule_controls(&top_keys, &bottom_keys, &timer_keys, &popovers_keys);
                     if let Some(ref p) = *p_keys.borrow() {
                         let next = p.position() + Duration::from_secs(5);
                         let target = p.duration().map(|d| next.min(d)).unwrap_or(next);
@@ -847,7 +849,7 @@ impl GlimpseWindow {
                 // Up Arrow: Volume +5%
                 gdk4::Key::Up => {
                     if btm_open_k.volume_button.is_sensitive() {
-                        reveal_and_schedule_controls(&top_keys, &bottom_keys, &timer_keys);
+                        reveal_and_schedule_controls(&top_keys, &bottom_keys, &timer_keys, &popovers_keys);
                         let v = p_keys
                             .borrow()
                             .as_ref()
@@ -871,7 +873,7 @@ impl GlimpseWindow {
                 // Down Arrow: Volume -5%
                 gdk4::Key::Down => {
                     if btm_open_k.volume_button.is_sensitive() {
-                        reveal_and_schedule_controls(&top_keys, &bottom_keys, &timer_keys);
+                        reveal_and_schedule_controls(&top_keys, &bottom_keys, &timer_keys, &popovers_keys);
                         let v = p_keys
                             .borrow()
                             .as_ref()
