@@ -615,4 +615,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn stopping_a_handle_signals_and_joins_its_worker() {
+        let control = Arc::new(PlaybackControl::default());
+        let worker_control = Arc::clone(&control);
+        let worker = thread::spawn(move || {
+            while !worker_control.stopped.load(Ordering::Acquire) {
+                thread::yield_now();
+            }
+        });
+        let mut handle = AudioPlaybackHandle {
+            control: Arc::clone(&control),
+            worker: Some(worker),
+        };
+
+        handle.stop();
+
+        assert!(control.stopped.load(Ordering::Acquire));
+        assert!(handle.is_finished());
+        assert!(handle.worker.is_none());
+    }
+
+    #[test]
+    fn volume_sanitisation_clamps_values_and_recovers_non_finite_input() {
+        assert_eq!(sanitise_volume(-1.0), 0.0);
+        assert_eq!(sanitise_volume(0.4), 0.4);
+        assert_eq!(sanitise_volume(2.0), 1.0);
+        assert_eq!(sanitise_volume(f32::NAN), 1.0);
+        assert_eq!(sanitise_volume(f32::INFINITY), 1.0);
+    }
+
 }
+

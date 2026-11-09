@@ -165,8 +165,8 @@ impl Player {
                 handle.stop();
             }
         }
-        self.clock.reset(0.0);
         self.clock.pause();
+        self.clock.reset(0.0);
         *state = PlayerState::Paused;
         let _ = self.event_sender.send(Event::StateChanged(PlayerState::Paused));
     }
@@ -398,5 +398,73 @@ mod tests {
             clamp_seek_target(Duration::from_secs(5000), None),
             Duration::from_secs(3600)
         );
+    }
+
+    fn test_player(duration: Option<Duration>) -> (Player, Receiver<Event>) {
+        let (event_sender, event_receiver) = bounded(16);
+        let tracks = TrackList::default();
+        (
+            Player {
+                clock: Arc::new(MasterClock::new()),
+                state: Arc::new(Mutex::new(PlayerState::Paused)),
+                duration: Arc::new(Mutex::new(duration)),
+                tracks: Arc::new(Mutex::new(tracks)),
+                volume: Arc::new(Mutex::new(1.0)),
+                audio_enabled: AtomicBool::new(false),
+                current_serial: Arc::new(Mutex::new(Serial(0))),
+                event_sender,
+                #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
+                path: String::new(),
+                seek_position: Arc::new(Mutex::new(Duration::ZERO)),
+                #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
+                audio_session: Mutex::new(None),
+                running: Arc::new(AtomicBool::new(true)),
+            },
+            event_receiver,
+        )
+    }
+
+    #[test]
+    fn video_only_player_pause_seek_resume_and_stop_lifecycle() {
+        let (player, _events) = test_player(Some(Duration::from_secs(30)));
+
+        player.play();
+        assert_eq!(player.state(), PlayerState::Playing);
+        assert!(!player.master_clock().is_paused());
+        std::thread::sleep(Duration::from_millis(15));
+        assert!(player.position() > Duration::ZERO);
+
+        player.pause();
+        let paused_position = player.position();
+        std::thread::sleep(Duration::from_millis(15));
+        assert_eq!(player.position(), paused_position);
+
+        player.seek(Duration::from_secs(3));
+        assert_eq!(player.state(), PlayerState::Paused);
+        assert_eq!(player.position(), Duration::from_secs(3));
+        assert_eq!(*player.current_serial.lock(), Serial(1));
+
+        player.play();
+        std::thread::sleep(Duration::from_millis(15));
+        assert!(player.position() > Duration::from_secs(3));
+
+        player.stop();
+        assert_eq!(player.state(), PlayerState::Paused);
+        assert_eq!(player.position(), Duration::ZERO);
+    }
+
+    #[test]
+    fn active_video_only_seek_keeps_playback_running_from_target() {
+        let (player, _events) = test_player(Some(Duration::from_secs(30)));
+        player.play();
+        std::thread::sleep(Duration::from_millis(10));
+
+        player.seek(Duration::from_secs(7));
+
+        assert_eq!(player.state(), PlayerState::Playing);
+        assert!(!player.master_clock().is_paused());
+        assert_eq!(*player.current_serial.lock(), Serial(1));
+        std::thread::sleep(Duration::from_millis(15));
+        assert!(player.position() > Duration::from_secs(7));
     }
 }
