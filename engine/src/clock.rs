@@ -84,6 +84,10 @@ impl MasterClock {
         video_pts - master
     }
 
+    pub fn has_audio_pts(&self) -> bool {
+        self.inner.lock().has_audio_pts
+    }
+
     pub fn is_paused(&self) -> bool {
         self.inner.lock().paused
     }
