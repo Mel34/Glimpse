@@ -13,6 +13,37 @@ use crate::types::Serial;
 
 pub type VideoFrameQueue = BoundedQueue<VideoFrameData>;
 
+/// Prefer the decoder's explicit PTS, falling back to FFmpeg's best-effort timestamp.
+#[cfg(any(test, feature = "ffmpeg-system"))]
+fn select_video_timestamp(pts: Option<i64>, best_effort_timestamp: Option<i64>) -> Option<i64> {
+    pts.or(best_effort_timestamp)
+}
+
+#[cfg(test)]
+mod video_timestamp_tests {
+    use super::select_video_timestamp;
+
+    #[test]
+    fn explicit_pts_takes_precedence_over_best_effort_timestamp() {
+        assert_eq!(select_video_timestamp(Some(42), Some(43)), Some(42));
+    }
+
+    #[test]
+    fn best_effort_timestamp_is_used_when_pts_is_missing() {
+        assert_eq!(select_video_timestamp(None, Some(43)), Some(43));
+    }
+
+    #[test]
+    fn zero_pts_is_preserved() {
+        assert_eq!(select_video_timestamp(Some(0), Some(43)), Some(0));
+    }
+
+    #[test]
+    fn frame_is_skipped_when_both_timestamps_are_missing() {
+        assert_eq!(select_video_timestamp(None, None), None);
+    }
+}
+
 #[cfg(feature = "ffmpeg-system")]
 struct FfmpegDecoderState {
     decoder: ffmpeg_the_third::decoder::Video,
@@ -159,6 +190,15 @@ impl VideoDecoder {
                 Err(error) => return Err(format!("Video frame decoding failed: {error}")),
             }
 
+            // timestamp() reads FFmpeg's best_effort_timestamp, so it is
+            // already the fallback when the frame's explicit PTS is absent.
+            // If neither timestamp is available, drop this frame rather than
+            // aborting otherwise playable media or inventing a sync position.
+            let Some(timestamp) = select_video_timestamp(decoded.pts(), decoded.timestamp()) else {
+                tracing::warn!("Skipping decoded video frame without PTS or best-effort timestamp");
+                continue;
+            };
+
             let needs_scaler = backend.scaler.as_ref().map_or(true, |scaler| {
                 scaler.input().format != decoded.format()
                     || scaler.input().width != decoded.width()
@@ -200,10 +240,6 @@ impl VideoDecoder {
                     .copy_from_slice(&source[source_start..source_start + stride]);
             }
 
-            let timestamp = decoded
-                .pts()
-                .or_else(|| decoded.timestamp())
-                .ok_or_else(|| "Decoded video frame has no presentation timestamp".to_string())?;
             let pts = timestamp as f64 * backend.time_base_num as f64
                 / backend.time_base_den as f64;
             let frame = VideoFrameData {
@@ -217,7 +253,7 @@ impl VideoDecoder {
             };
             frame_queue
                 .push(frame, serial, stride * height as usize)
-                .map_err(|_| "Decoded frame queue was aborted or frame exceeded its byte capacity".to_string())?;
+                .map_err(|_| "Decoded frame queue was aborted".to_string())?;
         }
         Ok(())
     }
@@ -524,7 +560,7 @@ impl AudioDecoder {
                 serial,
                 byte_size,
             )
-            .map_err(|_| "Decoded audio queue was aborted or PCM block exceeded its byte capacity".to_string())?;
+            .map_err(|_| "Decoded audio queue was aborted".to_string())?;
         Ok(())
     }
 
