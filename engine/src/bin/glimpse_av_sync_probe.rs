@@ -144,7 +144,8 @@ fn run(path: &str) -> Result<(), String> {
     wait_for_audio_finish(&audio_handle, &events)?;
 
     drift_samples_ms.sort_by(f64::total_cmp);
-    let absolute_drifts: Vec<f64> = drift_samples_ms.iter().map(|value| value.abs()).collect();
+    let mut absolute_drifts: Vec<f64> = drift_samples_ms.iter().map(|value| value.abs()).collect();
+    absolute_drifts.sort_by(f64::total_cmp);
     let max_early_ms = drift_samples_ms.iter().copied().fold(0.0f64, f64::max);
     let max_late_ms = drift_samples_ms.iter().copied().fold(0.0f64, |max, value| max.max(-value));
     let max_abs_ms = absolute_drifts.iter().copied().fold(0.0f64, f64::max);
