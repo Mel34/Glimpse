@@ -25,11 +25,6 @@ const STREAM_PAUSED: u8 = 2;
 const STREAM_STREAMING: u8 = 3;
 const STREAM_ERROR: u8 = 4;
 
-#[derive(Debug, Clone, Copy)]
-struct PcmSample {
-    value: f32,
-}
-
 
 struct SharedState {
     paused: AtomicBool,
@@ -66,7 +61,7 @@ impl SharedState {
 }
 
 struct ProcessData {
-    consumer: Consumer<PcmSample>,
+    consumer: Consumer<f32>,
     shared: Arc<SharedState>,
 }
 
@@ -93,7 +88,7 @@ pub struct PipeWireAudioSinkStats {
 }
 
 pub struct PipeWireAudioSink {
-    producer: Mutex<Producer<PcmSample>>,
+    producer: Mutex<Producer<f32>>,
     shared: Arc<SharedState>,
     stop_sender: mpsc::Sender<()>,
     worker: Option<JoinHandle<()>>,
@@ -192,7 +187,7 @@ impl AudioSink for PipeWireAudioSink {
         let mut producer = self.producer.lock();
         let mut dropped = 0u64;
         for &value in &samples[..sample_count] {
-            if producer.push(PcmSample { value }).is_err() {
+            if producer.push(value).is_err() {
                 dropped += 1;
             }
         }
@@ -238,7 +233,7 @@ impl Drop for PipeWireAudioSink {
 }
 
 fn run_pipewire_thread(
-    consumer: Consumer<PcmSample>,
+    consumer: Consumer<f32>,
     shared: Arc<SharedState>,
     ready_sender: SyncSender<Result<(), String>>,
     stop_receiver: Receiver<()>,
@@ -449,7 +444,7 @@ fn stream_state_code(state: &pw::stream::StreamState) -> u8 {
 /// Fills one PipeWire F32LE buffer. This function is deliberately independent
 /// of PipeWire objects so its bounded, allocation-free behavior can be tested.
 fn render_pcm(
-    consumer: &mut Consumer<PcmSample>,
+    consumer: &mut Consumer<f32>,
     shared: &SharedState,
     output: &mut [u8],
     requested_frames: usize,
@@ -475,7 +470,7 @@ fn render_pcm(
 
     for (index, destination) in output[..written_bytes].chunks_exact_mut(4).enumerate() {
         let value = match consumer.pop() {
-            Ok(sample) => sample.value * volume,
+            Ok(sample) => sample * volume,
             Err(_) => {
                 if end_of_stream {
                     eof_silence_samples = sample_count - index;
@@ -503,8 +498,8 @@ mod tests {
     fn renders_interleaved_float_samples_and_silences_underflow() {
         let (mut producer, mut consumer) = RingBuffer::new(8);
         let shared = shared_state();
-        producer.push(PcmSample { value: 0.25 }).unwrap();
-        producer.push(PcmSample { value: -0.5 }).unwrap();
+        producer.push(0.25).unwrap();
+        producer.push(-0.5).unwrap();
 
         let mut output = [0xff; 16];
         let (written, underflow, _) =
@@ -521,8 +516,8 @@ mod tests {
     fn eof_empty_ring_is_counted_separately_from_active_starvation() {
         let (mut producer, mut consumer) = RingBuffer::new(8);
         let shared = shared_state();
-        producer.push(PcmSample { value: 0.25 }).unwrap();
-        producer.push(PcmSample { value: -0.5 }).unwrap();
+        producer.push(0.25).unwrap();
+        producer.push(-0.5).unwrap();
         shared.end_of_stream.store(true, Ordering::Release);
 
         let mut output = [0xff; 16];
@@ -542,7 +537,7 @@ mod tests {
         let (mut producer, mut consumer) = RingBuffer::new(8);
         let shared = shared_state();
         for value in [0.1, 0.2, 0.3, 0.4] {
-            producer.push(PcmSample { value }).unwrap();
+            producer.push(value).unwrap();
         }
 
         let mut output = [0xff; 16];
@@ -561,7 +556,7 @@ mod tests {
     fn pause_outputs_silence_without_consuming_queued_samples() {
         let (mut producer, mut consumer) = RingBuffer::new(8);
         let shared = shared_state();
-        producer.push(PcmSample { value: 0.5 }).unwrap();
+        producer.push(0.5).unwrap();
         shared.paused.store(true, Ordering::Release);
 
         let mut output = [0xff; 8];
