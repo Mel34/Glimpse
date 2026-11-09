@@ -1,6 +1,7 @@
 //! Engine-clock-driven video presentation through GTK4 textures.
 
 use glimpse_engine::{MasterClock, TrackList};
+use glib::object::ObjectExt;
 use gtk4::prelude::WidgetExtManual;
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -226,14 +227,14 @@ fn schedule_frames(
     clock: Arc<MasterClock>,
     cancelled: Arc<AtomicBool>,
 ) {
-    let state = std::cell::RefCell::new(FrameSchedulerState {
+    let state = RefCell::new(FrameSchedulerState {
         pending: None,
         present_first_frame: true,
         displayed_frames: 0,
         dropped_frames: 0,
     });
     // A weak reference avoids a Picture -> tick callback -> Picture cycle.
-    let picture = picture.downgrade();
+    let picture_weak = picture.downgrade();
 
     // GTK tick callbacks are Fn, not FnMut, so keep per-run scheduler state
     // behind RefCell and update the Picture through the callback's weak ref.
@@ -241,7 +242,7 @@ fn schedule_frames(
         if cancelled.load(Ordering::Acquire) {
             return glib::ControlFlow::Break;
         }
-        let Some(picture) = picture.upgrade() else {
+        let Some(picture) = picture_weak.upgrade() else {
             return glib::ControlFlow::Break;
         };
         let mut state = state.borrow_mut();
