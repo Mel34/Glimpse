@@ -11,7 +11,7 @@ use gtk4::{
     Orientation, Overlay, Picture, Separator, Settings, Stack, StackTransitionType, WindowHandle,
 };
 
-use glimpse_engine::{Player, PlayerState};
+use glimpse_engine::{Event, Player, PlayerState};
 use crate::controls::{create_floating_bottom_bar, ControlBarWidgets};
 use crate::interaction::{attach_seekbar_wheel, attach_window_volume_wheel, VideoClickStateMachine};
 use crate::track_menu::create_track_popover;
@@ -883,6 +883,35 @@ fn trigger_open_file_dialog(
     });
 }
 
+/// Keep the engine event stream alive and surface asynchronous playback failures.
+fn watch_player_events(receiver: crossbeam_channel::Receiver<Event>, window: ApplicationWindow) {
+    glib::timeout_add_local(Duration::from_millis(50), move || {
+        loop {
+            match receiver.try_recv() {
+                Ok(Event::Error(error)) => {
+                    tracing::error!(%error, "Playback engine reported an error");
+                    let dialog = gtk4::MessageDialog::builder()
+                        .transient_for(&window)
+                        .modal(true)
+                        .message_type(gtk4::MessageType::Error)
+                        .buttons(gtk4::ButtonsType::Close)
+                        .text("Playback error")
+                        .secondary_text(&error)
+                        .build();
+                    dialog.connect_response(|dialog, _| dialog.close());
+                    dialog.present();
+                }
+                Ok(_) => {}
+                Err(crossbeam_channel::TryRecvError::Empty) => break,
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    return glib::ControlFlow::Break;
+                }
+            }
+        }
+        glib::ControlFlow::Continue
+    });
+}
+
 /// Load a media file into the Glimpse playback engine.
 fn load_and_play_file(
     path: &str,
@@ -911,8 +940,9 @@ fn load_and_play_file(
 
     // Initialize Glimpse engine for stream probing and audio master clock tracking
     match Player::open(path) {
-        Ok((p, _event_rx)) => {
+        Ok((p, event_rx)) => {
             let duration = p.duration();
+            watch_player_events(event_rx, window.clone());
             p.play();
             *player.borrow_mut() = Some(p);
 
