@@ -322,6 +322,7 @@ impl GlimpseWindow {
 
         let m_toggle = Rc::clone(&media_file);
         let p_toggle = Rc::clone(&player);
+        let v_toggle = Rc::clone(&video_playback);
         let win_click = window.clone();
         let click_state_press = Rc::clone(&click_state);
         let is_dragging_press = Rc::clone(&is_dragging);
@@ -361,18 +362,24 @@ impl GlimpseWindow {
                     Rc::clone(&click_state_rel),
                     1,
                     move || {
-                        if let Some(ref m) = *m_action.borrow() {
+                        if cfg!(feature = "experimental-engine") {
+                            if let Some(ref p) = *p_action.borrow() {
+                                if p.state() == PlayerState::Playing {
+                                    p.pause();
+                                } else {
+                                    if p.state() == PlayerState::Ended {
+                                        if let Some(ref mut video) = *v_toggle.borrow_mut() {
+                                            video.seek(Duration::ZERO);
+                                        }
+                                    }
+                                    p.play();
+                                }
+                            }
+                        } else if let Some(ref m) = *m_action.borrow() {
                             if m.is_playing() {
                                 m.pause();
                             } else {
                                 m.play();
-                            }
-                        }
-                        if let Some(ref p) = *p_action.borrow() {
-                            if p.state() == PlayerState::Playing {
-                                p.pause();
-                            } else {
-                                p.play();
                             }
                         }
                     },
@@ -885,7 +892,7 @@ impl GlimpseWindow {
         self.picture.set_paintable(gdk4::Paintable::NONE);
 
         if let Some(ref p) = *self.player.borrow() {
-            p.pause();
+            p.stop();
         }
         *self.player.borrow_mut() = None;
 

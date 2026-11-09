@@ -207,7 +207,7 @@ fn decode_continuously(
             let _ = demux_worker.join();
             return Err(error);
         }
-        if !forward_decoded_frames(&frame_queue, sender, start_position.as_secs_f64()) {
+        if !forward_decoded_frames(&frame_queue, sender, start_position.as_secs_f64(), cancelled) {
             queues.abort();
             frame_queue.abort();
             let _ = demux_worker.join();
@@ -221,7 +221,7 @@ fn decode_continuously(
                 .map_err(|_| "Video demux worker panicked".to_string())?;
             result.map_err(|error| format!("Video demux failed: {error}"))?;
             decoder.finish(serial)?;
-            let _ = forward_decoded_frames(&frame_queue, sender, start_position.as_secs_f64());
+            let _ = forward_decoded_frames(&frame_queue, sender, start_position.as_secs_f64(), cancelled);
             return Ok(());
         }
     }
@@ -232,14 +232,25 @@ fn forward_decoded_frames(
     frame_queue: &VideoFrameQueue,
     sender: &Sender<Result<VideoFrameData, String>>,
     minimum_pts: f64,
+    cancelled: &AtomicBool,
 ) -> bool {
     while let Some(frame) = frame_queue.pop_timeout(Duration::ZERO) {
         if frame.item.pts + 0.000_001 < minimum_pts {
             continue;
         }
-        match sender.try_send(Ok(frame.item)) {
-            Ok(()) | Err(crossbeam_channel::TrySendError::Full(_)) => {}
-            Err(crossbeam_channel::TrySendError::Disconnected(_)) => return false,
+
+        let mut message = Ok(frame.item);
+        loop {
+            if cancelled.load(Ordering::Acquire) {
+                return false;
+            }
+            match sender.send_timeout(message, Duration::from_millis(5)) {
+                Ok(()) => break,
+                Err(crossbeam_channel::SendTimeoutError::Timeout(returned)) => {
+                    message = returned;
+                }
+                Err(crossbeam_channel::SendTimeoutError::Disconnected(_)) => return false,
+            }
         }
     }
     true
