@@ -753,42 +753,63 @@ impl GlimpseWindow {
                 // Up Arrow: Volume +5%
                 gdk4::Key::Up => {
                     if btm_open_k.volume_button.is_sensitive() {
-                    let v = p_keys.borrow().as_ref().map(|p| (p.volume() + 0.05).min(1.0) as f64).unwrap_or(1.0);
-                    if let Some(ref p) = *p_keys.borrow() { p.set_volume(v as f32); }
-                    crate::controls::update_volume_indicator(
-                        &btm_open_k.volume_icon, &btm_open_k.volume_button,
-                        &btm_open_k.volume_slider, &btm_open_k.volume_percent_label,
-                        v, v <= 0.001,
-                    );
+                        let v = p_keys
+                            .borrow()
+                            .as_ref()
+                            .map(|p| (p.volume() + 0.05).min(1.0) as f64)
+                            .unwrap_or(1.0);
+                        if let Some(ref p) = *p_keys.borrow() {
+                            p.set_volume(v as f32);
+                        }
+                        crate::controls::update_volume_indicator(
+                            &btm_open_k.volume_icon,
+                            &btm_open_k.volume_button,
+                            &btm_open_k.volume_slider,
+                            &btm_open_k.volume_percent_label,
+                            v,
+                            v <= 0.001,
+                        );
                     }
                     glib::Propagation::Stop
                 }
                 // Down Arrow: Volume -5%
                 gdk4::Key::Down => {
                     if btm_open_k.volume_button.is_sensitive() {
-                    let v = p_keys.borrow().as_ref().map(|p| (p.volume() - 0.05).max(0.0) as f64).unwrap_or(1.0);
-                    if let Some(ref p) = *p_keys.borrow() { p.set_volume(v as f32); }
-                    crate::controls::update_volume_indicator(
-                        &btm_open_k.volume_icon, &btm_open_k.volume_button,
-                        &btm_open_k.volume_slider, &btm_open_k.volume_percent_label,
-                        v, v <= 0.001,
-                    );
+                        let v = p_keys
+                            .borrow()
+                            .as_ref()
+                            .map(|p| (p.volume() - 0.05).max(0.0) as f64)
+                            .unwrap_or(1.0);
+                        if let Some(ref p) = *p_keys.borrow() {
+                            p.set_volume(v as f32);
+                        }
+                        crate::controls::update_volume_indicator(
+                            &btm_open_k.volume_icon,
+                            &btm_open_k.volume_button,
+                            &btm_open_k.volume_slider,
+                            &btm_open_k.volume_percent_label,
+                            v,
+                            v <= 0.001,
+                        );
                     }
                     glib::Propagation::Stop
                 }
                 // 'm' or 'M': Toggle mute
                 gdk4::Key::m | gdk4::Key::M => {
                     if btm_open_k.volume_button.is_sensitive() {
-                    if let Some(ref p) = *p_keys.borrow() {
-                        let muted = p.volume() > 0.001;
-                        let volume = if muted { 0.0 } else { 1.0 };
-                        p.set_volume(volume);
-                        crate::controls::update_volume_indicator(
-                            &btm_open_k.volume_icon, &btm_open_k.volume_button,
-                            &btm_open_k.volume_slider, &btm_open_k.volume_percent_label,
-                            volume as f64, muted,
-                        );
-                    }
+                        if let Some(ref p) = *p_keys.borrow() {
+                            let muted = p.volume() > 0.001;
+                            let volume = if muted { 0.0 } else { 1.0 };
+                            p.set_volume(volume);
+                            crate::controls::update_volume_indicator(
+                                &btm_open_k.volume_icon,
+                                &btm_open_k.volume_button,
+                                &btm_open_k.volume_slider,
+                                &btm_open_k.volume_percent_label,
+                                volume as f64,
+                                muted,
+                            );
+                        }
                     }
                     glib::Propagation::Stop
                 }
