@@ -570,7 +570,8 @@ impl GlimpseWindow {
         });
         window.add_controller(drop_target);
 
-        // "Open..." button on loader page opens native GTK FileDialog        let win_for_dialog = window.clone();
+        // "Open..." button on loader page opens native GTK FileDialog
+        let win_for_dialog = window.clone();
         let stack_for_dialog = stack.clone();
         let player_for_dialog = Rc::clone(&player);
         let video_for_dialog = Rc::clone(&video_playback);
