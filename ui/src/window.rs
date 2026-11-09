@@ -1355,18 +1355,6 @@ fn create_main_menu_popover(
             check_indicator.set_visible(button.is_active());
         });
 
-        // Track hover on the actual radio control so the overlaid check glyph
-        // receives the same inverted foreground/background treatment.
-        let check_hover = check.clone();
-        let motion = EventControllerMotion::new();
-        motion.connect_enter(move |_, _, _| {
-            check_hover.add_css_class("hovered");
-        });
-        let check_leave = check.clone();
-        motion.connect_leave(move |_| {
-            check_leave.remove_css_class("hovered");
-        });
-        selector.add_controller(motion);
 
         let pop_close = popover.clone();
         selector.connect_toggled(move |button| {
