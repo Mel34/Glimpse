@@ -194,6 +194,9 @@ fn run_file(path: &str, clock: Arc<MasterClock>) -> Result<AudioPlaybackReport, 
     }
     playback_stats.last_end_pts = worker_stats.last_end_pts.or(playback_stats.last_end_pts);
     let demux = decode_result?;
+    // The playback worker has joined, so no further PCM can be submitted.
+    // Empty-ring callbacks from this point are expected EOF tail silence.
+    sink.mark_end_of_stream();
 
     // Keep the clock tied to the device while the final PCM ring drains. Once
     // the ring is empty, wait out the reported hardware delay before freezing
