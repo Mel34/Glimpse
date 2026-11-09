@@ -108,4 +108,22 @@ mod tests {
         clock.reset(2.0);
         assert!(!clock.has_audio_pts());
     }
+
+    #[test]
+    fn reset_after_pause_holds_seek_target_until_resumed() {
+        let clock = MasterClock::new();
+        clock.resume();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        clock.pause();
+        clock.reset(2.0);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        assert!(clock.is_paused());
+        assert_eq!(clock.get_pts(), 2.0);
+
+        clock.resume();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        assert!(clock.get_pts() > 2.0);
+    }
 }
