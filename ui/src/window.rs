@@ -3,7 +3,6 @@ use std::rc::Rc;
 use std::time::Duration;
 use adw::prelude::*;
 use adw::{Application, ApplicationWindow};
-use gdk4::prelude::PaintableExt;
 use gdk4::DragAction;
 use gio::SimpleAction;
 use gtk4::{
@@ -1039,20 +1038,16 @@ fn load_and_play_file(
             el_label.set_text(&crate::controls::format_duration(Duration::from_micros(ts_micros.max(0) as u64)));
         });
 
-
-    }
-    #[cfg(feature = "experimental-engine")]
-    picture.set_paintable(gdk4::Paintable::NONE);
-
-    // Seek both engine timelines together when the experimental engine is active.
-    #[cfg(not(feature = "experimental-engine"))]
-    {
         let m_seek = media.clone();
         bottom_controls.seekbar.connect_change_value(move |_, _, val| {
             m_seek.seek((val * 1_000_000.0) as i64);
             glib::Propagation::Proceed
         });
     }
+    #[cfg(feature = "experimental-engine")]
+    picture.set_paintable(gdk4::Paintable::NONE);
+
+    // Seek both engine timelines together when the experimental engine is active.
     #[cfg(feature = "experimental-engine")]
     {
         let p_seek = Rc::clone(player);

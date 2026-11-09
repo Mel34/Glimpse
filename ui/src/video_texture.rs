@@ -3,7 +3,6 @@
 use glimpse_engine::{MasterClock, TrackList};
 use std::sync::Arc;
 use std::time::Duration;
-use gtk4::prelude::RangeExt;
 
 #[cfg(feature = "experimental-engine")]
 use std::sync::atomic::{AtomicBool, Ordering};
