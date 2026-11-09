@@ -1106,12 +1106,30 @@ fn load_and_play_file(
                 }
 
                 let p_audio = Rc::clone(player);
+                let volume_icon = bottom_controls.volume_icon.clone();
+                let volume_button = bottom_controls.volume_button.clone();
+                let volume_slider = bottom_controls.volume_slider.clone();
+                let volume_percent_label = bottom_controls.volume_percent_label.clone();
 
                 let popover = create_track_popover(
                     &tracks,
                     move |aid| {
                         if let Some(ref p) = *p_audio.borrow() {
+                            let audio_selected = aid.is_some();
                             p.select_audio(aid);
+                            let volume = if audio_selected {
+                                p.volume() as f64
+                            } else {
+                                0.0
+                            };
+                            crate::controls::update_volume_indicator(
+                                &volume_icon,
+                                &volume_button,
+                                &volume_slider,
+                                &volume_percent_label,
+                                volume,
+                                !audio_selected || volume <= 0.001,
+                            );
                         }
                     },
                 );
