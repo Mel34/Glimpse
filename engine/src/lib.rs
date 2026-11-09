@@ -82,7 +82,6 @@ impl Player {
         let mut state = self.state.lock();
         *state = PlayerState::Playing;
         self.clock.resume();
-        let _ = self.event_sender.send(Event::StateChanged(PlayerState::Playing));
 
         #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
         {
@@ -92,6 +91,7 @@ impl Player {
                 session.take();
                 self.clock.reset(0.0);
             }
+            let _ = self.event_sender.send(Event::StateChanged(PlayerState::Playing));
             if session.is_none() {
                 let playback = AudioPlaybackSession::new(Arc::clone(&self.clock));
                 match playback.spawn(self.path.clone(), initial_volume, self.event_sender.clone()) {
@@ -108,6 +108,8 @@ impl Player {
             }
         }
 
+        #[cfg(not(all(feature = "audio-pipewire", feature = "ffmpeg-system")))]
+        let _ = self.event_sender.send(Event::StateChanged(PlayerState::Playing));
     }
 
     pub fn pause(&self) {
