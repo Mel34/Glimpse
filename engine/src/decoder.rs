@@ -14,6 +14,7 @@ use crate::types::Serial;
 pub type VideoFrameQueue = BoundedQueue<VideoFrameData>;
 
 /// Prefer the decoder's explicit PTS, falling back to FFmpeg's best-effort timestamp.
+#[cfg(any(test, feature = "ffmpeg-system"))]
 fn select_video_timestamp(pts: Option<i64>, best_effort_timestamp: Option<i64>) -> Option<i64> {
     pts.or(best_effort_timestamp)
 }
