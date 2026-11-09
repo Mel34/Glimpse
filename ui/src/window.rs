@@ -1049,7 +1049,7 @@ fn load_and_play_file(
         .unwrap_or_else(|| path.to_owned());
 
     window.set_title(Some(&format!("Glimpse - {}", file_name)));
-    bottom_controls.title_label.set_text(file_name);
+    bottom_controls.title_label.set_text(&file_name);
 
     // Retire both playback paths before attempting to open the replacement.
     video_playback.borrow_mut().take();
