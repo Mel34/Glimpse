@@ -1218,8 +1218,8 @@ fn show_shortcuts_dialog(parent: &ApplicationWindow) {
         ("Escape", "Leave Fullscreen"),
         ("Ctrl + O", "Open file"),
         ("Ctrl + N", "New window"),
-        ("Left / Right", "Seek ±5 seconds (Rule 3)"),
-        ("Up / Down", "Volume ±5% (Rule 4)"),
+        ("Left / Right", "Seek ±5 seconds"),
+        ("Up / Down", "Volume ±5%"),
         ("M", "Toggle Mute"),
     ];
 
