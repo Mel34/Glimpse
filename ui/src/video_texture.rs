@@ -1,6 +1,7 @@
 //! Engine-clock-driven video presentation through GTK4 textures.
 
 use glimpse_engine::{MasterClock, TrackList};
+use gtk4::prelude::WidgetExtManual;
 use std::sync::Arc;
 use std::time::Duration;
 
