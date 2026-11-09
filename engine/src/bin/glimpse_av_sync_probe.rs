@@ -126,9 +126,13 @@ fn run(path: &str) -> Result<(), String> {
             return Err(error);
         }
 
-        while let Some(frame) = frame_queue.pop_timeout(Duration::ZERO) {
+        while let Some(tagged_frame) = frame_queue.pop_timeout(Duration::ZERO) {
+            if tagged_frame.serial != serial {
+                continue;
+            }
             decoded_frames += 1;
-            let (drift_ms, dropped) = match schedule_frame(&mut scheduler, &clock, frame) {
+            let (drift_ms, dropped) =
+                match schedule_frame(&mut scheduler, &clock, tagged_frame.item) {
                 Ok(result) => result,
                 Err(error) => {
                     queues.abort();
@@ -165,9 +169,13 @@ fn run(path: &str) -> Result<(), String> {
         .map_err(|error| format!("Video demux failed: {error}"))?;
 
     decoder.finish(serial)?;
-    while let Some(frame) = frame_queue.pop_timeout(Duration::ZERO) {
+    while let Some(tagged_frame) = frame_queue.pop_timeout(Duration::ZERO) {
+        if tagged_frame.serial != serial {
+            continue;
+        }
         decoded_frames += 1;
-        let (drift_ms, dropped) = schedule_frame(&mut scheduler, &clock, frame)?;
+        let (drift_ms, dropped) =
+            schedule_frame(&mut scheduler, &clock, tagged_frame.item)?;
         if dropped {
             dropped_lateness_ms.push((-drift_ms).max(0.0));
         } else {
