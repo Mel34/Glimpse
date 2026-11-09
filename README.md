@@ -16,6 +16,40 @@ Glimpse uses its in-process `glimpse-engine` for playback; GTK `MediaFile` is no
 - Seeking restarts the video demux/decode run at the target while the audio engine seeks its master timeline. Paused seeks remain paused.
 - Track selection is exposed through the GTK controls; subtitles remain off by default.
 
+## Rendering roadmap
+
+The current video output path presents decoded frames through GTK memory
+textures. The longer-term goal is a GPU-native rendering pipeline built around
+[libplacebo](https://github.com/haasn/libplacebo), with Vulkan as the eventual
+video output backend.
+
+The work is expected to progress in stages:
+
+1. **Complete hardware-frame interoperability.** Build on the VAAPI and DRM
+   PRIME diagnostics to establish reliable frame export/import, format and
+   modifier handling, synchronization, and resource lifetime across supported
+   hardware and drivers.
+2. **Integrate libplacebo.** Use libplacebo for GPU video processing and
+   presentation, including correct color-space, range, transfer-function, and
+   HDR handling. Preserve the existing FFmpeg decode and PipeWire audio
+   pipeline while the rendering backend evolves.
+3. **Introduce Vulkan video output.** Add a Vulkan-backed renderer using
+   libplacebo, importing hardware-decoded frames where the platform supports
+   it. Prefer direct GPU resource sharing to avoid unnecessary CPU readbacks
+   and copies.
+4. **Harden and retain fallbacks.** Validate synchronization, seeking,
+   resizing, high-bit-depth formats, and sustained playback across different
+   GPUs and drivers. Keep a compatible fallback path for systems where the
+   preferred hardware or Vulkan interop is unavailable.
+
+The VAAPI → DRM PRIME → EGL/OpenGL work under
+`tools/diagnostics/vaapi-egl/` is exploratory validation, not the production
+renderer. Its successful format-import and sample-preservation tests are
+useful groundwork, but do not yet constitute libplacebo integration, Vulkan
+output, complete color management, or a finished zero-copy playback path.
+These milestones remain future work; the GTK texture renderer remains the
+current presentation path.
+
 ## Interaction
 
 1. Single click toggles playback; double click toggles fullscreen.
