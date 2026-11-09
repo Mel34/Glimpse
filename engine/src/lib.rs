@@ -36,6 +36,7 @@ pub struct Player {
     audio_enabled: AtomicBool,
     current_serial: Arc<Mutex<Serial>>,
     event_sender: Sender<Event>,
+    #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
     path: String,
     seek_position: Arc<Mutex<Duration>>,
     #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
@@ -74,6 +75,7 @@ impl Player {
             audio_enabled: AtomicBool::new(discovered_tracks.active_audio.is_some()),
             current_serial,
             event_sender: event_tx,
+            #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
             path: path_or_uri.to_owned(),
             seek_position: Arc::new(Mutex::new(Duration::ZERO)),
             #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
@@ -351,7 +353,10 @@ impl Player {
     }
 
     pub fn state(&self) -> PlayerState {
+        #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
         let mut state = self.state.lock();
+        #[cfg(not(all(feature = "audio-pipewire", feature = "ffmpeg-system")))]
+        let state = self.state.lock();
         #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
         if let Some(handle) = self.audio_session.lock().as_ref() {
             if handle.is_finished() {
