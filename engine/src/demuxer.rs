@@ -96,11 +96,30 @@ pub fn demux_file(
     queues: &PacketQueues,
     serial: Serial,
 ) -> Result<DemuxStats, String> {
+    demux_file_from(path, tracks, queues, serial, Duration::ZERO)
+}
+
+/// Demuxes from the closest seek point at or before the requested media time.
+/// Decoder-side timestamp trimming is responsible for discarding pre-target audio.
+#[cfg(feature = "ffmpeg-system")]
+pub fn demux_file_from(
+    path: &str,
+    tracks: &TrackList,
+    queues: &PacketQueues,
+    serial: Serial,
+    start_position: Duration,
+) -> Result<DemuxStats, String> {
     use ffmpeg_the_third as ffmpeg;
 
     ffmpeg::init().map_err(|error| format!("Could not initialise FFmpeg: {error}"))?;
     let mut input = ffmpeg::format::input(path)
         .map_err(|error| format!("Could not open media with libavformat: {error}"))?;
+    if !start_position.is_zero() {
+        let timestamp = i64::try_from(start_position.as_micros()).unwrap_or(i64::MAX);
+        input.seek(timestamp, ..timestamp).map_err(|error| {
+            format!("Could not seek media to {:.3}s: {error}", start_position.as_secs_f64())
+        })?;
+    }
 
     let mut stream_types = HashMap::new();
     for track in tracks.video_tracks.iter() {
