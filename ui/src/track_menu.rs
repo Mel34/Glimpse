@@ -1,4 +1,4 @@
-//! Track selection menu for audio streams and subtitles (default OFF).
+//! Audio stream selection menu with an explicit subtitle support status.
 
 use gtk4::prelude::*;
 use gtk4::{Box as GtkBox, CheckButton, Label, Orientation, Popover};
