@@ -36,12 +36,11 @@ fn main() -> ExitCode {
                 report.demux.bytes_read
             );
             println!(
-                "PipeWire output stats: connected={}, dropped={} samples, active_underflow={} samples, eof_silence={} samples, flushed={} samples",
+                "PipeWire output stats: connected={}, dropped={} samples, active_underflow={} samples, eof_silence={} samples",
                 report.pipewire.connected,
                 report.pipewire.dropped_samples,
                 report.pipewire.underflow_samples,
-                report.pipewire.eof_silence_samples,
-                report.pipewire.flushed_samples
+                report.pipewire.eof_silence_samples
             );
             println!(
                 "PipeWire timing: requested={} frames, device_delay={:.3} ms, resampler_buffered={} frames, graph_ticks={}, time_query_failures={}",
