@@ -287,7 +287,6 @@ fn schedule_frame(
                     frame.pts, clock.get_pts()
                 ));
             }
-            return Ok((drift * 1_000.0, false));
         }
 
         match scheduler.schedule(frame.pts, frame.duration) {
