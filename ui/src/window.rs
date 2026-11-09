@@ -1045,7 +1045,7 @@ fn load_and_play_file(
 ) {
     let file_name = gio::File::for_uri(path)
         .basename()
-        .map(|name| name.to_string())
+        .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.to_owned());
 
     window.set_title(Some(&format!("Glimpse - {}", file_name)));
