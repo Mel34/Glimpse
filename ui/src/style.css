@@ -230,6 +230,10 @@ popover label.dim-label,
     font-size: 15px;
     font-weight: 700;
     color: #ffffff;
+    text-shadow: 1px 0 1px #000000, -1px 0 1px #000000,
+                 0 1px 1px #000000, 0 -1px 1px #000000,
+                 1px 1px 1px #000000, -1px -1px 1px #000000,
+                 1px -1px 1px #000000, -1px 1px 1px #000000;
 }
 
 .timestamp-label {
