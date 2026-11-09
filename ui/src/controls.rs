@@ -47,7 +47,6 @@ pub fn create_floating_bottom_bar() -> ControlBarWidgets {
     let volume_icon = Image::from_icon_name("audio-volume-high-symbolic");
     volume_icon.set_pixel_size(16);
     volume_button.set_child(Some(&volume_icon));
-    volume_button.add_css_class("flat");
     volume_button.add_css_class("osd-icon-button");
     volume_button.set_size_request(32, 32);
     volume_button.set_tooltip_text(Some("Volume: 100%"));
@@ -81,7 +80,6 @@ pub fn create_floating_bottom_bar() -> ControlBarWidgets {
 
     let settings_button = MenuButton::new();
     settings_button.set_icon_name("emblem-system-symbolic");
-    settings_button.add_css_class("flat");
     settings_button.add_css_class("osd-icon-button");
     settings_button.set_size_request(32, 32);
     settings_button.set_tooltip_text(Some("Tracks & Preferences"));
