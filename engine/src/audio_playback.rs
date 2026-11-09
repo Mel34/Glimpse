@@ -76,6 +76,16 @@ impl AudioPlaybackSession {
         initial_volume: f32,
         events: Sender<Event>,
     ) -> Result<AudioPlaybackHandle, String> {
+        self.spawn_from(path, initial_volume, Duration::ZERO, events)
+    }
+
+    pub fn spawn_from(
+        &self,
+        path: String,
+        initial_volume: f32,
+        start_position: Duration,
+        events: Sender<Event>,
+    ) -> Result<AudioPlaybackHandle, String> {
         let control = Arc::new(PlaybackControl::default());
         control.volume.store(sanitise_volume(initial_volume).to_bits(), Ordering::Relaxed);
         let worker_control = Arc::clone(&control);
@@ -84,7 +94,12 @@ impl AudioPlaybackSession {
             .name("glimpse-audio-session".to_string())
             .spawn(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    run_file_control(&path, Arc::clone(&clock), worker_control.clone())
+                    run_file_control(
+                        &path,
+                        Arc::clone(&clock),
+                        worker_control.clone(),
+                        start_position,
+                    )
                 }))
                 .unwrap_or_else(|_| Err("Audio playback worker panicked".to_string()));
 
@@ -181,13 +196,14 @@ fn run_file(path: &str, clock: Arc<MasterClock>) -> Result<AudioPlaybackReport, 
         queues: Mutex::new(None),
         finished: AtomicBool::new(false),
         ended: AtomicBool::new(false),
-    }))
+    }), Duration::ZERO)
 }
 
 fn run_file_control(
     path: &str,
     clock: Arc<MasterClock>,
     control: Arc<PlaybackControl>,
+    start_position: Duration,
 ) -> Result<AudioPlaybackReport, String> {
     let probe = crate::demuxer::probe_media(path)?;
     let audio_track = select_audio_track(&probe.tracks)
@@ -202,13 +218,22 @@ fn run_file_control(
         Arc::clone(&queues.audio),
         Arc::clone(&frame_queue),
     )?;
+    decoder.discard_before_pts(start_position.as_secs_f64());
 
     let worker_path = path.to_owned();
     let worker_tracks = probe.tracks.clone();
     let worker_queues = queues.clone();
     let mut demux_worker = Some(thread::Builder::new()
         .name("glimpse-demux".to_string())
-        .spawn(move || demux_file(&worker_path, &worker_tracks, &worker_queues, serial))
+        .spawn(move || {
+            crate::demuxer::demux_file_from(
+                &worker_path,
+                &worker_tracks,
+                &worker_queues,
+                serial,
+                start_position,
+            )
+        })
         .map_err(|error| format!("Could not start demux worker: {error}"))?);
 
     let mut prebuffer = Vec::new();
