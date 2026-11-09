@@ -123,6 +123,7 @@ impl AudioPlaybackHandle {
     /// Returns true once the worker has completed and published its result.
     pub fn is_finished(&self) -> bool {
         self.control.finished.load(Ordering::Acquire)
+            || self.worker.as_ref().is_some_and(JoinHandle::is_finished)
     }
 
     /// Returns true when the worker completed successfully at natural EOF.
