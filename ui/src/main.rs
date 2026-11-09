@@ -48,13 +48,20 @@ fn main() -> glib::ExitCode {
     });
 
     app.connect_open(|app, files, _hint| {
-        let win = GlimpseWindow::new(app);
-        if let Some(file) = files.first() {
-            if let Some(path) = file.path() {
-                win.open_file(path.to_str().unwrap_or(""));
-            }
+        if files.is_empty() {
+            let win = GlimpseWindow::new(app);
+            win.present();
+            return;
         }
-        win.present();
+
+        // Open every supplied media source in its own window. Using the URI
+        // preserves non-UTF-8 local paths and supports remote GFile sources.
+        for file in files {
+            let win = GlimpseWindow::new(app);
+            let uri = file.uri();
+            win.open_file(uri.as_str());
+            win.present();
+        }
     });
 
     app.run()
