@@ -29,6 +29,10 @@ static void log_av_error(const char *what, int err)
     fprintf(stderr, "%s: %s\n", what, msg);
 }
 
+static int chroma_dimension(int dimension)
+{
+    return dimension / 2 + dimension % 2;
+}
 
 static int create_vaapi_device(AVBufferRef **device_out, char **render_node_out)
 {
@@ -797,8 +801,8 @@ static int inspect_10bit_samples(GLuint y_texture, GLuint uv_texture,
      * left-aligned, so shift right by six. Preserve GL readback row order;
      * the comparison tool checks both vertical orientations.
      */
-    size_t chroma_width = (size_t)(width / 2 + width % 2);
-    size_t chroma_height = (size_t)(height / 2 + height % 2);
+    size_t chroma_width = (size_t)chroma_dimension(width);
+    size_t chroma_height = (size_t)chroma_dimension(height);
     size_t chroma_samples = chroma_width * chroma_height;
     size_t raw_size = pixel_count * 2 + chroma_samples * 4;
     uint8_t *raw = malloc(raw_size);
@@ -1030,6 +1034,16 @@ static int self_test_layout_validation(void)
     }
 
     printf("PASS: malformed descriptor rejected\n");
+
+    if (chroma_dimension(720) != 360 ||
+        chroma_dimension(721) != 361 ||
+        chroma_dimension(1080) != 540 ||
+        chroma_dimension(1081) != 541 ||
+        chroma_dimension(1) != 1) {
+        fprintf(stderr, "FAIL: 4:2:0 chroma dimension rounding\n");
+        return 1;
+    }
+    printf("PASS: even and odd 4:2:0 chroma dimensions\n");
     printf("All DRM layout validation self-tests passed\n");
     return 0;
 }
@@ -1042,8 +1056,8 @@ static int test_egl_import(const AVDRMFrameDescriptor *desc,
     EGLDisplay display = get_egl_display_for_render_node(render_node);
 
     if (display == EGL_NO_DISPLAY) {
-        fprintf(stderr, "Could not get surfaceless EGL display: 0x%x\n",
-                eglGetError());
+        fprintf(stderr, "Could not get EGL display for VAAPI render node %s: 0x%x\n",
+                render_node, eglGetError());
         return -1;
     }
 
@@ -1171,8 +1185,8 @@ static int test_egl_import(const AVDRMFrameDescriptor *desc,
         frame_width, frame_height, 0, &images[0], &textures[0]);
 
     if (result == 0) {
-        int chroma_width = frame_width / 2 + frame_width % 2;
-        int chroma_height = frame_height / 2 + frame_height % 2;
+        int chroma_width = chroma_dimension(frame_width);
+        int chroma_height = chroma_dimension(frame_height);
         result = import_layer(
             display, create_image, destroy_image, image_to_texture,
             desc, &desc->layers[1],
