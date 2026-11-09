@@ -86,11 +86,19 @@ impl Player {
         #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
         {
             let mut session = self.audio_session.lock();
+            if session.as_ref().is_some_and(AudioPlaybackHandle::is_finished) {
+                session.take();
+                self.clock.reset(0.0);
+            }
             if session.is_none() {
                 let playback = AudioPlaybackSession::new(Arc::clone(&self.clock));
                 match playback.spawn(self.path.clone(), self.volume(), self.event_sender.clone()) {
                     Ok(handle) => *session = Some(handle),
-                    Err(error) => { let _ = self.event_sender.send(Event::Error(error)); }
+                    Err(error) => {
+                        *state = PlayerState::Paused;
+                        self.clock.pause();
+                        let _ = self.event_sender.send(Event::Error(error));
+                    }
                 }
             } else if let Some(handle) = session.as_ref() {
                 handle.resume();
@@ -159,6 +167,18 @@ impl Player {
     }
 
     pub fn state(&self) -> PlayerState {
+        #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
+        if let Some(handle) = self.audio_session.lock().as_ref() {
+            if handle.is_finished() {
+                let completed_state = if handle.reached_end_of_stream() {
+                    PlayerState::Ended
+                } else {
+                    PlayerState::Paused
+                };
+                *self.state.lock() = completed_state;
+                return completed_state;
+            }
+        }
         *self.state.lock()
     }
 }
