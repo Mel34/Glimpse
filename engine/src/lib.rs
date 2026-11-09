@@ -2,6 +2,8 @@
 //! Direct in-process FFmpeg (libav*) media engine with audio master clock sync.
 
 pub mod audio;
+#[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
+pub mod audio_playback;
 pub mod clock;
 pub mod decoder;
 pub mod demuxer;
