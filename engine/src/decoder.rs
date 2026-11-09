@@ -407,6 +407,9 @@ impl AudioDecoder {
 
             let input_layout = decoded.ch_layout();
             let source_layout = normalized_input_layout(&input_layout);
+            // swresample validates the frame layout against its configured input.
+            // Carry the inferred default layout on the frame as well.
+            decoded.set_ch_layout(source_layout.clone());
             let input_mask = source_layout.mask().ok_or_else(|| {
                 format!(
                     "Audio stream uses an unsupported channel layout: {}",
