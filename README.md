@@ -14,7 +14,7 @@ Glimpse uses its in-process `glimpse-engine` for playback; GTK `MediaFile` is no
 - FFmpeg/libavcodec decodes video in a worker thread. Decoded frames are presented as GTK memory textures and scheduled against the audio master clock.
 - Audio is decoded and sent directly to PipeWire.
 - Seeking restarts the video demux/decode run at the target while the audio engine seeks its master timeline. Paused seeks remain paused.
-- Track selection is exposed through the GTK controls; subtitles remain off by default.
+- Audio track selection is supported; subtitle playback is not available yet.
 
 ## Rendering roadmap
 
@@ -56,7 +56,7 @@ current presentation path.
 2. Dragging the video surface moves the window without toggling playback.
 3. The seekbar wheel seeks in five-second steps.
 4. The window wheel changes volume in five-percent steps.
-5. Fullscreen controls appear on pointer movement and hide after two seconds of inactivity.
+5. Playback controls appear on pointer movement and hide after three seconds of inactivity in windowed and fullscreen modes.
 
 ## Build
 
@@ -67,6 +67,7 @@ sudo pacman -S --needed ffmpeg gtk4 libadwaita cargo clang pkgconf alsa-lib pipe
 ```
 
 ```bash
+export BINDGEN_EXTRA_CLANG_ARGS="-I$PWD/include"
 cargo check --workspace
 cargo test --workspace --all-features
 cargo run -p glimpse -- sample.mp4
