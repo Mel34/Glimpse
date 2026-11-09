@@ -4,7 +4,9 @@
 //! The PipeWire process callback remains real-time safe; the session updates
 //! the master clock from submitted media PTS and the sink's queued/device delay.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use crossbeam_channel::Sender;
+use parking_lot::Mutex;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -15,7 +17,7 @@ use crate::decoder::{
     AudioDecoder, AudioFrameData, AudioFrameQueue, AUDIO_OUTPUT_CHANNELS, AUDIO_OUTPUT_RATE,
 };
 use crate::demuxer::{demux_file, DemuxStats, PacketQueues};
-use crate::types::{Serial, TrackInfo, TrackList};
+use crate::types::{Event, Serial, TrackInfo, TrackList};
 
 const PACKET_QUEUE_BYTES: usize = 64 * 1024 * 1024;
 const AUDIO_FRAME_QUEUE_BYTES: usize = 32 * 1024 * 1024;
@@ -35,13 +37,23 @@ pub struct AudioPlaybackReport {
     pub master_clock_pts: f64,
 }
 
-/// Owns the audio master clock for a synchronous playback session.
-///
-/// The session returns after the stream reaches EOF and the final audio tail
-/// has been handed to the device. UI-driven transport controls will build on
-/// this owner in the next integration step.
+/// Owns the audio master clock and creates cancellable playback workers.
 pub struct AudioPlaybackSession {
     clock: Arc<MasterClock>,
+}
+
+#[derive(Default)]
+struct PlaybackControl {
+    paused: AtomicBool,
+    stopped: AtomicBool,
+    volume: AtomicU32,
+    queues: Mutex<Option<(PacketQueues, Arc<AudioFrameQueue>)>>,
+}
+
+/// A joinable PipeWire playback worker owned by its Player.
+pub struct AudioPlaybackHandle {
+    control: Arc<PlaybackControl>,
+    worker: Option<JoinHandle<()>>,
 }
 
 impl AudioPlaybackSession {
@@ -49,9 +61,72 @@ impl AudioPlaybackSession {
         Self { clock }
     }
 
+    /// Synchronous diagnostic entry point retained for the standalone probe.
     pub fn play_file(&self, path: &str) -> Result<AudioPlaybackReport, String> {
         run_file(path, Arc::clone(&self.clock))
     }
+
+    /// Starts playback on a worker. Dropping the returned handle cancels and
+    /// joins the worker, including its demux and PipeWire threads.
+    pub fn spawn(
+        &self,
+        path: String,
+        initial_volume: f32,
+        events: Sender<Event>,
+    ) -> Result<AudioPlaybackHandle, String> {
+        let control = Arc::new(PlaybackControl::default());
+        control.volume.store(sanitise_volume(initial_volume).to_bits(), Ordering::Relaxed);
+        let worker_control = Arc::clone(&control);
+        let clock = Arc::clone(&self.clock);
+        let worker = thread::Builder::new()
+            .name("glimpse-audio-session".to_string())
+            .spawn(move || {
+                let result = run_file_control(&path, clock, worker_control.clone());
+                if !worker_control.stopped.load(Ordering::Acquire) {
+                    match result {
+                        Ok(_) => { let _ = events.send(Event::EndOfStream); }
+                        Err(error) => { let _ = events.send(Event::Error(error)); }
+                    }
+                }
+            })
+            .map_err(|error| format!("Could not start audio session worker: {error}"))?;
+        Ok(AudioPlaybackHandle { control, worker: Some(worker) })
+    }
+}
+
+impl AudioPlaybackHandle {
+    pub fn pause(&self) {
+        self.control.paused.store(true, Ordering::Release);
+    }
+
+    pub fn resume(&self) {
+        self.control.paused.store(false, Ordering::Release);
+    }
+
+    pub fn set_volume(&self, volume: f32) {
+        self.control.volume.store(sanitise_volume(volume).to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn stop(&mut self) {
+        self.control.stopped.store(true, Ordering::Release);
+        if let Some((queues, frames)) = self.control.queues.lock().as_ref() {
+            queues.abort();
+            frames.abort();
+        }
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+impl Drop for AudioPlaybackHandle {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+fn sanitise_volume(volume: f32) -> f32 {
+    if volume.is_finite() { volume.clamp(0.0, 1.0) } else { 1.0 }
 }
 
 impl AudioPlaybackReport {
@@ -69,12 +144,26 @@ impl AudioPlaybackReport {
 /// eventual player integration. Video/subtitle packets are drained for now;
 /// unified audio/video demux consumption is the next pipeline milestone.
 fn run_file(path: &str, clock: Arc<MasterClock>) -> Result<AudioPlaybackReport, String> {
+    run_file_control(path, clock, Arc::new(PlaybackControl {
+        paused: AtomicBool::new(false),
+        stopped: AtomicBool::new(false),
+        volume: AtomicU32::new(1.0f32.to_bits()),
+        queues: Mutex::new(None),
+    }))
+}
+
+fn run_file_control(
+    path: &str,
+    clock: Arc<MasterClock>,
+    control: Arc<PlaybackControl>,
+) -> Result<AudioPlaybackReport, String> {
     let probe = crate::demuxer::probe_media(path)?;
     let audio_track = select_audio_track(&probe.tracks)
         .ok_or_else(|| "The media file has no audio stream".to_string())?;
     let serial = Serial(0);
     let queues = PacketQueues::new(128, PACKET_QUEUE_BYTES);
     let frame_queue = Arc::new(AudioFrameQueue::new(64, AUDIO_FRAME_QUEUE_BYTES));
+    *control.queues.lock() = Some((queues.clone(), Arc::clone(&frame_queue)));
     let mut decoder = AudioDecoder::open_ffmpeg(
         path,
         audio_track.id.0,
@@ -93,6 +182,11 @@ fn run_file(path: &str, clock: Arc<MasterClock>) -> Result<AudioPlaybackReport, 
     let mut prebuffer = Vec::new();
     let mut prebuffered_seconds = 0.0;
     while prebuffered_seconds < PREBUFFER_SECONDS {
+        if control.stopped.load(Ordering::Acquire) {
+            abort_demux(&queues, &mut demux_worker);
+            frame_queue.abort();
+            return Err("Playback stopped".to_string());
+        }
         if let Err(error) = decoder.decode_step(serial) {
             abort_demux(&queues, &mut demux_worker);
             return Err(error);
@@ -122,12 +216,19 @@ fn run_file(path: &str, clock: Arc<MasterClock>) -> Result<AudioPlaybackReport, 
             return Err(error);
         }
     };
+    sink.set_volume(f32::from_bits(control.volume.load(Ordering::Relaxed)));
     sink.resume();
     clock.resume();
 
     let mut playback = PlaybackStats::default();
     for frame in prebuffer {
-        output_frame(&sink, &clock, frame, &mut playback);
+        if !output_frame(&sink, &clock, &control, frame, &mut playback) {
+            abort_demux(&queues, &mut demux_worker);
+            frame_queue.abort();
+            sink.pause();
+            clock.pause();
+            return Err("Playback stopped".to_string());
+        }
     }
 
     let playback_finished = Arc::new(AtomicBool::new(false));
@@ -135,13 +236,19 @@ fn run_file(path: &str, clock: Arc<MasterClock>) -> Result<AudioPlaybackReport, 
     let playback_clock = Arc::clone(&clock);
     let playback_queue = Arc::clone(&frame_queue);
     let playback_finished_worker = Arc::clone(&playback_finished);
+    let worker_control = Arc::clone(&control);
     let playback_worker = match thread::Builder::new()
         .name("glimpse-audio-playback".to_string())
         .spawn(move || {
             let mut stats = PlaybackStats::default();
             loop {
+                if worker_control.stopped.load(Ordering::Acquire) {
+                    break;
+                }
                 if let Some(frame) = playback_queue.pop_timeout(Duration::from_millis(20)) {
-                    output_frame(&playback_sink, &playback_clock, frame.item, &mut stats);
+                    if !output_frame(&playback_sink, &playback_clock, &worker_control, frame.item, &mut stats) {
+                        break;
+                    }
                 } else if playback_finished_worker.load(Ordering::Acquire)
                     && playback_queue.stats().0 == 0
                 {
@@ -163,7 +270,7 @@ fn run_file(path: &str, clock: Arc<MasterClock>) -> Result<AudioPlaybackReport, 
         Ok(stats)
     } else {
         (|| {
-            while demux_worker.is_some() {
+            while demux_worker.is_some() && !control.stopped.load(Ordering::Acquire) {
                 let received_packet = decoder.decode_step(serial)?;
                 drain_non_audio_packets(&queues);
                 if demux_finished(&demux_worker, &queues) {
@@ -175,12 +282,17 @@ fn run_file(path: &str, clock: Arc<MasterClock>) -> Result<AudioPlaybackReport, 
                     thread::yield_now();
                 }
             }
-            Err("Demux worker stopped before audio decoding completed".to_string())
+            if control.stopped.load(Ordering::Acquire) {
+                Err("Playback stopped".to_string())
+            } else {
+                Err("Demux worker stopped before audio decoding completed".to_string())
+            }
         })()
     };
 
-    if decode_result.is_err() {
+    if decode_result.is_err() || control.stopped.load(Ordering::Acquire) {
         abort_demux(&queues, &mut demux_worker);
+        frame_queue.abort();
     }
     playback_finished.store(true, Ordering::Release);
     let worker_stats = playback_worker
@@ -194,6 +306,11 @@ fn run_file(path: &str, clock: Arc<MasterClock>) -> Result<AudioPlaybackReport, 
     }
     playback_stats.last_end_pts = worker_stats.last_end_pts.or(playback_stats.last_end_pts);
     let demux = decode_result?;
+    if control.stopped.load(Ordering::Acquire) {
+        sink.pause();
+        clock.pause();
+        return Err("Playback stopped".to_string());
+    }
     // The playback worker has joined, so no further PCM can be submitted.
     // Empty-ring callbacks from this point are expected EOF tail silence.
     sink.mark_end_of_stream();
@@ -204,6 +321,9 @@ fn run_file(path: &str, clock: Arc<MasterClock>) -> Result<AudioPlaybackReport, 
     let final_pts = playback_stats.last_end_pts.unwrap_or(0.0);
     let drain_deadline = Instant::now() + Duration::from_secs(2);
     while sink.buffered_sample_frames() > 0 {
+        if !wait_until_active(&sink, &clock, &control) {
+            return Err("Playback stopped".to_string());
+        }
         update_audio_clock(&sink, &clock, final_pts);
         if Instant::now() >= drain_deadline {
             sink.pause();
@@ -297,21 +417,29 @@ fn record_frame(stats: &mut PlaybackStats, frame: &AudioFrameData) -> usize {
 fn output_frame(
     sink: &PipeWireAudioSink,
     clock: &MasterClock,
+    control: &PlaybackControl,
     frame: AudioFrameData,
     stats: &mut PlaybackStats,
-) {
+) -> bool {
     let samples = frame.samples.as_slice();
     let sample_frames = record_frame(stats, &frame);
-    if sample_frames == 0 { return; }
+    if sample_frames == 0 { return true; }
 
     let mut offset = 0;
     while offset < sample_frames {
+        if !wait_until_active(sink, clock, control) {
+            return false;
+        }
+        sink.set_volume(f32::from_bits(control.volume.load(Ordering::Relaxed)));
         let chunk_frames = (sample_frames - offset).min(OUTPUT_CHUNK_FRAMES);
         let start = offset * AUDIO_OUTPUT_CHANNELS;
         let end = (offset + chunk_frames) * AUDIO_OUTPUT_CHANNELS;
         let chunk_pts = frame.pts + offset as f64 / AUDIO_OUTPUT_RATE as f64;
 
         while sink.buffered_sample_frames() >= OUTPUT_BUFFER_TARGET_FRAMES {
+            if !wait_until_active(sink, clock, control) {
+                return false;
+            }
             update_audio_clock(sink, clock, chunk_pts);
             thread::sleep(Duration::from_millis(2));
         }
@@ -319,6 +447,25 @@ fn output_frame(
         offset += chunk_frames;
         update_audio_clock(sink, clock, chunk_pts + chunk_frames as f64 / AUDIO_OUTPUT_RATE as f64);
     }
+    true
+}
+
+fn wait_until_active(
+    sink: &PipeWireAudioSink,
+    clock: &MasterClock,
+    control: &PlaybackControl,
+) -> bool {
+    while control.paused.load(Ordering::Acquire) && !control.stopped.load(Ordering::Acquire) {
+        sink.pause();
+        clock.pause();
+        thread::sleep(Duration::from_millis(5));
+    }
+    if control.stopped.load(Ordering::Acquire) {
+        return false;
+    }
+    sink.resume();
+    clock.resume();
+    true
 }
 
 fn update_audio_clock(sink: &PipeWireAudioSink, clock: &MasterClock, submitted_end_pts: f64) {
