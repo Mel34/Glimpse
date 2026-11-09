@@ -49,6 +49,7 @@ pub fn create_floating_bottom_bar() -> ControlBarWidgets {
     volume_button.set_child(Some(&volume_icon));
     volume_button.add_css_class("flat");
     volume_button.add_css_class("osd-icon-button");
+    volume_button.set_size_request(32, 32);
     volume_button.set_tooltip_text(Some("Volume: 100%"));
 
     // Volume Popover containing vertical slider and percentage
@@ -82,6 +83,7 @@ pub fn create_floating_bottom_bar() -> ControlBarWidgets {
     settings_button.set_icon_name("emblem-system-symbolic");
     settings_button.add_css_class("flat");
     settings_button.add_css_class("osd-icon-button");
+    settings_button.set_size_request(32, 32);
     settings_button.set_tooltip_text(Some("Tracks & Preferences"));
     top_row.append(&settings_button);
 
