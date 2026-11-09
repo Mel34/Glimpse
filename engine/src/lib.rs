@@ -11,7 +11,7 @@ pub mod presenter;
 pub mod queue;
 pub mod types;
 
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use crossbeam_channel::{bounded, Receiver, Sender};
