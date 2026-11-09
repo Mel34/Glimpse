@@ -356,6 +356,7 @@ impl GlimpseWindow {
             if n_press == 1 {
                 let m_action = Rc::clone(&m_toggle);
                 let p_action = Rc::clone(&p_toggle);
+                let v_action = Rc::clone(&v_toggle);
                 let w_fs = win_rel.clone();
 
                 VideoClickStateMachine::handle_click(
@@ -368,7 +369,7 @@ impl GlimpseWindow {
                                     p.pause();
                                 } else {
                                     if p.state() == PlayerState::Ended {
-                                        if let Some(ref mut video) = *v_toggle.borrow_mut() {
+                                        if let Some(ref mut video) = *v_action.borrow_mut() {
                                             video.seek(Duration::ZERO);
                                         }
                                     }
