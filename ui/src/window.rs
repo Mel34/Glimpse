@@ -745,9 +745,33 @@ impl GlimpseWindow {
         });
         window.add_action(&action_about);
 
-        // Keyboard Shortcuts: Space (play/pause), F (fullscreen), Escape (unfullscreen), etc.
+        // Space always controls playback, even when a button has keyboard focus.
+        let space_controller = EventControllerKey::new();
+        space_controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        let p_space = Rc::clone(&player);
+        let video_space = Rc::clone(&video_playback);
+        space_controller.connect_key_pressed(move |_, keyval, _, _| {
+            if keyval != gdk4::Key::space {
+                return glib::Propagation::Proceed;
+            }
+            if let Some(ref p) = *p_space.borrow() {
+                if p.state() == PlayerState::Playing {
+                    p.pause();
+                } else {
+                    if p.state() == PlayerState::Ended {
+                        if let Some(ref mut video) = *video_space.borrow_mut() {
+                            video.seek(Duration::ZERO);
+                        }
+                    }
+                    p.play();
+                }
+            }
+            glib::Propagation::Stop
+        });
+        window.add_controller(space_controller);
+
+        // Other shortcuts run in Bubble phase so focused controls get first refusal.
         let key_controller = EventControllerKey::new();
-        // Let focused controls handle their native keys before window shortcuts.
         key_controller.set_propagation_phase(gtk4::PropagationPhase::Bubble);
         let p_keys = Rc::clone(&player);
         let win_keys = window.clone();
@@ -761,19 +785,6 @@ impl GlimpseWindow {
 
         key_controller.connect_key_pressed(move |_, keyval, _keycode, modifier| {
             match keyval {
-                // Space: Play / Pause toggle
-                gdk4::Key::space => {
-                    if let Some(ref p) = *p_keys.borrow() {
-                        if p.state() == PlayerState::Playing { p.pause(); }
-                        else {
-                            if p.state() == PlayerState::Ended {
-                                if let Some(ref mut video) = *video_open_k.borrow_mut() { video.seek(Duration::ZERO); }
-                            }
-                            p.play();
-                        }
-                    }
-                    glib::Propagation::Stop
-                }
                 // 'f' or 'F': Fullscreen toggle
                 gdk4::Key::f | gdk4::Key::F => {
                     if win_keys.is_fullscreen() {
