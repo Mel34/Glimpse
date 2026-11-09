@@ -92,3 +92,20 @@ impl MasterClock {
         self.inner.lock().paused
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn audio_clock_readiness_is_cleared_by_reset() {
+        let clock = MasterClock::new();
+        assert!(!clock.has_audio_pts());
+
+        clock.set_audio_pts(1.0, 0.0);
+        assert!(clock.has_audio_pts());
+
+        clock.reset(2.0);
+        assert!(!clock.has_audio_pts());
+    }
+}
