@@ -224,7 +224,9 @@ fn schedule_frames(
     let mut displayed_frames = 0u64;
     let mut dropped_frames = 0u64;
 
-    glib::timeout_add_local(Duration::from_millis(5), move || {
+    // Let GTK schedule presentation work on the widget's frame clock rather
+    // than polling independently of the display refresh cycle.
+    picture.add_tick_callback(move |_, _frame_clock| {
         if cancelled.load(Ordering::Acquire) {
             return glib::ControlFlow::Break;
         }
