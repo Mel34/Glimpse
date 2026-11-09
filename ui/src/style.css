@@ -1,12 +1,12 @@
 /* Glimpse Showtime-Style Theme */
 
 window.glimpse-window {
-    background-color: #1e1e1e;
-    color: #ffffff;
+    background-color: @theme_bg_color;
+    color: @theme_fg_color;
 }
 
 .loader-view {
-    background-color: #1e1e1e;
+    background-color: @theme_bg_color;
 }
 
 .loader-header {
@@ -16,25 +16,25 @@ window.glimpse-window {
 .loader-title {
     font-size: 15px;
     font-weight: 600;
-    color: #dcdcdc;
+    color: @theme_fg_color;
 }
 
 .loader-icon {
-    color: #9a9996;
+    color: alpha(@theme_fg_color, 0.65);
     opacity: 0.85;
 }
 
 .loader-heading {
     font-size: 28px;
     font-weight: 800;
-    color: #ffffff;
+    color: @theme_fg_color;
     margin-top: 24px;
     margin-bottom: 6px;
 }
 
 .loader-subheading {
     font-size: 14px;
-    color: #9a9996;
+    color: alpha(@theme_fg_color, 0.65);
     margin-bottom: 24px;
 }
 
@@ -120,19 +120,19 @@ menubutton.osd-icon-button > button:checked {
     padding: 4px 6px;
     border-radius: 6px;
     background-color: transparent;
-    color: #e0e0e0;
+    color: @theme_fg_color;
     box-shadow: none;
     border: none;
 }
 
 .header-button:hover {
-    background-color: rgba(255, 255, 255, 0.12);
-    color: #ffffff;
+    background-color: alpha(@theme_fg_color, 0.10);
+    color: @theme_fg_color;
 }
 
 .header-button:active, .header-button:checked {
-    background-color: rgba(255, 255, 255, 0.2);
-    color: #ffffff;
+    background-color: alpha(@theme_fg_color, 0.16);
+    color: @theme_fg_color;
 }
 
 button.header-close-button {
@@ -141,18 +141,18 @@ button.header-close-button {
     padding: 0;
     margin: 0;
     border-radius: 9999px;
-    background-color: rgba(255, 255, 255, 0.26);
-    color: #ffffff;
+    background-color: alpha(@theme_fg_color, 0.14);
+    color: @theme_fg_color;
     box-shadow: none;
     border: none;
 }
 
 button.header-close-button:hover {
-    background-color: rgba(255, 255, 255, 0.28);
+    background-color: alpha(@theme_fg_color, 0.20);
 }
 
 button.header-close-button:active {
-    background-color: rgba(255, 255, 255, 0.42);
+    background-color: alpha(@theme_fg_color, 0.26);
 }
 
 button.header-close-button image {
@@ -170,24 +170,24 @@ popover {
 
 popover > contents,
 popover.menu-popover > contents {
-    background-color: #242424;
-    color: #ffffff;
-    border: 1px solid rgba(255, 255, 255, 0.14);
+    background-color: @theme_base_color;
+    color: @theme_text_color;
+    border: 1px solid alpha(@theme_text_color, 0.14);
     border-radius: 12px;
     padding: 6px;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
 }
 
 popover > arrow {
-    background-color: #242424;
-    border-color: rgba(255, 255, 255, 0.14);
+    background-color: @theme_base_color;
+    border-color: alpha(@theme_text_color, 0.14);
 }
 
 popover button,
 .menu-item-button {
     border-radius: 8px;
     padding: 6px 12px;
-    color: #ffffff;
+    color: @theme_text_color;
     background-color: transparent;
     border: none;
     font-size: 13px;
@@ -196,22 +196,22 @@ popover button,
 
 popover button:hover,
 .menu-item-button:hover {
-    background-color: rgba(255, 255, 255, 0.12);
+    background-color: alpha(@theme_text_color, 0.10);
 }
 
 popover button:active,
 .menu-item-button:active {
-    background-color: rgba(255, 255, 255, 0.2);
+    background-color: alpha(@theme_text_color, 0.16);
 }
 
 popover label,
 .menu-item-button label {
-    color: #ffffff;
+    color: @theme_text_color;
 }
 
 popover label.dim-label,
 .menu-item-button label.dim-label {
-    color: #9a9996;
+    color: alpha(@theme_text_color, 0.65);
     font-size: 11px;
 }
 
