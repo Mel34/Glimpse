@@ -496,14 +496,18 @@ impl GlimpseWindow {
         let timer_motion = Rc::clone(&hide_timer);
         let window_motion = window.clone();
         motion.connect_enter(move |_, _, _| {
-            reveal_and_schedule_controls(&window_motion, &top_motion, &bottom_motion, &timer_motion);
+            if window_motion.is_fullscreen() {
+                reveal_and_schedule_controls(&top_motion, &bottom_motion, &timer_motion);
+            }
         });
         let top_motion = top_controls.clone();
         let bottom_motion = bottom_controls.container.clone();
         let timer_motion = Rc::clone(&hide_timer);
         let window_motion = window.clone();
         motion.connect_motion(move |_, _, _| {
-            reveal_and_schedule_controls(&window_motion, &top_motion, &bottom_motion, &timer_motion);
+            if window_motion.is_fullscreen() {
+                reveal_and_schedule_controls(&top_motion, &bottom_motion, &timer_motion);
+            }
         });
         player_overlay.add_controller(motion);
 
@@ -512,7 +516,7 @@ impl GlimpseWindow {
         let timer_fullscreen = Rc::clone(&hide_timer);
         window.connect_fullscreened_notify(move |win| {
             if win.is_fullscreen() {
-                reveal_and_schedule_controls(win, &top_fullscreen, &bottom_fullscreen, &timer_fullscreen);
+                reveal_and_schedule_controls(&top_fullscreen, &bottom_fullscreen, &timer_fullscreen);
             } else {
                 if let Some(source) = timer_fullscreen.borrow_mut().take() { source.remove(); }
                 top_fullscreen.set_opacity(1.0);
@@ -983,25 +987,24 @@ fn load_and_play_file(
 }
 
 fn reveal_and_schedule_controls(
-    window: &ApplicationWindow, top: &GtkBox, bottom: &GtkBox,
+    top: &GtkBox, bottom: &GtkBox,
     timer: &Rc<RefCell<Option<glib::SourceId>>>,
 ) {
     top.set_opacity(1.0); bottom.set_opacity(1.0);
     top.set_can_target(true); bottom.set_can_target(true);
     if let Some(source) = timer.borrow_mut().take() { source.remove(); }
-    if window.is_fullscreen() {
-        let top_hide = top.clone();
-        let bottom_hide = bottom.clone();
-        let timer_slot = Rc::clone(timer);
-        let source = glib::timeout_add_local_once(Duration::from_secs(2), move || {
-            *timer_slot.borrow_mut() = None;
-            top_hide.set_opacity(0.0);
-            bottom_hide.set_opacity(0.0);
-            top_hide.set_can_target(false);
-            bottom_hide.set_can_target(false);
-        });
-        *timer.borrow_mut() = Some(source);
-    }
+
+    let top_hide = top.clone();
+    let bottom_hide = bottom.clone();
+    let timer_slot = Rc::clone(timer);
+    let source = glib::timeout_add_local_once(Duration::from_secs(2), move || {
+        *timer_slot.borrow_mut() = None;
+        top_hide.set_opacity(0.0);
+        bottom_hide.set_opacity(0.0);
+        top_hide.set_can_target(false);
+        bottom_hide.set_can_target(false);
+    });
+    *timer.borrow_mut() = Some(source);
 }
 
 /// Modal dialog showing the keyboard shortcuts list
