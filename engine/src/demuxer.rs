@@ -116,9 +116,20 @@ pub fn demux_file_from(
         .map_err(|error| format!("Could not open media with libavformat: {error}"))?;
     if !start_position.is_zero() {
         let timestamp = i64::try_from(start_position.as_micros()).unwrap_or(i64::MAX);
-        input.seek(timestamp, ..timestamp).map_err(|error| {
-            format!("Could not seek media to {:.3}s: {error}", start_position.as_secs_f64())
-        })?;
+        // Prefer a backward-bounded seek so decoding can trim from the
+        // preceding keyframe. Some demuxers reject that constrained interval
+        // even when they support ordinary timestamp seeking, so retry with
+        // FFmpeg's unconstrained seek range.
+        if let Err(backward_error) = input.seek(timestamp, ..timestamp) {
+            input.seek(timestamp, ..).map_err(|fallback_error| {
+                format!(
+                    "Could not seek media to {:.3}s (backward seek: {}; fallback seek: {})",
+                    start_position.as_secs_f64(),
+                    backward_error,
+                    fallback_error,
+                )
+            })?;
+        }
     }
 
     let mut stream_types = HashMap::new();
