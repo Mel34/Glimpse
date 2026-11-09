@@ -11,7 +11,8 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{bounded, Receiver};
 use glimpse_engine::audio_playback::AudioPlaybackSession;
-use glimpse_engine::decoder::{VideoDecoder, VideoFrameData, VideoFrameQueue};
+use glimpse_engine::decoder::{VideoDecoder, VideoFrameQueue};
+use glimpse_engine::presenter::VideoFrameData;
 use glimpse_engine::demuxer::{self, PacketQueues};
 use glimpse_engine::{Event, MasterClock, ScheduleAction, Serial, VideoScheduler};
 
