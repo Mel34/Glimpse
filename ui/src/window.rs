@@ -440,6 +440,8 @@ impl GlimpseWindow {
         let seekbar_gesture = GestureClick::new();
         seekbar_gesture.set_button(1);
         seekbar_gesture.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        // Observe the pointer sequence without claiming it from GtkRange.
+        seekbar_gesture.set_exclusive(false);
         let seekbar_drag_start = Rc::clone(&bottom_controls.seekbar_dragging);
         seekbar_gesture.connect_pressed(move |_, _, _, _| {
             seekbar_drag_start.set(true);
