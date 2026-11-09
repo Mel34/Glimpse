@@ -745,9 +745,34 @@ impl GlimpseWindow {
         });
         window.add_action(&action_about);
 
-        // Keyboard Shortcuts: Space (play/pause), F (fullscreen), Escape (unfullscreen), etc.
+        // Space always controls playback, even when a button has keyboard focus.
+        let space_controller = EventControllerKey::new();
+        space_controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        let p_space = Rc::clone(&player);
+        let video_space = Rc::clone(&video_playback);
+        space_controller.connect_key_pressed(move |_, keyval, _, _| {
+            if keyval != gdk4::Key::space {
+                return glib::Propagation::Proceed;
+            }
+            if let Some(ref p) = *p_space.borrow() {
+                if p.state() == PlayerState::Playing {
+                    p.pause();
+                } else {
+                    if p.state() == PlayerState::Ended {
+                        if let Some(ref mut video) = *video_space.borrow_mut() {
+                            video.seek(Duration::ZERO);
+                        }
+                    }
+                    p.play();
+                }
+            }
+            glib::Propagation::Stop
+        });
+        window.add_controller(space_controller);
+
+        // Other shortcuts run in Bubble phase so focused controls get first refusal.
         let key_controller = EventControllerKey::new();
-        key_controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        key_controller.set_propagation_phase(gtk4::PropagationPhase::Bubble);
         let p_keys = Rc::clone(&player);
         let win_keys = window.clone();
         let win_open_k = window.clone();
@@ -756,23 +781,13 @@ impl GlimpseWindow {
         let video_open_k = Rc::clone(&video_playback);
         let pic_open_k = picture.clone();
         let btm_open_k = bottom_controls.clone();
+        let top_keys = top_controls.clone();
+        let bottom_keys = bottom_controls.container.clone();
+        let timer_keys = Rc::clone(&hide_timer);
         let last_volume_keys = Rc::clone(&bottom_controls.last_nonzero_volume);
 
         key_controller.connect_key_pressed(move |_, keyval, _keycode, modifier| {
             match keyval {
-                // Space: Play / Pause toggle
-                gdk4::Key::space => {
-                    if let Some(ref p) = *p_keys.borrow() {
-                        if p.state() == PlayerState::Playing { p.pause(); }
-                        else {
-                            if p.state() == PlayerState::Ended {
-                                if let Some(ref mut video) = *video_open_k.borrow_mut() { video.seek(Duration::ZERO); }
-                            }
-                            p.play();
-                        }
-                    }
-                    glib::Propagation::Stop
-                }
                 // 'f' or 'F': Fullscreen toggle
                 gdk4::Key::f | gdk4::Key::F => {
                     if win_keys.is_fullscreen() {
@@ -805,6 +820,7 @@ impl GlimpseWindow {
                 }
                 // Left Arrow: Seek -5s
                 gdk4::Key::Left => {
+                    reveal_and_schedule_controls(&top_keys, &bottom_keys, &timer_keys);
                     if let Some(ref p) = *p_keys.borrow() {
                         let target = p.position().saturating_sub(Duration::from_secs(5));
                         p.seek(target);
@@ -814,6 +830,7 @@ impl GlimpseWindow {
                 }
                 // Right Arrow: Seek +5s
                 gdk4::Key::Right => {
+                    reveal_and_schedule_controls(&top_keys, &bottom_keys, &timer_keys);
                     if let Some(ref p) = *p_keys.borrow() {
                         let next = p.position() + Duration::from_secs(5);
                         let target = p.duration().map(|d| next.min(d)).unwrap_or(next);
@@ -825,6 +842,7 @@ impl GlimpseWindow {
                 // Up Arrow: Volume +5%
                 gdk4::Key::Up => {
                     if btm_open_k.volume_button.is_sensitive() {
+                        reveal_and_schedule_controls(&top_keys, &bottom_keys, &timer_keys);
                         let v = p_keys
                             .borrow()
                             .as_ref()
@@ -848,6 +866,7 @@ impl GlimpseWindow {
                 // Down Arrow: Volume -5%
                 gdk4::Key::Down => {
                     if btm_open_k.volume_button.is_sensitive() {
+                        reveal_and_schedule_controls(&top_keys, &bottom_keys, &timer_keys);
                         let v = p_keys
                             .borrow()
                             .as_ref()
