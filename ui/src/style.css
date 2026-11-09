@@ -230,21 +230,31 @@ popover label.dim-label,
     font-size: 15px;
     font-weight: 700;
     color: #ffffff;
+    text-shadow: 1px 0 1px #000000, -1px 0 1px #000000,
+                 0 1px 1px #000000, 0 -1px 1px #000000,
+                 1px 1px 1px #000000, -1px -1px 1px #000000,
+                 1px -1px 1px #000000, -1px 1px 1px #000000;
 }
 
 .timestamp-label {
     font-size: 12px;
     font-variant-numeric: tabular-nums;
-    color: #c0c0c0;
+    color: #ffffff;
+    text-shadow: 1px 0 1px #000000, -1px 0 1px #000000,
+                 0 1px 1px #000000, 0 -1px 1px #000000,
+                 1px 1px 1px #000000, -1px -1px 1px #000000,
+                 1px -1px 1px #000000, -1px 1px 1px #000000;
 }
 
 .subtitles-overlay {
     font-size: 18px;
     font-weight: 600;
     color: #ffffff;
-    background-color: rgba(0, 0, 0, 0.75);
-    padding: 6px 16px;
-    border-radius: 8px;
+    background-color: transparent;
+    text-shadow: 1px 0 1px #000000, -1px 0 1px #000000,
+                 0 1px 1px #000000, 0 -1px 1px #000000,
+                 1px 1px 1px #000000, -1px -1px 1px #000000,
+                 1px -1px 1px #000000, -1px 1px 1px #000000;
 }
 
 /* Vertical Volume Slider in Popover */
