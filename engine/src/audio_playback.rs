@@ -542,6 +542,7 @@ fn update_audio_clock(sink: &PipeWireAudioSink, clock: &MasterClock, submitted_e
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{TrackId, TrackType};
 
     #[test]
     fn completed_worker_is_detected_even_without_a_completion_signal() {
@@ -572,4 +573,46 @@ mod tests {
         assert!(handle.is_finished());
         assert!(handle.reached_end_of_stream());
     }
+    
+    fn audio_track(index: usize, is_default: bool) -> TrackInfo {
+        TrackInfo {
+            id: TrackId(index),
+            track_type: TrackType::Audio,
+            title: None,
+            language: None,
+            codec_name: "aac".to_string(),
+            width: None,
+            height: None,
+            sample_rate: Some(48_000),
+            channels: Some(2),
+            is_default,
+        }
+    }
+
+    #[test]
+    fn explicit_audio_selection_overrides_default_stream() {
+        let tracks = TrackList {
+            audio_tracks: vec![audio_track(1, true), audio_track(2, false)],
+            ..TrackList::default()
+        };
+
+        assert_eq!(
+            select_audio_track(&tracks, Some(2)).map(|track| track.id),
+            Some(TrackId(2))
+        );
+    }
+
+    #[test]
+    fn no_explicit_selection_uses_default_stream() {
+        let tracks = TrackList {
+            audio_tracks: vec![audio_track(1, false), audio_track(2, true)],
+            ..TrackList::default()
+        };
+
+        assert_eq!(
+            select_audio_track(&tracks, None).map(|track| track.id),
+            Some(TrackId(2))
+        );
+    }
+
 }
