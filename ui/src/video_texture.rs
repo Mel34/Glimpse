@@ -256,7 +256,11 @@ fn schedule_frames(
             if present_first_frame || frame.pts <= master_pts + 0.005 {
                 let frame = pending.take().expect("pending frame was checked");
                 present_first_frame = false;
-                let bytes = glib::Bytes::from_owned(frame.rgba_data.as_ref().clone());
+                // The decoded frame normally has a single owner here. Transfer
+                // its pixel allocation into GBytes instead of cloning every frame.
+                let pixels = Arc::try_unwrap(frame.rgba_data)
+                    .unwrap_or_else(|shared| shared.as_ref().clone());
+                let bytes = glib::Bytes::from_owned(pixels);
                 let texture = gdk4::MemoryTexture::new(
                     frame.width as i32,
                     frame.height as i32,
