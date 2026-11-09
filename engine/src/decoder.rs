@@ -260,6 +260,20 @@ struct FfmpegAudioDecoderState {
     discard_before_pts: f64,
 }
 
+#[cfg(feature = "ffmpeg-system")]
+fn normalized_input_layout<'a>(
+    input_layout: &ffmpeg_the_third::ChannelLayout<'a>,
+) -> ffmpeg_the_third::ChannelLayout<'a> {
+    use ffmpeg_the_third as ffmpeg;
+
+    match input_layout.order() {
+        ffmpeg::util::channel_layout::ChannelOrder::Unspecified => {
+            ffmpeg::ChannelLayout::default_for_channels(input_layout.channels())
+        }
+        _ => input_layout.clone(),
+    }
+}
+
 pub struct AudioDecoder {
     pub packet_queue: Arc<BoundedQueue<DemuxPacket>>,
     pub frame_queue: Arc<AudioFrameQueue>,
@@ -392,10 +406,11 @@ impl AudioDecoder {
             }
 
             let input_layout = decoded.ch_layout();
-            let input_mask = input_layout.mask().ok_or_else(|| {
+            let source_layout = normalized_input_layout(&input_layout);
+            let input_mask = source_layout.mask().ok_or_else(|| {
                 format!(
-                    "Audio stream uses an unsupported custom channel layout: {}",
-                    input_layout.description()
+                    "Audio stream uses an unsupported channel layout: {}",
+                    source_layout.description()
                 )
             })?;
             let needs_resampler = backend.resampler.as_ref().map_or(true, |resampler| {
@@ -405,8 +420,6 @@ impl AudioDecoder {
             });
 
             if needs_resampler {
-                let source_layout = ffmpeg::ChannelLayout::from_mask(input_mask)
-                    .ok_or_else(|| "Could not represent the decoded audio channel layout".to_string())?;
                 backend.resampler = Some(
                     ffmpeg::software::resampling::Context::get2(
                         decoded.format(),
@@ -555,5 +568,35 @@ impl AudioDecoder {
     #[cfg(not(feature = "ffmpeg-system"))]
     pub fn decode_step(&mut self, _target_serial: Serial) -> Result<bool, String> {
         Err("Software audio decoding requires the ffmpeg-system feature".to_string())
+    }
+}
+
+
+#[cfg(all(test, feature = "ffmpeg-system"))]
+mod audio_layout_tests {
+    use super::*;
+
+    #[test]
+    fn unspecified_mono_layout_uses_ffmpeg_default() {
+        let input = ffmpeg_the_third::ChannelLayout::unspecified(1);
+        let normalized = normalized_input_layout(&input);
+
+        assert_eq!(normalized, ffmpeg_the_third::ChannelLayout::MONO);
+    }
+
+    #[test]
+    fn unspecified_stereo_layout_uses_ffmpeg_default() {
+        let input = ffmpeg_the_third::ChannelLayout::unspecified(2);
+        let normalized = normalized_input_layout(&input);
+
+        assert_eq!(normalized, ffmpeg_the_third::ChannelLayout::STEREO);
+    }
+
+    #[test]
+    fn native_channel_layout_is_preserved() {
+        let input = ffmpeg_the_third::ChannelLayout::STEREO;
+        let normalized = normalized_input_layout(&input);
+
+        assert_eq!(normalized, input);
     }
 }
