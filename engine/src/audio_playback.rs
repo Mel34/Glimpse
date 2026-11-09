@@ -210,9 +210,12 @@ fn run_file(path: &str, clock: Arc<MasterClock>) -> Result<AudioPlaybackReport, 
         thread::sleep(Duration::from_millis(2));
     }
     let pipewire = sink.stats();
-    let device_tail = Duration::from_secs_f64(
+    let device_tail_secs = if pipewire.device_delay_ms.is_finite() {
         (pipewire.device_delay_ms / 1_000.0).clamp(0.0, 0.5)
-    );
+    } else {
+        0.0
+    };
+    let device_tail = Duration::from_secs_f64(device_tail_secs);
     thread::sleep(device_tail + Duration::from_millis(10));
     clock.set_audio_pts(final_pts, 0.0);
     sink.pause();
