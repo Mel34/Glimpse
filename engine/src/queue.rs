@@ -61,23 +61,20 @@ impl<T> BoundedQueue<T> {
         }
     }
 
-    /// Blocks while the queue is full. Returns an error if aborted or if one
-    /// item is larger than the queue's entire byte budget.
+    /// Blocks while the queue is full. A single item larger than the byte
+    /// budget is accepted only when the queue is empty, then normal
+    /// backpressure resumes until that item is consumed.
     pub fn push(&self, item: T, serial: Serial, byte_size: usize) -> Result<(), ()> {
-        if byte_size > self.max_bytes {
-            return Err(());
-        }
-
         let mut state = self.inner.lock();
         while !self.aborted.load(Ordering::Acquire) {
             if serial < state.serial {
                 return Ok(());
             }
-            if state.items.len() < self.max_count
-                && state.total_bytes.saturating_add(byte_size) <= self.max_bytes
-            {
+            let within_budget =
+                state.total_bytes.saturating_add(byte_size) <= self.max_bytes;
+            if state.items.len() < self.max_count && (within_budget || state.items.is_empty()) {
                 state.items.push_back(TaggedItem { item, serial, byte_size });
-                state.total_bytes += byte_size;
+                state.total_bytes = state.total_bytes.saturating_add(byte_size);
                 self.not_empty.notify_one();
                 return Ok(());
             }
@@ -144,10 +141,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn oversized_item_is_rejected_without_blocking() {
+    fn oversized_item_is_accepted_when_queue_is_empty() {
         let queue = BoundedQueue::new(2, 8);
-        assert!(queue.push("too large", Serial(0), 9).is_err());
-        assert_eq!(queue.stats().0, 0);
+        queue.push("large", Serial(0), 9).unwrap();
+
+        assert_eq!(queue.stats(), (1, 9, Serial(0)));
+        assert_eq!(queue.pop_timeout(Duration::ZERO).unwrap().item, "large");
+        assert_eq!(queue.stats().1, 0);
+    }
+
+    #[test]
+    fn oversized_item_waits_until_existing_items_are_consumed() {
+        let queue = BoundedQueue::new(2, 8);
+        queue.push("small", Serial(0), 4).unwrap();
+
+        let producer = queue.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            sender.send(producer.push("large", Serial(0), 9)).unwrap();
+        });
+
+        assert!(receiver.try_recv().is_err());
+        assert_eq!(queue.pop_timeout(Duration::ZERO).unwrap().item, "small");
+        assert!(receiver.recv_timeout(Duration::from_secs(1)).unwrap().is_ok());
+        worker.join().unwrap();
+        assert_eq!(queue.pop_timeout(Duration::ZERO).unwrap().item, "large");
     }
 
     #[test]
