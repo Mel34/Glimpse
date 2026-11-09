@@ -258,6 +258,32 @@ impl GlimpseWindow {
 
         // Bottom Floating OSD Bar (Title, Volume, Settings, Seekbar, Timestamps)
         let bottom_controls = create_floating_bottom_bar();
+        // Keep the timeline independent of video-frame presentation so audio-only
+        // playback and audio that outlives the video stream still update the controls.
+        let timeline_player = Rc::clone(&player);
+        let timeline_seekbar = bottom_controls.seekbar.clone();
+        let timeline_elapsed = bottom_controls.elapsed_label.clone();
+        let timeline_dragging = Rc::clone(&bottom_controls.seekbar_dragging);
+        let timeline_window = window.downgrade();
+        glib::timeout_add_local(Duration::from_millis(50), move || {
+            let Some(_window) = timeline_window.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            if !timeline_dragging.get() {
+                if let Some(current_player) = timeline_player.borrow().as_ref() {
+                    let position = current_player.position().as_secs_f64().max(0.0);
+                    let position = current_player.duration()
+                        .map(|duration| position.min(duration.as_secs_f64()))
+                        .unwrap_or(position);
+                    timeline_seekbar.set_value(position);
+                    timeline_elapsed.set_text(
+                        &crate::controls::format_duration(Duration::from_secs_f64(position)),
+                    );
+                }
+            }
+            glib::ControlFlow::Continue
+        });
+
         bottom_controls.container.set_valign(Align::End);
         player_overlay.add_overlay(&bottom_controls.container);
 
@@ -1052,9 +1078,6 @@ fn load_and_play_file(
                     tracks.clone(),
                     picture,
                     current_p.master_clock(),
-                    &bottom_controls.seekbar,
-                    &bottom_controls.elapsed_label,
-                    Rc::clone(&bottom_controls.seekbar_dragging),
                 );
 
                 // Check container stream video dimensions for immediate aspect ratio clamping
