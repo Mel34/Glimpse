@@ -83,6 +83,8 @@ impl Player {
     pub fn play(&self) {
         let mut state = self.state.lock();
         *state = PlayerState::Playing;
+
+        #[cfg(not(all(feature = "audio-pipewire", feature = "ffmpeg-system")))]
         self.clock.resume();
 
         #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
