@@ -26,7 +26,17 @@ where
     audio_label.add_css_class("heading");
     container.append(&audio_label);
 
-    let mut first_audio_btn: Option<CheckButton> = None;
+    let audio_off_btn = CheckButton::with_label("Off");
+    audio_off_btn.set_active(tracks.active_audio.is_none());
+    let cb_audio_off = on_audio_selected.clone();
+    audio_off_btn.connect_toggled(move |button| {
+        if button.is_active() {
+            cb_audio_off(None);
+        }
+    });
+    container.append(&audio_off_btn);
+
+    let mut first_audio_btn: Option<CheckButton> = Some(audio_off_btn);
     for track in &tracks.audio_tracks {
         let btn = CheckButton::with_label(&track.display_label());
         if let Some(ref group) = first_audio_btn {
