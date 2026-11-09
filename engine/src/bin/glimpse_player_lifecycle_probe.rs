@@ -88,12 +88,16 @@ fn run(path: &str) -> Result<(), String> {
     println!("Replay: restarted at {replay_position:?}");
 
     let stop_started = Instant::now();
-    drop(player);
+    player.stop();
     let stop_elapsed = stop_started.elapsed();
     if stop_elapsed > Duration::from_secs(3) {
         return Err(format!("Stopping Player took too long: {stop_elapsed:?}"));
     }
-    println!("Stop: Player dropped cleanly in {stop_elapsed:?}");
+    if player.state() != PlayerState::Paused || player.position() > Duration::from_millis(50) {
+        return Err("Stop did not reset the Player to the paused start position".to_string());
+    }
+    println!("Stop: session joined and position reset in {stop_elapsed:?}");
+    drop(player);
     Ok(())
 }
 
