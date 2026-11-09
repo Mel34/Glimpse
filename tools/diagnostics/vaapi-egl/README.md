@@ -12,7 +12,9 @@ path independently of the Glimpse application:
    textures.
 6. Render NV12 through a shader to an RGBA8 framebuffer, or inspect 10-bit
    texture samples through an RGBA32F framebuffer.
-7. Insert an OpenGL sync fence after rendering and wait for GPU completion\n   before readback or releasing imported frame resources.\n8. Read framebuffer data back for diagnostic validation.
+7. Insert an OpenGL sync fence after rendering and wait for GPU completion
+   before readback or releasing imported frame resources.
+8. Read framebuffer data back for diagnostic validation.
 
 The readback is deliberately diagnostic-only. It is not part of the intended
 zero-copy playback path.
@@ -301,7 +303,7 @@ Successful decode and DRM PRIME mapping of a format do not by themselves
 imply that EGL import or shader rendering supports it.
 
 
-## Stage 4 synchronization check
+## Synchronization check
 
 The renderer inserts an OpenGL 3.2 sync object immediately after each frame's draw call, flushes the command stream, and waits for that fence to signal before framebuffer readback and before the EGL images, GL textures, and mapped DRM frame are released. Fence creation or wait failures fail the frame.
 
