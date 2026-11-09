@@ -89,7 +89,6 @@ impl AudioPlaybackSession {
                         Ok(_) => {
                             worker_control.ended.store(true, Ordering::Release);
                             worker_control.finished.store(true, Ordering::Release);
-                            let _ = events.send(Event::StateChanged(crate::types::PlayerState::Ended));
                             let _ = events.send(Event::EndOfStream);
                         }
                         Err(error) => {
