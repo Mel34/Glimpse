@@ -15,7 +15,6 @@ pub trait AudioSink: Send + Sync {
     fn resume(&self);
     fn set_volume(&self, volume: f32);
     fn get_volume(&self) -> f32;
-    fn flush(&self);
 }
 
 pub struct MockAudioSink {
@@ -54,7 +53,6 @@ impl AudioSink for MockAudioSink {
         f32::from_bits(self.volume.load(Ordering::Relaxed))
     }
 
-    fn flush(&self) {}
 }
 
 #[cfg(feature = "audio-pipewire")]
