@@ -255,4 +255,10 @@ scale.volume-scale slider {
 
 
 .menu-popover checkbutton { min-height: 32px; padding: 4px 8px; }
-.menu-popover checkbutton radio { min-width: 16px; min-height: 16px; margin: 0 8px 0 0; padding: 0; }
+/* GtkCheckButton uses a check node for both check and grouped radio states. */
+.menu-popover checkbutton check {
+    min-width: 16px;
+    min-height: 16px;
+    margin: 0 8px 0 0;
+    padding: 0;
+}

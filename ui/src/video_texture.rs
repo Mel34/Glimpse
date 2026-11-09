@@ -30,20 +30,17 @@ pub struct VideoPlaybackHandle {
 
 impl VideoPlaybackHandle {
     pub fn seek(&mut self, target: Duration) {
-                {
-            self.stop_run();
-            if let Err(error) = self.start_run(target) {
-                tracing::error!(%error, "Could not restart video after seek");
-            }
+        self.stop_run();
+        if let Err(error) = self.start_run(target) {
+            tracing::error!(%error, "Could not restart video after seek");
         }
-                let _ = target;
     }
 
     pub fn stop(&mut self) {
-                self.stop_run();
+        self.stop_run();
     }
 
-        fn stop_run(&mut self) {
+    fn stop_run(&mut self) {
         if let Some(mut run) = self.run.take() {
             run.cancelled.store(true, Ordering::Release);
             run.queues.abort();
@@ -53,7 +50,7 @@ impl VideoPlaybackHandle {
         }
     }
 
-        fn start_run(&mut self, start_position: Duration) -> Result<(), String> {
+    fn start_run(&mut self, start_position: Duration) -> Result<(), String> {
         let video_stream_index = self.tracks.video_tracks.first()
             .map(|track| track.id.0)
             .ok_or_else(|| "The media has no video stream".to_string())?;
