@@ -17,4 +17,3 @@ description = "Clean, predictable Linux media player in Rust using GTK4, libadwa
 opt-level = 3
 lto = true
 codegen-units = 1
-panic = "abort"
