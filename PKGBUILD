@@ -2,7 +2,7 @@
 pkgname=glimpse
 pkgver=0.2.0
 pkgrel=1
-pkgdesc="Clean, predictable Linux media player in Rust using GTK4, libadwaita, and an evolving in-process playback engine"
+pkgdesc="Linux media player using GTK4, libadwaita, FFmpeg, and native PipeWire audio"
 arch=('x86_64' 'aarch64')
 url="https://github.com/Mel34/Glimpse"
 license=('LGPL-2.1-or-later')
