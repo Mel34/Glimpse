@@ -64,10 +64,15 @@ fn run(path: &str) -> Result<(), String> {
     player.play();
     thread::sleep(Duration::from_millis(500));
     let resumed_at = player.position();
+    let resumed_state = player.state();
+    let worker_error = take_worker_error(&events);
     if resumed_at <= Duration::from_millis(5_050) {
         return Err(format!(
-            "Playback did not resume from paused seek: resumed={resumed_at:?}"
+            "Playback did not resume from paused seek: resumed={resumed_at:?}, state={resumed_state:?}, worker_error={worker_error:?}"
         ));
+    }
+    if let Some(error) = worker_error {
+        return Err(format!("Audio worker failed after paused seek: {error}"));
     }
     println!("Resume: clock advanced to {resumed_at:?}");
 
@@ -115,6 +120,16 @@ fn run(path: &str) -> Result<(), String> {
     println!("Stop: session joined and position reset in {stop_elapsed:?}");
     drop(player);
     Ok(())
+}
+
+fn take_worker_error(events: &Receiver<Event>) -> Option<String> {
+    loop {
+        match events.try_recv() {
+            Ok(Event::Error(error)) => return Some(error),
+            Ok(_) => {}
+            Err(_) => return None,
+        }
+    }
 }
 
 fn wait_for_end_of_stream(events: &Receiver<Event>, timeout: Duration) -> Result<(), String> {
