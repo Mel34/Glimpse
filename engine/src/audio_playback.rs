@@ -573,7 +573,7 @@ mod tests {
         assert!(handle.is_finished());
         assert!(handle.reached_end_of_stream());
     }
-    
+
     fn audio_track(index: usize, is_default: bool) -> TrackInfo {
         TrackInfo {
             id: TrackId(index),
