@@ -244,6 +244,11 @@ impl Player {
         let _ = self.event_sender.send(Event::TracksChanged(t.clone()));
     }
 
+    /// Returns the shared audio master clock used to schedule video frames.
+    pub fn master_clock(&self) -> Arc<MasterClock> {
+        Arc::clone(&self.clock)
+    }
+
     pub fn position(&self) -> Duration {
         Duration::from_secs_f64(self.clock.get_pts())
     }

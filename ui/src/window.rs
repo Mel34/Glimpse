@@ -50,7 +50,9 @@ impl GlimpseWindow {
         let media_file: Rc<RefCell<Option<MediaFile>>> = Rc::new(RefCell::new(None));
         let video_playback: Rc<RefCell<Option<VideoPlaybackHandle>>> = Rc::new(RefCell::new(None));
         let video_playback_on_close = Rc::clone(&video_playback);
+        let player_on_close = Rc::clone(&player);
         window.connect_close_request(move |_| {
+            if let Some(ref p) = *player_on_close.borrow() { p.stop(); }
             video_playback_on_close.borrow_mut().take();
             glib::Propagation::Proceed
         });
@@ -436,28 +438,30 @@ impl GlimpseWindow {
         // Rule 3: Mouse wheel over seekbar seeks in 5s steps (consumed)
         let m_seek_wheel = Rc::clone(&media_file);
         let p_seek_wheel = Rc::clone(&player);
+        let p_duration_wheel = Rc::clone(&player);
+        let p_position_wheel = Rc::clone(&player);
+        let v_seek_wheel = Rc::clone(&video_playback);
 
         attach_seekbar_wheel(
             &bottom_controls.seekbar,
             {
                 let m = Rc::clone(&media_file);
                 move || {
-                    m.borrow().as_ref().map(|m| Duration::from_micros(m.duration().max(0) as u64))
+                    if cfg!(feature = "experimental-engine") { p_duration_wheel.borrow().as_ref().and_then(Player::duration) } else { m.borrow().as_ref().map(|m| Duration::from_micros(m.duration().max(0) as u64)) }
                 }
             },
             {
                 let m = Rc::clone(&media_file);
                 move || {
-                    m.borrow().as_ref().map(|m| Duration::from_micros(m.timestamp().max(0) as u64)).unwrap_or(Duration::ZERO)
+                    if cfg!(feature = "experimental-engine") { p_position_wheel.borrow().as_ref().map(Player::position).unwrap_or(Duration::ZERO) } else { m.borrow().as_ref().map(|m| Duration::from_micros(m.timestamp().max(0) as u64)).unwrap_or(Duration::ZERO) }
                 }
             },
             move |target_pos| {
                 if let Some(ref m) = *m_seek_wheel.borrow() {
                     m.seek((target_pos.as_secs_f64() * 1_000_000.0) as i64);
                 }
-                if let Some(ref p) = *p_seek_wheel.borrow() {
-                    p.seek(target_pos);
-                }
+                if let Some(ref p) = *p_seek_wheel.borrow() { p.seek(target_pos); }
+                if let Some(ref mut video) = *v_seek_wheel.borrow_mut() { video.seek(target_pos); }
             },
         );
 
@@ -699,19 +703,18 @@ impl GlimpseWindow {
             match keyval {
                 // Space: Play / Pause toggle
                 gdk4::Key::space => {
-                    if let Some(ref m) = *m_keys.borrow() {
-                        if m.is_playing() {
-                            m.pause();
-                        } else {
-                            m.play();
+                    if cfg!(feature = "experimental-engine") {
+                        if let Some(ref p) = *p_keys.borrow() {
+                            if p.state() == PlayerState::Playing { p.pause(); }
+                            else {
+                                if p.state() == PlayerState::Ended {
+                                    if let Some(ref mut video) = *video_open_k.borrow_mut() { video.seek(Duration::ZERO); }
+                                }
+                                p.play();
+                            }
                         }
-                    }
-                    if let Some(ref p) = *p_keys.borrow() {
-                        if p.state() == PlayerState::Playing {
-                            p.pause();
-                        } else {
-                            p.play();
-                        }
+                    } else if let Some(ref m) = *m_keys.borrow() {
+                        if m.is_playing() { m.pause(); } else { m.play(); }
                     }
                     glib::Propagation::Stop
                 }
@@ -748,17 +751,28 @@ impl GlimpseWindow {
                 }
                 // Left Arrow: Seek -5s
                 gdk4::Key::Left => {
-                    if let Some(ref m) = *m_keys.borrow() {
-                        let cur = m.timestamp();
-                        m.seek((cur - 5_000_000).max(0));
+                    if cfg!(feature = "experimental-engine") {
+                        if let Some(ref p) = *p_keys.borrow() {
+                            let target = p.position().saturating_sub(Duration::from_secs(5));
+                            p.seek(target);
+                            if let Some(ref mut video) = *video_open_k.borrow_mut() { video.seek(target); }
+                        }
+                    } else if let Some(ref m) = *m_keys.borrow() {
+                        let cur = m.timestamp(); m.seek((cur - 5_000_000).max(0));
                     }
                     glib::Propagation::Stop
                 }
                 // Right Arrow: Seek +5s
                 gdk4::Key::Right => {
-                    if let Some(ref m) = *m_keys.borrow() {
-                        let cur = m.timestamp();
-                        let dur = m.duration();
+                    if cfg!(feature = "experimental-engine") {
+                        if let Some(ref p) = *p_keys.borrow() {
+                            let next = p.position() + Duration::from_secs(5);
+                            let target = p.duration().map(|d| next.min(d)).unwrap_or(next);
+                            p.seek(target);
+                            if let Some(ref mut video) = *video_open_k.borrow_mut() { video.seek(target); }
+                        }
+                    } else if let Some(ref m) = *m_keys.borrow() {
+                        let cur = m.timestamp(); let dur = m.duration();
                         let max_ts = if dur > 0 { dur } else { i64::MAX };
                         m.seek((cur + 5_000_000).min(max_ts));
                     }
@@ -766,36 +780,34 @@ impl GlimpseWindow {
                 }
                 // Up Arrow: Volume +5%
                 gdk4::Key::Up => {
-                    if let Some(ref m) = *m_keys.borrow() {
-                        let v = (m.volume() + 0.05).min(1.0);
-                        m.set_volume(v);
-                        m.set_muted(v <= 0.001);
-                        crate::controls::update_volume_indicator(
-                            &btm_open_k.volume_icon,
-                            &btm_open_k.volume_button,
-                            &btm_open_k.volume_slider,
-                            &btm_open_k.volume_percent_label,
-                            v,
-                            v <= 0.001,
-                        );
-                    }
+                    let v = if cfg!(feature = "experimental-engine") {
+                        if let Some(ref p) = *p_keys.borrow() { (p.volume() + 0.05).min(1.0) } else { 1.0 }
+                    } else {
+                        m_keys.borrow().as_ref().map(|m| (m.volume() + 0.05).min(1.0)).unwrap_or(1.0)
+                    };
+                    if let Some(ref m) = *m_keys.borrow() { m.set_volume(v); m.set_muted(v <= 0.001); }
+                    if let Some(ref p) = *p_keys.borrow() { p.set_volume(v as f32); }
+                    crate::controls::update_volume_indicator(
+                        &btm_open_k.volume_icon, &btm_open_k.volume_button,
+                        &btm_open_k.volume_slider, &btm_open_k.volume_percent_label,
+                        v, v <= 0.001,
+                    );
                     glib::Propagation::Stop
                 }
                 // Down Arrow: Volume -5%
                 gdk4::Key::Down => {
-                    if let Some(ref m) = *m_keys.borrow() {
-                        let v = (m.volume() - 0.05).max(0.0);
-                        m.set_volume(v);
-                        m.set_muted(v <= 0.001);
-                        crate::controls::update_volume_indicator(
-                            &btm_open_k.volume_icon,
-                            &btm_open_k.volume_button,
-                            &btm_open_k.volume_slider,
-                            &btm_open_k.volume_percent_label,
-                            v,
-                            v <= 0.001,
-                        );
-                    }
+                    let v = if cfg!(feature = "experimental-engine") {
+                        if let Some(ref p) = *p_keys.borrow() { (p.volume() - 0.05).max(0.0) } else { 1.0 }
+                    } else {
+                        m_keys.borrow().as_ref().map(|m| (m.volume() - 0.05).max(0.0)).unwrap_or(1.0)
+                    };
+                    if let Some(ref m) = *m_keys.borrow() { m.set_volume(v); m.set_muted(v <= 0.001); }
+                    if let Some(ref p) = *p_keys.borrow() { p.set_volume(v as f32); }
+                    crate::controls::update_volume_indicator(
+                        &btm_open_k.volume_icon, &btm_open_k.volume_button,
+                        &btm_open_k.volume_slider, &btm_open_k.volume_percent_label,
+                        v, v <= 0.001,
+                    );
                     glib::Propagation::Stop
                 }
                 // 'm' or 'M': Toggle mute
@@ -946,6 +958,9 @@ fn load_and_play_file(
     // Stop previous custom decoder before replacing the media source.
     video_playback.borrow_mut().take();
 
+    // Stop previous engine playback before replacing the source.
+    if let Some(ref old_p) = *player.borrow() { old_p.stop(); }
+
     // Stop previous media if any
     if let Some(ref old_m) = *media_holder.borrow() {
         old_m.pause();
@@ -962,6 +977,7 @@ fn load_and_play_file(
     let media = MediaFile::for_file(&file);
     media.set_loop(true);
     picture.set_paintable(Some(&media));
+    #[cfg(not(feature = "experimental-engine"))]
     media.play();
 
     // Duration update when container metadata arrives
@@ -984,9 +1000,11 @@ fn load_and_play_file(
         bottom_controls.duration_label.set_text(&crate::controls::format_duration(Duration::from_micros(initial_dur as u64)));
     }
 
-    // Timeline synchronization during playback
+    // GTK-owned timeline is used only by the legacy playback path.
+    #[cfg(not(feature = "experimental-engine"))]
     let seekbar_pos = bottom_controls.seekbar.clone();
     let el_label = bottom_controls.elapsed_label.clone();
+    #[cfg(not(feature = "experimental-engine"))]
     media.connect_timestamp_notify(move |m| {
         let ts_micros = m.timestamp();
         let ts_secs = ts_micros as f64 / 1_000_000.0;
@@ -994,13 +1012,26 @@ fn load_and_play_file(
         el_label.set_text(&crate::controls::format_duration(Duration::from_micros(ts_micros.max(0) as u64)));
     });
 
-    // Seeking via clicking / dragging seekbar
-    let m_seek = media.clone();
-    bottom_controls.seekbar.connect_change_value(move |_, _, val| {
-        let target_micros = (val * 1_000_000.0) as i64;
-        m_seek.seek(target_micros);
-        glib::Propagation::Proceed
-    });
+    // Seek both engine timelines together when the experimental engine is active.
+    #[cfg(not(feature = "experimental-engine"))]
+    {
+        let m_seek = media.clone();
+        bottom_controls.seekbar.connect_change_value(move |_, _, val| {
+            m_seek.seek((val * 1_000_000.0) as i64);
+            glib::Propagation::Proceed
+        });
+    }
+    #[cfg(feature = "experimental-engine")]
+    {
+        let p_seek = Rc::clone(player);
+        let v_seek = Rc::clone(video_playback);
+        bottom_controls.seekbar.connect_change_value(move |_, _, val| {
+            let target = Duration::from_secs_f64(val.max(0.0));
+            if let Some(ref p) = *p_seek.borrow() { p.seek(target); }
+            if let Some(ref mut video) = *v_seek.borrow_mut() { video.seek(target); }
+            glib::Propagation::Proceed
+        });
+    }
 
     // Volume & Mute UI reflection
     let v_icon_m = bottom_controls.volume_icon.clone();
@@ -1075,7 +1106,9 @@ fn load_and_play_file(
                     path,
                     tracks.clone(),
                     picture,
-                    &media,
+                    current_p.master_clock(),
+                    &bottom_controls.seekbar,
+                    &bottom_controls.elapsed_label,
                 );
 
                 // Check container stream video dimensions for immediate aspect ratio clamping
