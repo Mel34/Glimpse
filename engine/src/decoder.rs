@@ -406,7 +406,8 @@ impl AudioDecoder {
             }
 
             let input_layout = decoded.ch_layout();
-            let source_layout = normalized_input_layout(&input_layout);
+            let source_layout = normalized_input_layout(&input_layout).into_owned();
+            drop(input_layout);
             // swresample validates the frame layout against its configured input.
             // Carry the inferred default layout on the frame as well.
             decoded.set_ch_layout(source_layout.clone());
