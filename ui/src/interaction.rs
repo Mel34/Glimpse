@@ -95,22 +95,16 @@ pub fn attach_seekbar_wheel<FSeek>(
     scale.add_controller(controller);
 }
 
-pub fn attach_window_volume_wheel<FVol, FIgnore>(
+pub fn attach_window_volume_wheel<FVol>(
     window: &Window,
     get_volume: impl Fn() -> f32 + 'static,
     set_volume_cb: FVol,
-    should_ignore: FIgnore,
 ) where
     FVol: Fn(f32) + 'static,
-    FIgnore: Fn() -> bool + 'static,
 {
     let controller = EventControllerScroll::new(EventControllerScrollFlags::VERTICAL);
 
     controller.connect_scroll(move |_, _dx, dy| {
-        if should_ignore() {
-            return glib::Propagation::Proceed;
-        }
-
         let current = get_volume();
         let delta = if dy < 0.0 { 0.05 } else { -0.05 };
         let new_vol = (current + delta).clamp(0.0, 1.0);
@@ -120,4 +114,13 @@ pub fn attach_window_volume_wheel<FVol, FIgnore>(
     });
 
     window.add_controller(controller);
+}
+
+/// Stop scroll events at the popover boundary after its child controls have handled them.
+/// This prevents the window-level volume wheel handler from also changing playback volume.
+pub fn attach_popover_scroll_guard(popover: &gtk4::Popover) {
+    let controller = EventControllerScroll::new(EventControllerScrollFlags::VERTICAL);
+    controller.set_propagation_phase(gtk4::PropagationPhase::Bubble);
+    controller.connect_scroll(|_, _dx, _dy| glib::Propagation::Stop);
+    popover.add_controller(controller);
 }
