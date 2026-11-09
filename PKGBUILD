@@ -1,4 +1,4 @@
-# Maintainer: Glimpse Contributors <glimpse@example.org>
+# Maintainer: Mel34
 pkgname=glimpse
 pkgver=0.1.0
 pkgrel=1
@@ -12,6 +12,7 @@ depends=(
   'libadwaita'
   'alsa-lib'
   'libpulse'
+  'pipewire'
 )
 makedepends=(
   'cargo'
