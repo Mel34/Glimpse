@@ -37,8 +37,12 @@ The diagnostic currently recognizes two DRM descriptor layouts:
 The diagnostic requires:
 
 - An FFmpeg decoder exposing VAAPI device-context support for the input codec.
-- The render node `/dev/dri/renderD128`.
-- EGL DMA-BUF import and modifier-query extensions.
+- An accessible VAAPI DRM render node under `/dev/dri`. By default, the
+  diagnostic tries available `renderD*` nodes and selects the first one
+  that can create a VAAPI device.
+- EGL device enumeration, render-node query, platform-device, DMA-BUF import,
+  and modifier-query extensions. EGL is matched to the selected VAAPI render
+  node; the diagnostic refuses to silently use another GPU.
 - An OpenGL 3.3 core context on a hardware renderer.
 
 Software renderers such as llvmpipe and softpipe are explicitly rejected.
@@ -78,7 +82,11 @@ sudo pacman -S --needed base-devel ffmpeg libva-mesa-driver mesa libdrm pkgconf
 The build uses the `libavformat`, `libavcodec`, `libavutil`, `egl`, `gl`, and
 `libdrm` pkg-config modules.
 
-The user running the diagnostic must have access to the DRM render node.
+The user running the diagnostic must have access to the selected DRM render
+node. To select a particular GPU on a multi-GPU system, set
+`GLIMPSE_DRM_RENDER_NODE` to its render-node path, for example
+`/dev/dri/renderD129`. The same node is used for VAAPI and EGL device
+selection.
 
 ## Build
 
@@ -133,7 +141,8 @@ The contents depend on the detected layout:
 
 The 10-bit output is not an RGBA image. Choose a filename that reflects the
 format when passing an explicit output path. Both output formats preserve
-OpenGL framebuffer readback row order.
+OpenGL framebuffer readback row order. Chroma plane dimensions use rounded-up
+4:2:0 sizing, so odd frame dimensions are supported as well.
 
 ## Generate a software reference
 
