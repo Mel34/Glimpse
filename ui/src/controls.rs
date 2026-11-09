@@ -7,6 +7,8 @@
 //! │  0:00                                                  1:10  │  (Timestamps)
 //! └──────────────────────────────────────────────────────────────┘
 
+use std::cell::Cell;
+use std::rc::Rc;
 use std::time::Duration;
 use gtk4::prelude::*;
 use gtk4::{Box as GtkBox, Image, Label, MenuButton, Orientation, Scale};
@@ -21,6 +23,7 @@ pub struct ControlBarWidgets {
     pub volume_percent_label: Label,
     pub settings_button: MenuButton,
     pub seekbar: Scale,
+    pub seekbar_dragging: Rc<Cell<bool>>,
     pub elapsed_label: Label,
     pub duration_label: Label,
 }
@@ -93,6 +96,7 @@ pub fn create_floating_bottom_bar() -> ControlBarWidgets {
     seekbar.set_draw_value(false);
     seekbar.add_css_class("osd-scale");
     seekbar.set_tooltip_text(Some("Seek bar (Mouse wheel ±5s)"));
+    let seekbar_dragging = Rc::new(Cell::new(false));
     container.append(&seekbar);
 
     // Row 3: Timestamps under the seek bar (left and right)
@@ -121,6 +125,7 @@ pub fn create_floating_bottom_bar() -> ControlBarWidgets {
         volume_percent_label,
         settings_button,
         seekbar,
+        seekbar_dragging,
         elapsed_label,
         duration_label,
     }
