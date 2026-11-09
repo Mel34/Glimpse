@@ -45,6 +45,7 @@ impl VideoScheduler {
         let drift = frame_pts - master_pts;
 
         if self.clock.is_paused() {
+            self.total_displayed += 1;
             return ScheduleAction::ShowNow;
         }
 
@@ -104,5 +105,20 @@ mod tests {
             scheduler.schedule(1.02, 0.033),
             ScheduleAction::Wait(delay) if delay > Duration::from_millis(10)
         ));
+    }
+}
+
+
+#[cfg(test)]
+mod paused_tests {
+    use super::*;
+
+    #[test]
+    fn counts_frames_presented_while_the_master_clock_is_paused() {
+        let clock = Arc::new(MasterClock::new());
+        let mut scheduler = VideoScheduler::new(clock);
+
+        assert_eq!(scheduler.schedule(0.0, 0.033), ScheduleAction::ShowNow);
+        assert_eq!(scheduler.total_displayed, 1);
     }
 }
