@@ -334,3 +334,22 @@ scale.volume-scale slider {
 .themeswitcher checkbutton.dark radio {
     background-color: var(--dark-bg);
 }
+
+/* Invert each preview and its selected glyph while hovered for clear contrast. */
+.themeswitcher checkbutton.system:hover radio {
+    background: linear-gradient(-45deg, var(--light-bg) 49.99%, var(--dark-bg) 50.01%);
+}
+
+.themeswitcher checkbutton.light:hover radio {
+    background-color: var(--dark-bg);
+}
+
+.themeswitcher checkbutton.dark:hover radio {
+    background-color: var(--light-bg);
+}
+
+.themeswitcher overlay:hover .check {
+    background: @accent_fg_color;
+    color: @accent_bg_color;
+}
+
