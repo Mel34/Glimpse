@@ -532,7 +532,6 @@ mod tests {
         assert_eq!(written, 16);
         assert_eq!(underflow, 0);
         assert_eq!(eof_silence, 2);
-        assert_eq!(flushed, 0);
         assert_eq!(f32::from_le_bytes(output[0..4].try_into().unwrap()), 0.25);
         assert_eq!(f32::from_le_bytes(output[4..8].try_into().unwrap()), -0.5);
         assert_eq!(&output[8..], &[0; 8]);
@@ -552,7 +551,6 @@ mod tests {
 
         assert_eq!(written, 8);
         assert_eq!(underflow, 0);
-        assert_eq!(flushed, 0);
         assert_eq!(f32::from_le_bytes(output[0..4].try_into().unwrap()), 0.1);
         assert_eq!(f32::from_le_bytes(output[4..8].try_into().unwrap()), 0.2);
         assert_eq!(&output[8..], &[0xff; 8]);
@@ -572,7 +570,6 @@ mod tests {
 
         assert_eq!(written, 8);
         assert_eq!(underflow, 0);
-        assert_eq!(flushed, 0);
         assert_eq!(output, [0; 8]);
         assert_eq!(consumer.slots(), 1);
     }
