@@ -174,6 +174,9 @@ impl Player {
             if let Some(mut previous) = session.take() {
                 let restart = was_playing && !previous.is_finished();
                 previous.stop();
+                // The retiring worker may have published one final audio-clock
+                // update while shutting down; restore the requested target now.
+                self.clock.reset(clamped.as_secs_f64());
                 if restart {
                     let playback = AudioPlaybackSession::new(Arc::clone(&self.clock));
                     match playback.spawn_from(
