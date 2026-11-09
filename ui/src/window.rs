@@ -6,7 +6,7 @@ use adw::{Application, ApplicationWindow};
 use gdk4::DragAction;
 use gio::SimpleAction;
 use gtk4::{
-    Align, Box as GtkBox, Button, DropTarget, EventControllerKey, EventControllerMotion,
+    Align, Box as GtkBox, Button, CheckButton, DropTarget, EventControllerKey, EventControllerMotion,
     FileDialog, FileFilter, GestureClick, Image, Label, MenuButton,
     Orientation, Overlay, Picture, Separator, Settings, Stack, StackTransitionType, WindowHandle,
 };
@@ -576,14 +576,16 @@ impl GlimpseWindow {
         let top_motion = top_controls.clone();
         let bottom_motion = bottom_controls.container.clone();
         let timer_motion = Rc::clone(&hide_timer);
+        let popovers_enter = Rc::clone(&bottom_controls.open_popovers);
         let pointer_enter = Rc::clone(&last_pointer_position);
         motion.connect_enter(move |_, x, y| {
             pointer_enter.set(Some((x, y)));
-            reveal_and_schedule_controls(&top_motion, &bottom_motion, &timer_motion);
+            reveal_and_schedule_controls(&top_motion, &bottom_motion, &timer_motion, &popovers_enter);
         });
         let top_motion = top_controls.clone();
         let bottom_motion = bottom_controls.container.clone();
         let timer_motion = Rc::clone(&hide_timer);
+        let popovers_motion = Rc::clone(&bottom_controls.open_popovers);
         let pointer_motion = Rc::clone(&last_pointer_position);
         motion.connect_motion(move |_, x, y| {
             let moved = pointer_motion.get()
@@ -591,7 +593,7 @@ impl GlimpseWindow {
                 .unwrap_or(true);
             if moved {
                 pointer_motion.set(Some((x, y)));
-                reveal_and_schedule_controls(&top_motion, &bottom_motion, &timer_motion);
+                reveal_and_schedule_controls(&top_motion, &bottom_motion, &timer_motion, &popovers_motion);
             }
         });
         let pointer_leave = Rc::clone(&last_pointer_position);
@@ -603,8 +605,14 @@ impl GlimpseWindow {
         let top_fullscreen = top_controls.clone();
         let bottom_fullscreen = bottom_controls.container.clone();
         let timer_fullscreen = Rc::clone(&hide_timer);
+        let popovers_fullscreen = Rc::clone(&bottom_controls.open_popovers);
         window.connect_fullscreened_notify(move |_| {
-            reveal_and_schedule_controls(&top_fullscreen, &bottom_fullscreen, &timer_fullscreen);
+            reveal_and_schedule_controls(
+                &top_fullscreen,
+                &bottom_fullscreen,
+                &timer_fullscreen,
+                &popovers_fullscreen,
+            );
         });
 
         // =====================================================================
@@ -678,6 +686,7 @@ impl GlimpseWindow {
             &picture,
             &bottom_controls,
         );
+        crate::controls::track_popover_visibility(&loader_popover, &bottom_controls.open_popovers);
         loader_menu_btn.set_popover(Some(&loader_popover));
 
         let player_popover = create_main_menu_popover(
@@ -687,6 +696,7 @@ impl GlimpseWindow {
             &picture,
             &bottom_controls,
         );
+        crate::controls::track_popover_visibility(&player_popover, &bottom_controls.open_popovers);
         menu_btn.set_popover(Some(&player_popover));
 
         // Actions: Open, New Window, Shortcuts, About
@@ -780,6 +790,7 @@ impl GlimpseWindow {
         let top_keys = top_controls.clone();
         let bottom_keys = bottom_controls.container.clone();
         let timer_keys = Rc::clone(&hide_timer);
+        let popovers_keys = Rc::clone(&bottom_controls.open_popovers);
         let last_volume_keys = Rc::clone(&bottom_controls.last_nonzero_volume);
 
         key_controller.connect_key_pressed(move |_, keyval, _keycode, modifier| {
@@ -816,7 +827,7 @@ impl GlimpseWindow {
                 }
                 // Left Arrow: Seek -5s
                 gdk4::Key::Left => {
-                    reveal_and_schedule_controls(&top_keys, &bottom_keys, &timer_keys);
+                    reveal_and_schedule_controls(&top_keys, &bottom_keys, &timer_keys, &popovers_keys);
                     if let Some(ref p) = *p_keys.borrow() {
                         let target = p.position().saturating_sub(Duration::from_secs(5));
                         p.seek(target);
@@ -826,7 +837,7 @@ impl GlimpseWindow {
                 }
                 // Right Arrow: Seek +5s
                 gdk4::Key::Right => {
-                    reveal_and_schedule_controls(&top_keys, &bottom_keys, &timer_keys);
+                    reveal_and_schedule_controls(&top_keys, &bottom_keys, &timer_keys, &popovers_keys);
                     if let Some(ref p) = *p_keys.borrow() {
                         let next = p.position() + Duration::from_secs(5);
                         let target = p.duration().map(|d| next.min(d)).unwrap_or(next);
@@ -838,7 +849,7 @@ impl GlimpseWindow {
                 // Up Arrow: Volume +5%
                 gdk4::Key::Up => {
                     if btm_open_k.volume_button.is_sensitive() {
-                        reveal_and_schedule_controls(&top_keys, &bottom_keys, &timer_keys);
+                        reveal_and_schedule_controls(&top_keys, &bottom_keys, &timer_keys, &popovers_keys);
                         let v = p_keys
                             .borrow()
                             .as_ref()
@@ -862,7 +873,7 @@ impl GlimpseWindow {
                 // Down Arrow: Volume -5%
                 gdk4::Key::Down => {
                     if btm_open_k.volume_button.is_sensitive() {
-                        reveal_and_schedule_controls(&top_keys, &bottom_keys, &timer_keys);
+                        reveal_and_schedule_controls(&top_keys, &bottom_keys, &timer_keys, &popovers_keys);
                         let v = p_keys
                             .borrow()
                             .as_ref()
@@ -1152,6 +1163,7 @@ fn load_and_play_file(
                         }
                     },
                 );
+                crate::controls::track_popover_visibility(&popover, &bottom_controls.open_popovers);
                 bottom_controls.settings_button.set_popover(Some(&popover));
             }
 
@@ -1210,6 +1222,7 @@ mod media_source_tests {
 fn reveal_and_schedule_controls(
     top: &GtkBox, bottom: &GtkBox,
     timer: &Rc<RefCell<Option<glib::SourceId>>>,
+    open_popovers: &Rc<Cell<usize>>,
 ) {
     top.set_opacity(1.0); bottom.set_opacity(1.0);
     top.set_can_target(true); bottom.set_can_target(true);
@@ -1218,8 +1231,21 @@ fn reveal_and_schedule_controls(
     let top_hide = top.clone();
     let bottom_hide = bottom.clone();
     let timer_slot = Rc::clone(timer);
+    let popovers = Rc::clone(open_popovers);
+    let top_reschedule = top.clone();
+    let bottom_reschedule = bottom.clone();
+    let timer_reschedule = Rc::clone(timer);
     let source = glib::timeout_add_local_once(Duration::from_secs(3), move || {
         *timer_slot.borrow_mut() = None;
+        if popovers.get() > 0 {
+            reveal_and_schedule_controls(
+                &top_reschedule,
+                &bottom_reschedule,
+                &timer_reschedule,
+                &popovers,
+            );
+            return;
+        }
         top_hide.set_opacity(0.0);
         bottom_hide.set_opacity(0.0);
         top_hide.set_can_target(false);
@@ -1306,6 +1332,77 @@ fn create_main_menu_popover(
     vbox.set_margin_top(4);
     vbox.set_margin_bottom(4);
 
+    // Separator
+    // Three-way circular selector, following GNOME Console's theme switcher.
+    let appearance_label = Label::new(Some("Appearance"));
+    appearance_label.set_halign(Align::Start);
+    appearance_label.add_css_class("heading");
+    appearance_label.set_margin_start(8);
+    vbox.append(&appearance_label);
+
+    let selected_scheme = crate::theme::load();
+    let system_selector = CheckButton::new();
+    let light_selector = CheckButton::new();
+    let dark_selector = CheckButton::new();
+
+    light_selector.set_group(Some(&system_selector));
+    dark_selector.set_group(Some(&system_selector));
+
+    system_selector.set_active(selected_scheme == crate::theme::ColorScheme::System);
+    light_selector.set_active(selected_scheme == crate::theme::ColorScheme::Light);
+    dark_selector.set_active(selected_scheme == crate::theme::ColorScheme::Dark);
+
+    let theme_switcher = GtkBox::new(Orientation::Horizontal, 18);
+    theme_switcher.set_homogeneous(true);
+    theme_switcher.add_css_class("themeswitcher");
+
+    for (selector, tooltip, class, scheme) in [
+        (&system_selector, "Follow System Style", "system", crate::theme::ColorScheme::System),
+        (&light_selector, "Light Style", "light", crate::theme::ColorScheme::Light),
+        (&dark_selector, "Dark Style", "dark", crate::theme::ColorScheme::Dark),
+    ] {
+        selector.set_tooltip_text(Some(tooltip));
+        selector.add_css_class(class);
+
+        let selector_overlay = Overlay::new();
+        selector_overlay.set_halign(Align::Center);
+        selector_overlay.set_child(Some(selector));
+
+        let check = Image::from_icon_name("object-select-symbolic");
+        check.set_pixel_size(13);
+        check.set_halign(Align::End);
+        check.set_valign(Align::End);
+        check.add_css_class("check");
+        check.set_visible(selector.is_active());
+        selector_overlay.add_overlay(&check);
+
+        let check_indicator = check.clone();
+        selector.connect_toggled(move |button| {
+            check_indicator.set_visible(button.is_active());
+        });
+
+
+        let pop_close = popover.clone();
+        selector.connect_toggled(move |button| {
+            if button.is_active() {
+                scheme.apply();
+                if let Err(error) = scheme.save() {
+                    tracing::warn!(%error, "Could not save color scheme preference");
+                }
+                pop_close.popdown();
+            }
+        });
+
+        theme_switcher.append(&selector_overlay);
+    }
+
+    vbox.append(&theme_switcher);
+
+    let appearance_sep = Separator::new(Orientation::Horizontal);
+    appearance_sep.set_margin_top(4);
+    appearance_sep.set_margin_bottom(4);
+    vbox.append(&appearance_sep);
+
     // 1. New Window (Ctrl+N)
     let btn_new_win = Button::new();
     btn_new_win.add_css_class("flat");
@@ -1361,12 +1458,6 @@ fn create_main_menu_popover(
         trigger_open_file_dialog(&win_op, &stack_op, &p_op, &video_op, &pic_op, &btm_op);
     });
     vbox.append(&btn_open);
-
-    // Separator
-    let sep = Separator::new(Orientation::Horizontal);
-    sep.set_margin_top(4);
-    sep.set_margin_bottom(4);
-    vbox.append(&sep);
 
     // 3. Keyboard Shortcuts (Ctrl+?)
     let btn_shortcuts = Button::new();
