@@ -1306,62 +1306,6 @@ fn create_main_menu_popover(
     vbox.set_margin_top(4);
     vbox.set_margin_bottom(4);
 
-    // 1. New Window (Ctrl+N)
-    let btn_new_win = Button::new();
-    btn_new_win.add_css_class("flat");
-    btn_new_win.add_css_class("menu-item-button");
-    let box_new_win = GtkBox::new(Orientation::Horizontal, 20);
-    let l1 = Label::new(Some("New Window"));
-    l1.set_halign(Align::Start);
-    l1.set_hexpand(true);
-    let s1 = Label::new(Some("Ctrl+N"));
-    s1.add_css_class("dim-label");
-    s1.set_halign(Align::End);
-    box_new_win.append(&l1);
-    box_new_win.append(&s1);
-    btn_new_win.set_child(Some(&box_new_win));
-
-    let pop_close1 = popover.clone();
-    let win_app = window.clone();
-    btn_new_win.connect_clicked(move |_| {
-        pop_close1.popdown();
-        if let Some(app) = win_app.application() {
-            if let Ok(adw_app) = app.downcast::<adw::Application>() {
-                let new_win = GlimpseWindow::new(&adw_app);
-                new_win.present();
-            }
-        }
-    });
-    vbox.append(&btn_new_win);
-
-    // 2. Open... (Ctrl+O)
-    let btn_open = Button::new();
-    btn_open.add_css_class("flat");
-    btn_open.add_css_class("menu-item-button");
-    let box_open = GtkBox::new(Orientation::Horizontal, 20);
-    let l2 = Label::new(Some("Open…"));
-    l2.set_halign(Align::Start);
-    l2.set_hexpand(true);
-    let s2 = Label::new(Some("Ctrl+O"));
-    s2.add_css_class("dim-label");
-    s2.set_halign(Align::End);
-    box_open.append(&l2);
-    box_open.append(&s2);
-    btn_open.set_child(Some(&box_open));
-
-    let pop_close2 = popover.clone();
-    let win_op = window.clone();
-    let stack_op = stack.clone();
-    let p_op = Rc::clone(player);
-    let video_op = Rc::clone(video_playback);
-    let pic_op = picture.clone();
-    let btm_op = bottom_controls.clone();
-    btn_open.connect_clicked(move |_| {
-        pop_close2.popdown();
-        trigger_open_file_dialog(&win_op, &stack_op, &p_op, &video_op, &pic_op, &btm_op);
-    });
-    vbox.append(&btn_open);
-
     // Separator
     let sep = Separator::new(Orientation::Horizontal);
     sep.set_margin_top(4);
@@ -1436,6 +1380,62 @@ fn create_main_menu_popover(
     appearance_sep.set_margin_top(4);
     appearance_sep.set_margin_bottom(4);
     vbox.append(&appearance_sep);
+
+    // 1. New Window (Ctrl+N)
+    let btn_new_win = Button::new();
+    btn_new_win.add_css_class("flat");
+    btn_new_win.add_css_class("menu-item-button");
+    let box_new_win = GtkBox::new(Orientation::Horizontal, 20);
+    let l1 = Label::new(Some("New Window"));
+    l1.set_halign(Align::Start);
+    l1.set_hexpand(true);
+    let s1 = Label::new(Some("Ctrl+N"));
+    s1.add_css_class("dim-label");
+    s1.set_halign(Align::End);
+    box_new_win.append(&l1);
+    box_new_win.append(&s1);
+    btn_new_win.set_child(Some(&box_new_win));
+
+    let pop_close1 = popover.clone();
+    let win_app = window.clone();
+    btn_new_win.connect_clicked(move |_| {
+        pop_close1.popdown();
+        if let Some(app) = win_app.application() {
+            if let Ok(adw_app) = app.downcast::<adw::Application>() {
+                let new_win = GlimpseWindow::new(&adw_app);
+                new_win.present();
+            }
+        }
+    });
+    vbox.append(&btn_new_win);
+
+    // 2. Open... (Ctrl+O)
+    let btn_open = Button::new();
+    btn_open.add_css_class("flat");
+    btn_open.add_css_class("menu-item-button");
+    let box_open = GtkBox::new(Orientation::Horizontal, 20);
+    let l2 = Label::new(Some("Open…"));
+    l2.set_halign(Align::Start);
+    l2.set_hexpand(true);
+    let s2 = Label::new(Some("Ctrl+O"));
+    s2.add_css_class("dim-label");
+    s2.set_halign(Align::End);
+    box_open.append(&l2);
+    box_open.append(&s2);
+    btn_open.set_child(Some(&box_open));
+
+    let pop_close2 = popover.clone();
+    let win_op = window.clone();
+    let stack_op = stack.clone();
+    let p_op = Rc::clone(player);
+    let video_op = Rc::clone(video_playback);
+    let pic_op = picture.clone();
+    let btm_op = bottom_controls.clone();
+    btn_open.connect_clicked(move |_| {
+        pop_close2.popdown();
+        trigger_open_file_dialog(&win_op, &stack_op, &p_op, &video_op, &pic_op, &btm_op);
+    });
+    vbox.append(&btn_open);
 
     // 3. Keyboard Shortcuts (Ctrl+?)
     let btn_shortcuts = Button::new();
