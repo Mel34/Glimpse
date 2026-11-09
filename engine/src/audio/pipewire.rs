@@ -573,6 +573,7 @@ mod tests {
         let (mut producer, mut consumer) = RingBuffer::new(8);
         let shared = shared_state();
         producer.push(PcmSample { value: 0.25, generation: 0 }).unwrap();
+        producer.push(PcmSample { value: -0.5, generation: 0 }).unwrap();
         shared.end_of_stream.store(true, Ordering::Release);
 
         let mut output = [0xff; 16];
@@ -584,6 +585,7 @@ mod tests {
         assert_eq!(eof_silence, 2);
         assert_eq!(flushed, 0);
         assert_eq!(f32::from_le_bytes(output[0..4].try_into().unwrap()), 0.25);
+        assert_eq!(f32::from_le_bytes(output[4..8].try_into().unwrap()), -0.5);
         assert_eq!(&output[8..], &[0; 8]);
     }
 
