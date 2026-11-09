@@ -14,6 +14,7 @@ where
     FSub: Fn(Option<TrackId>) + 'static + Clone,
 {
     let popover = Popover::new();
+    popover.add_css_class("menu-popover");
     let container = GtkBox::new(Orientation::Vertical, 8);
     container.set_margin_start(12);
     container.set_margin_end(12);
