@@ -172,12 +172,14 @@ button.header-close-button image {
 }
 
 /* Keep tooltips consistent with the dark appearance in every color scheme. */
+tooltip,
 tooltip.background {
     background-color: #242424;
     color: #ffffff;
     border: 1px solid alpha(#ffffff, 0.18);
 }
 
+tooltip *,
 tooltip label {
     color: #ffffff;
 }
