@@ -197,13 +197,6 @@ impl AudioSink for PipeWireAudioSink {
             return;
         }
 
-        if self.shared.paused.load(Ordering::Acquire) {
-            self.shared
-                .dropped_samples
-                .fetch_add(sample_count as u64, Ordering::Relaxed);
-            return;
-        }
-
         let generation = self.shared.generation.load(Ordering::Acquire);
         let mut producer = self.producer.lock();
         let mut dropped = 0u64;
@@ -220,8 +213,8 @@ impl AudioSink for PipeWireAudioSink {
     }
 
     fn pause(&self) {
+        // The callback emits silence while paused without consuming queued PCM.
         self.shared.paused.store(true, Ordering::Release);
-        self.flush();
     }
 
     fn resume(&self) {
