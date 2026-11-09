@@ -83,7 +83,11 @@ impl AudioPlaybackSession {
         let worker = thread::Builder::new()
             .name("glimpse-audio-session".to_string())
             .spawn(move || {
-                let result = run_file_control(&path, clock, worker_control.clone());
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run_file_control(&path, Arc::clone(&clock), worker_control.clone())
+                }))
+                .unwrap_or_else(|_| Err("Audio playback worker panicked".to_string()));
+
                 if !worker_control.stopped.load(Ordering::Acquire) {
                     match result {
                         Ok(_) => {
@@ -92,12 +96,14 @@ impl AudioPlaybackSession {
                             let _ = events.send(Event::EndOfStream);
                         }
                         Err(error) => {
+                            clock.pause();
                             worker_control.finished.store(true, Ordering::Release);
                             let _ = events.send(Event::StateChanged(crate::types::PlayerState::Paused));
                             let _ = events.send(Event::Error(error));
                         }
                     }
                 } else {
+                    clock.pause();
                     worker_control.finished.store(true, Ordering::Release);
                 }
             })
