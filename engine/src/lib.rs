@@ -183,16 +183,17 @@ impl Player {
                             let _ = self.event_sender.send(Event::Error(error));
                         }
                     }
+                } else if *state == PlayerState::Playing || *state == PlayerState::Ended {
+                    *state = PlayerState::Paused;
+                    self.clock.pause();
+                    let _ = self.event_sender.send(Event::StateChanged(PlayerState::Paused));
                 }
             }
         }
 
-        if *state == PlayerState::Ended
-            || (*state == PlayerState::Playing
-                && self.audio_session.lock().as_ref().is_none_or(AudioPlaybackHandle::is_finished))
-        {
+        #[cfg(not(all(feature = "audio-pipewire", feature = "ffmpeg-system")))]
+        if *state == PlayerState::Ended {
             *state = PlayerState::Paused;
-            self.clock.pause();
             let _ = self.event_sender.send(Event::StateChanged(PlayerState::Paused));
         }
 
