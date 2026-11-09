@@ -34,6 +34,25 @@ pub struct AudioPlaybackReport {
     pub last_end_pts: Option<f64>,
 }
 
+/// Owns the audio master clock for a synchronous playback session.
+///
+/// The session returns after the stream reaches EOF and the final audio tail
+/// has been handed to the device. UI-driven transport controls will build on
+/// this owner in the next integration step.
+pub struct AudioPlaybackSession {
+    clock: Arc<MasterClock>,
+}
+
+impl AudioPlaybackSession {
+    pub fn new(clock: Arc<MasterClock>) -> Self {
+        Self { clock }
+    }
+
+    pub fn play_file(&self, path: &str) -> Result<AudioPlaybackReport, String> {
+        run_file(path, Arc::clone(&self.clock))
+    }
+}
+
 impl AudioPlaybackReport {
     pub fn decoded_duration(&self) -> f64 {
         self.last_end_pts
@@ -48,7 +67,7 @@ impl AudioPlaybackReport {
 /// This is the engine-owned implementation used by both diagnostics and the
 /// eventual player integration. Video/subtitle packets are drained for now;
 /// unified audio/video demux consumption is the next pipeline milestone.
-pub fn play_file(path: &str, clock: Arc<MasterClock>) -> Result<AudioPlaybackReport, String> {
+fn run_file(path: &str, clock: Arc<MasterClock>) -> Result<AudioPlaybackReport, String> {
     let probe = crate::demuxer::probe_media(path)?;
     let audio_track = select_audio_track(&probe.tracks)
         .ok_or_else(|| "The media file has no audio stream".to_string())?;
@@ -163,9 +182,16 @@ pub fn play_file(path: &str, clock: Arc<MasterClock>) -> Result<AudioPlaybackRep
         abort_demux(&queues, &mut demux_worker);
     }
     playback_finished.store(true, Ordering::Release);
-    let playback_stats = playback_worker
+    let worker_stats = playback_worker
         .join()
         .map_err(|_| "Audio playback worker panicked".to_string())?;
+    let mut playback_stats = playback;
+    playback_stats.blocks += worker_stats.blocks;
+    playback_stats.sample_frames += worker_stats.sample_frames;
+    if playback_stats.first_pts.is_none() {
+        playback_stats.first_pts = worker_stats.first_pts;
+    }
+    playback_stats.last_end_pts = worker_stats.last_end_pts.or(playback_stats.last_end_pts);
     let demux = decode_result?;
 
     // Capture device stats before the final tail drains, then allow the device
