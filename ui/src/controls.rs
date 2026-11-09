@@ -12,6 +12,7 @@ use std::rc::Rc;
 use std::time::Duration;
 use gtk4::prelude::*;
 use gtk4::{Box as GtkBox, Image, Label, MenuButton, Orientation, Scale};
+use crate::interaction::attach_popover_scroll_guard;
 
 #[derive(Clone)]
 pub struct ControlBarWidgets {
@@ -81,6 +82,7 @@ pub fn create_floating_bottom_bar() -> ControlBarWidgets {
     vol_vbox.append(&volume_slider);
 
     volume_popover.set_child(Some(&vol_vbox));
+    attach_popover_scroll_guard(&volume_popover);
     volume_button.set_popover(Some(&volume_popover));
     top_row.append(&volume_button);
 
