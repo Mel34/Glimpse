@@ -13,7 +13,7 @@ use gtk4::{
 
 use glimpse_engine::{Event, Player, PlayerState};
 use crate::controls::{create_floating_bottom_bar, ControlBarWidgets};
-use crate::interaction::{attach_seekbar_wheel, attach_window_volume_wheel, VideoClickStateMachine};
+use crate::interaction::{attach_popover_scroll_guard, attach_seekbar_wheel, attach_window_volume_wheel, VideoClickStateMachine};
 use crate::track_menu::create_track_popover;
 use crate::video_texture::VideoPlaybackHandle;
 
@@ -517,7 +517,6 @@ impl GlimpseWindow {
         let p_vol_wheel = Rc::clone(&player);
         let p_vol_wheel_value = Rc::clone(&player);
         let win_ref = window.clone().upcast::<gtk4::Window>();
-
         let v_icon_w = bottom_controls.volume_icon.clone();
         let v_btn_w = bottom_controls.volume_button.clone();
         let v_slider_w = bottom_controls.volume_slider.clone();
@@ -1384,5 +1383,6 @@ fn create_main_menu_popover(
     vbox.append(&btn_about);
 
     popover.set_child(Some(&vbox));
+    attach_popover_scroll_guard(&popover);
     popover
 }

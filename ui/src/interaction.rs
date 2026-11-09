@@ -115,3 +115,12 @@ pub fn attach_window_volume_wheel<FVol>(
 
     window.add_controller(controller);
 }
+
+/// Stop scroll events at the popover boundary after its child controls have handled them.
+/// This prevents the window-level volume wheel handler from also changing playback volume.
+pub fn attach_popover_scroll_guard(popover: &gtk4::Popover) {
+    let controller = EventControllerScroll::new(EventControllerScrollFlags::VERTICAL);
+    controller.set_propagation_phase(gtk4::PropagationPhase::Bubble);
+    controller.connect_scroll(|_, _dx, _dy| glib::Propagation::Stop);
+    popover.add_controller(controller);
+}
