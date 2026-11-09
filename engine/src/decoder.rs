@@ -258,6 +258,7 @@ struct FfmpegAudioDecoderState {
     time_base_den: i32,
     stream_index: usize,
     next_pts: f64,
+    discard_before_pts: f64,
 }
 
 pub struct AudioDecoder {
@@ -309,8 +310,19 @@ impl AudioDecoder {
                 time_base_den: time_base.denominator(),
                 stream_index,
                 next_pts: 0.0,
+                discard_before_pts: 0.0,
             }),
         })
+    }
+
+    /// Discards decoded audio samples whose timestamps precede the requested
+    /// playback position. Seeking begins at a demuxer keyframe, so this keeps
+    /// the audible start aligned with the user's target.
+    #[cfg(feature = "ffmpeg-system")]
+    pub fn discard_before_pts(&mut self, pts: f64) {
+        if let Some(backend) = self.backend.as_mut() {
+            backend.discard_before_pts = pts.max(0.0);
+        }
     }
 
     /// Consumes at most one compressed packet and queues all PCM frames made
@@ -454,19 +466,39 @@ impl AudioDecoder {
         }
 
         let stereo = converted.plane::<(f32, f32)>(0);
-        let mut samples = Vec::with_capacity(stereo.len() * AUDIO_OUTPUT_CHANNELS);
-        for (left, right) in stereo {
+        let original_duration = stereo.len() as f64 / AUDIO_OUTPUT_RATE as f64;
+        let skip_frames = if pts < backend.discard_before_pts {
+            ((backend.discard_before_pts - pts) * AUDIO_OUTPUT_RATE as f64)
+                .ceil()
+                .max(0.0) as usize
+        } else {
+            0
+        }
+        .min(stereo.len());
+
+        let frame_pts = pts + skip_frames as f64 / AUDIO_OUTPUT_RATE as f64;
+        let mut samples = Vec::with_capacity(
+            (stereo.len() - skip_frames) * AUDIO_OUTPUT_CHANNELS,
+        );
+        for (left, right) in stereo.iter().skip(skip_frames) {
             samples.push(*left);
             samples.push(*right);
         }
 
-        let duration = stereo.len() as f64 / AUDIO_OUTPUT_RATE as f64;
+        let duration = samples.len() as f64
+            / AUDIO_OUTPUT_CHANNELS as f64
+            / AUDIO_OUTPUT_RATE as f64;
+        backend.next_pts = pts + original_duration;
+        if samples.is_empty() {
+            return Ok(());
+        }
+
         let byte_size = samples.len() * std::mem::size_of::<f32>();
         frame_queue
             .push(
                 AudioFrameData {
                     samples: Arc::new(samples),
-                    pts,
+                    pts: frame_pts,
                     duration,
                     serial,
                 },
@@ -474,7 +506,6 @@ impl AudioDecoder {
                 byte_size,
             )
             .map_err(|_| "Decoded audio queue was aborted or PCM block exceeded its byte capacity".to_string())?;
-        backend.next_pts = pts + duration;
         Ok(())
     }
 
