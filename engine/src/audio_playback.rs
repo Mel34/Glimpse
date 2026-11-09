@@ -614,6 +614,7 @@ mod tests {
             Some(TrackId(2))
         );
     }
+
     #[test]
     fn stopping_a_handle_signals_and_joins_its_worker() {
         let control = Arc::new(PlaybackControl::default());

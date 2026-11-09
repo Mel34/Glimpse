@@ -198,15 +198,18 @@ mod tests {
 
         let producer = queue.clone();
         let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
             started_tx.send(()).unwrap();
-            producer.push("blocked", Serial(0), 1)
+            result_tx.send(producer.push("blocked", Serial(0), 1)).unwrap();
         });
 
         started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(result_rx.recv_timeout(Duration::from_millis(20)).is_err());
         queue.abort();
 
-        assert!(worker.join().unwrap().is_err());
+        assert!(result_rx.recv_timeout(Duration::from_secs(1)).unwrap().is_err());
+        worker.join().unwrap();
     }
 
     #[test]
@@ -214,14 +217,17 @@ mod tests {
         let queue = BoundedQueue::<u8>::new(1, 8);
         let consumer = queue.clone();
         let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
             started_tx.send(()).unwrap();
-            consumer.pop_timeout(Duration::from_secs(5))
+            result_tx.send(consumer.pop_timeout(Duration::from_secs(5))).unwrap();
         });
 
         started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(result_rx.recv_timeout(Duration::from_millis(20)).is_err());
         queue.abort();
 
-        assert!(worker.join().unwrap().is_none());
+        assert!(result_rx.recv_timeout(Duration::from_secs(1)).unwrap().is_none());
+        worker.join().unwrap();
     }
 }
