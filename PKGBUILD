@@ -1,6 +1,6 @@
 # Maintainer: Mel34
 pkgname=glimpse
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
 pkgdesc="Clean, predictable Linux media player in Rust using GTK4, libadwaita, and an evolving in-process playback engine"
 arch=('x86_64' 'aarch64')
