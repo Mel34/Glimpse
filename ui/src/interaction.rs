@@ -95,16 +95,22 @@ pub fn attach_seekbar_wheel<FSeek>(
     scale.add_controller(controller);
 }
 
-pub fn attach_window_volume_wheel<FVol>(
+pub fn attach_window_volume_wheel<FVol, FIgnore>(
     window: &Window,
     get_volume: impl Fn() -> f32 + 'static,
     set_volume_cb: FVol,
+    should_ignore: FIgnore,
 ) where
     FVol: Fn(f32) + 'static,
+    FIgnore: Fn() -> bool + 'static,
 {
     let controller = EventControllerScroll::new(EventControllerScrollFlags::VERTICAL);
 
     controller.connect_scroll(move |_, _dx, dy| {
+        if should_ignore() {
+            return glib::Propagation::Proceed;
+        }
+
         let current = get_volume();
         let delta = if dy < 0.0 { 0.05 } else { -0.05 };
         let new_vol = (current + delta).clamp(0.0, 1.0);
