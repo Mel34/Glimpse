@@ -1307,11 +1307,6 @@ fn create_main_menu_popover(
     vbox.set_margin_bottom(4);
 
     // Separator
-    let sep = Separator::new(Orientation::Horizontal);
-    sep.set_margin_top(4);
-    sep.set_margin_bottom(4);
-    vbox.append(&sep);
-
     // Three-way circular selector, following GNOME Console's theme switcher.
     let appearance_label = Label::new(Some("Appearance"));
     appearance_label.set_halign(Align::Start);
