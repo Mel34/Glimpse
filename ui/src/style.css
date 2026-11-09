@@ -179,8 +179,9 @@ tooltip.background {
     border: 1px solid alpha(#ffffff, 0.18);
 }
 
-tooltip *,
-tooltip label {
+tooltip.background *,
+tooltip.background label {
+    background-color: transparent;
     color: #ffffff;
 }
 
