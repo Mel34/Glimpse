@@ -4,14 +4,12 @@ use gtk4::prelude::*;
 use gtk4::{Box as GtkBox, CheckButton, Label, Orientation, Popover};
 use glimpse_engine::{TrackId, TrackList};
 
-pub fn create_track_popover<FAudio, FSub>(
+pub fn create_track_popover<FAudio>(
     tracks: &TrackList,
     on_audio_selected: FAudio,
-    on_subtitle_selected: FSub,
 ) -> Popover
 where
     FAudio: Fn(Option<TrackId>) + 'static + Clone,
-    FSub: Fn(Option<TrackId>) + 'static + Clone,
 {
     let popover = Popover::new();
     popover.add_css_class("menu-popover");
@@ -64,35 +62,10 @@ where
     sub_label.add_css_class("heading");
     container.append(&sub_label);
 
-    let off_btn = CheckButton::with_label("Off");
-    let is_off = tracks.active_subtitle.is_none();
-    off_btn.set_active(is_off);
-
-    let cb_off = on_subtitle_selected.clone();
-    off_btn.connect_toggled(move |b| {
-        if b.is_active() {
-            cb_off(None);
-        }
-    });
-    container.append(&off_btn);
-
-    for track in &tracks.subtitle_tracks {
-        let btn = CheckButton::with_label(&track.display_label());
-        btn.set_group(Some(&off_btn));
-
-        if tracks.active_subtitle == Some(track.id) {
-            btn.set_active(true);
-        }
-
-        let cb = on_subtitle_selected.clone();
-        let tid = track.id;
-        btn.connect_toggled(move |b| {
-            if b.is_active() {
-                cb(Some(tid));
-            }
-        });
-        container.append(&btn);
-    }
+    let subtitle_status = Label::new(Some("Subtitle playback is not available yet"));
+    subtitle_status.set_halign(gtk4::Align::Start);
+    subtitle_status.add_css_class("dim-label");
+    container.append(&subtitle_status);
 
     popover.set_child(Some(&container));
     popover
