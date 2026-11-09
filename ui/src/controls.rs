@@ -21,6 +21,7 @@ pub struct ControlBarWidgets {
     pub volume_icon: Image,
     pub volume_slider: Scale,
     pub volume_percent_label: Label,
+    pub last_nonzero_volume: Rc<Cell<f64>>,
     pub settings_button: MenuButton,
     pub seekbar: Scale,
     pub seekbar_dragging: Rc<Cell<bool>>,
@@ -45,6 +46,8 @@ pub fn create_floating_bottom_bar() -> ControlBarWidgets {
     title_label.set_hexpand(true);
     title_label.add_css_class("video-title");
     top_row.append(&title_label);
+
+    let last_nonzero_volume = Rc::new(Cell::new(1.0));
 
     let volume_button = MenuButton::new();
     let volume_icon = Image::from_icon_name("audio-volume-high-symbolic");
@@ -123,11 +126,64 @@ pub fn create_floating_bottom_bar() -> ControlBarWidgets {
         volume_icon,
         volume_slider,
         volume_percent_label,
+        last_nonzero_volume,
         settings_button,
         seekbar,
         seekbar_dragging,
         elapsed_label,
         duration_label,
+    }
+}
+
+/// Remember the most recent audible level without replacing it with zero while muted.
+pub fn remember_nonzero_volume(last_nonzero_volume: &Cell<f64>, volume: f64) {
+    let clamped = volume.clamp(0.0, 1.0);
+    if clamped > 0.001 {
+        last_nonzero_volume.set(clamped);
+    }
+}
+
+/// Toggle mute while preserving the previous non-zero volume level.
+pub fn toggle_mute_volume(current_volume: f64, last_nonzero_volume: &Cell<f64>) -> f64 {
+    let current = current_volume.clamp(0.0, 1.0);
+    if current > 0.001 {
+        last_nonzero_volume.set(current);
+        0.0
+    } else {
+        last_nonzero_volume.get().clamp(0.001, 1.0)
+    }
+}
+
+#[cfg(test)]
+mod volume_tests {
+    use super::{remember_nonzero_volume, toggle_mute_volume};
+    use std::cell::Cell;
+
+    #[test]
+    fn mute_remembers_current_volume_and_returns_zero() {
+        let last_volume = Cell::new(1.0);
+        assert_eq!(toggle_mute_volume(0.35, &last_volume), 0.0);
+        assert_eq!(last_volume.get(), 0.35);
+    }
+
+    #[test]
+    fn unmute_restores_last_nonzero_volume() {
+        let last_volume = Cell::new(0.42);
+        assert_eq!(toggle_mute_volume(0.0, &last_volume), 0.42);
+    }
+
+    #[test]
+    fn zero_volume_changes_do_not_overwrite_remembered_level() {
+        let last_volume = Cell::new(0.6);
+        remember_nonzero_volume(&last_volume, 0.0);
+        assert_eq!(last_volume.get(), 0.6);
+    }
+
+    #[test]
+    fn positive_volume_changes_update_remembered_level() {
+        let last_volume = Cell::new(1.0);
+        remember_nonzero_volume(&last_volume, 0.27);
+        assert_eq!(last_volume.get(), 0.27);
     }
 }
 
@@ -179,6 +235,7 @@ pub fn set_audio_available(controls: &ControlBarWidgets, has_audio: bool, volume
     controls.volume_slider.set_sensitive(has_audio);
 
     if has_audio {
+        remember_nonzero_volume(&controls.last_nonzero_volume, volume);
         update_volume_indicator(
             &controls.volume_icon,
             &controls.volume_button,
