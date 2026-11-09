@@ -948,25 +948,6 @@ impl GlimpseWindow {
         );
     }
 
-    /// Stop playback and return to the empty state loader screen.
-    #[allow(dead_code)]
-    pub fn close_file(&self) {
-        self.video_playback.borrow_mut().take();
-        self.picture.set_paintable(gdk4::Paintable::NONE);
-
-        if let Some(ref p) = *self.player.borrow() {
-            p.stop();
-        }
-        *self.player.borrow_mut() = None;
-
-        self.bottom_controls.title_label.set_text("No media loaded");
-        self.bottom_controls.elapsed_label.set_text("0:00");
-        self.bottom_controls.duration_label.set_text("0:00");
-        self.bottom_controls.seekbar.set_value(0.0);
-        self.window.set_title(Some("Video Player"));
-        self.stack.set_visible_child_name("loader");
-    }
-
     pub fn present(&self) {
         self.window.present();
     }
