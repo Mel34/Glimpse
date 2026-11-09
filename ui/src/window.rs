@@ -457,8 +457,10 @@ impl GlimpseWindow {
                 }
             },
             move |target_pos| {
-                if let Some(ref m) = *m_seek_wheel.borrow() {
-                    m.seek((target_pos.as_secs_f64() * 1_000_000.0) as i64);
+                if !cfg!(feature = "experimental-engine") {
+                    if let Some(ref m) = *m_seek_wheel.borrow() {
+                        m.seek((target_pos.as_secs_f64() * 1_000_000.0) as i64);
+                    }
                 }
                 if let Some(ref p) = *p_seek_wheel.borrow() { p.seek(target_pos); }
                 if let Some(ref mut video) = *v_seek_wheel.borrow_mut() { video.seek(target_pos); }
@@ -468,6 +470,7 @@ impl GlimpseWindow {
         // Rule 4: Mouse wheel over window body adjusts volume in 5% steps
         let m_vol_wheel = Rc::clone(&media_file);
         let p_vol_wheel = Rc::clone(&player);
+        let p_vol_wheel_value = Rc::clone(&player);
         let win_ref = window.clone().upcast::<gtk4::Window>();
 
         let v_icon_w = bottom_controls.volume_icon.clone();
@@ -480,7 +483,11 @@ impl GlimpseWindow {
             {
                 let m = Rc::clone(&media_file);
                 move || {
-                    m.borrow().as_ref().map(|m| m.volume() as f32).unwrap_or(1.0)
+                    if cfg!(feature = "experimental-engine") {
+                        p_vol_wheel_value.borrow().as_ref().map(Player::volume).unwrap_or(1.0)
+                    } else {
+                        m.borrow().as_ref().map(|m| m.volume() as f32).unwrap_or(1.0)
+                    }
                 }
             },
             move |new_vol| {
@@ -812,16 +819,24 @@ impl GlimpseWindow {
                 }
                 // 'm' or 'M': Toggle mute
                 gdk4::Key::m | gdk4::Key::M => {
-                    if let Some(ref m) = *m_keys.borrow() {
+                    if cfg!(feature = "experimental-engine") {
+                        if let Some(ref p) = *p_keys.borrow() {
+                            let muted = p.volume() > 0.001;
+                            let volume = if muted { 0.0 } else { 1.0 };
+                            p.set_volume(volume);
+                            crate::controls::update_volume_indicator(
+                                &btm_open_k.volume_icon, &btm_open_k.volume_button,
+                                &btm_open_k.volume_slider, &btm_open_k.volume_percent_label,
+                                volume as f64, muted,
+                            );
+                        }
+                    } else if let Some(ref m) = *m_keys.borrow() {
                         let is_muted = !m.is_muted();
                         m.set_muted(is_muted);
                         crate::controls::update_volume_indicator(
-                            &btm_open_k.volume_icon,
-                            &btm_open_k.volume_button,
-                            &btm_open_k.volume_slider,
-                            &btm_open_k.volume_percent_label,
-                            m.volume(),
-                            is_muted,
+                            &btm_open_k.volume_icon, &btm_open_k.volume_button,
+                            &btm_open_k.volume_slider, &btm_open_k.volume_percent_label,
+                            m.volume(), is_muted,
                         );
                     }
                     glib::Propagation::Stop
