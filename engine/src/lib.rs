@@ -71,7 +71,7 @@ impl Player {
             duration,
             tracks,
             volume,
-            audio_enabled: AtomicBool::new(true),
+            audio_enabled: AtomicBool::new(discovered_tracks.active_audio.is_some()),
             current_serial,
             event_sender: event_tx,
             path: path_or_uri.to_owned(),
@@ -91,11 +91,17 @@ impl Player {
 
         #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
         {
-            let initial_volume = if self.audio_enabled.load(Ordering::Acquire) { self.volume() } else { 0.0 };
-            let mut start_position = *self.seek_position.lock();
-            let selected_audio = self.tracks.lock().active_audio.map(|track| track.0);
-            let mut reset_position = false;
-            let mut session = self.audio_session.lock();
+            let has_audio = !self.tracks.lock().audio_tracks.is_empty();
+            if !has_audio {
+                // Video-only media uses the monotonic clock as its playback clock.
+                self.clock.resume();
+                let _ = self.event_sender.send(Event::StateChanged(PlayerState::Playing));
+            } else {
+                let initial_volume = if self.audio_enabled.load(Ordering::Acquire) { self.volume() } else { 0.0 };
+                let mut start_position = *self.seek_position.lock();
+                let selected_audio = self.tracks.lock().active_audio.map(|track| track.0);
+                let mut reset_position = false;
+                let mut session = self.audio_session.lock();
             if session.as_ref().is_some_and(AudioPlaybackHandle::is_finished) {
                 let reached_eof = session.as_ref().is_some_and(AudioPlaybackHandle::reached_end_of_stream);
                 session.take();
@@ -127,8 +133,9 @@ impl Player {
                 handle.resume();
             }
             drop(session);
-            if reset_position {
-                *self.seek_position.lock() = Duration::ZERO;
+                if reset_position {
+                    *self.seek_position.lock() = Duration::ZERO;
+                }
             }
         }
 
