@@ -634,20 +634,17 @@ impl GlimpseWindow {
         drop_target.connect_drop(move |_, val, _, _| {
             drop_overlay_drop.set_visible(false);
             if let Ok(file) = val.get::<gio::File>() {
-                if let Some(path) = file.path() {
-                    if let Some(p_str) = path.to_str() {
-                        load_and_play_file(
-                            p_str,
-                            &win_for_drop,
-                            &stack_for_drop,
-                            &player_for_drop,
-                            &video_for_drop,
-                            &picture_for_drop,
-                            &bottom_for_drop,
-                        );
-                        return true;
-                    }
-                }
+                let uri = file.uri();
+                load_and_play_file(
+                    uri.as_str(),
+                    &win_for_drop,
+                    &stack_for_drop,
+                    &player_for_drop,
+                    &video_for_drop,
+                    &picture_for_drop,
+                    &bottom_for_drop,
+                );
+                return true;
             }
             false
         });
@@ -927,10 +924,10 @@ impl GlimpseWindow {
         }
     }
 
-    /// Open a video file, start hardware playback, populate tracks and timeline.
-    pub fn open_file(&self, path: &str) {
+    /// Open a media URI, start playback, and populate tracks and timeline.
+    pub fn open_file(&self, uri: &str) {
         load_and_play_file(
-            path,
+            uri,
             &self.window,
             &self.stack,
             &self.player,
@@ -992,19 +989,16 @@ fn trigger_open_file_dialog(
 
     file_dialog.open(Some(window), gio::Cancellable::NONE, move |result| {
         if let Ok(file) = result {
-            if let Some(path) = file.path() {
-                if let Some(p_str) = path.to_str() {
-                    load_and_play_file(
-                        p_str,
-                        &win_cb,
-                        &stack_cb,
-                        &player_cb,
-                        &video_cb,
-                        &pic_cb,
-                        &bottom_cb,
-                    );
-                }
-            }
+            let uri = file.uri();
+            load_and_play_file(
+                uri.as_str(),
+                &win_cb,
+                &stack_cb,
+                &player_cb,
+                &video_cb,
+                &pic_cb,
+                &bottom_cb,
+            );
         }
     });
 }
@@ -1049,10 +1043,10 @@ fn load_and_play_file(
     picture: &Picture,
     bottom_controls: &ControlBarWidgets,
 ) {
-    let file_name = std::path::Path::new(path)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(path);
+    let file_name = gio::File::for_uri(path)
+        .basename()
+        .map(|name| name.to_string())
+        .unwrap_or_else(|| path.to_owned());
 
     window.set_title(Some(&format!("Glimpse - {}", file_name)));
     bottom_controls.title_label.set_text(file_name);
