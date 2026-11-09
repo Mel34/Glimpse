@@ -343,7 +343,7 @@ pub fn decode_first_vaapi_dmabuf(
     }
 
     let stream = unsafe { *(*format.0).streams.add(stream_index as usize) };
-    if stream.is_null() || (*stream).codecpar.is_null() {
+    if stream.is_null() || unsafe { (*stream).codecpar.is_null() } {
         return Err("Video stream has no codec parameters".into());
     }
 
@@ -368,7 +368,7 @@ pub fn decode_first_vaapi_dmabuf(
     }
     let device = BufferRef(device_ptr);
 
-    let mut decoder = CodecContext(unsafe { ffi::avcodec_alloc_context3(codec) });
+    let decoder = CodecContext(unsafe { ffi::avcodec_alloc_context3(codec) });
     if decoder.0.is_null() {
         return Err("FFmpeg could not allocate a decoder context".into());
     }
