@@ -1368,7 +1368,7 @@ fn create_main_menu_popover(
     sep.set_margin_bottom(4);
     vbox.append(&sep);
 
-    // Appearance follows the same three choices as GNOME Console.
+    // Three-way circular selector, following GNOME Console's theme switcher.
     let appearance_label = Label::new(Some("Appearance"));
     appearance_label.set_halign(Align::Start);
     appearance_label.add_css_class("heading");
@@ -1376,55 +1376,61 @@ fn create_main_menu_popover(
     vbox.append(&appearance_label);
 
     let selected_scheme = crate::theme::load();
-    let system_colors = CheckButton::with_label("Use System Colors");
-    let light_colors = CheckButton::with_label("Use Light Colors");
-    let dark_colors = CheckButton::with_label("Use Dark Colors");
+    let system_selector = CheckButton::new();
+    let light_selector = CheckButton::new();
+    let dark_selector = CheckButton::new();
 
-    light_colors.set_group(Some(&system_colors));
-    dark_colors.set_group(Some(&system_colors));
+    light_selector.set_group(Some(&system_selector));
+    dark_selector.set_group(Some(&system_selector));
 
-    system_colors.set_active(selected_scheme == crate::theme::ColorScheme::System);
-    light_colors.set_active(selected_scheme == crate::theme::ColorScheme::Light);
-    dark_colors.set_active(selected_scheme == crate::theme::ColorScheme::Dark);
+    system_selector.set_active(selected_scheme == crate::theme::ColorScheme::System);
+    light_selector.set_active(selected_scheme == crate::theme::ColorScheme::Light);
+    dark_selector.set_active(selected_scheme == crate::theme::ColorScheme::Dark);
 
-    let pop_close_system = popover.clone();
-    system_colors.connect_toggled(move |button| {
-        if button.is_active() {
-            let scheme = crate::theme::ColorScheme::System;
-            scheme.apply();
-            if let Err(error) = scheme.save() {
-                tracing::warn!(%error, "Could not save color scheme preference");
+    let theme_switcher = GtkBox::new(Orientation::Horizontal, 18);
+    theme_switcher.set_homogeneous(true);
+    theme_switcher.add_css_class("themeswitcher");
+
+    for (selector, tooltip, class, scheme) in [
+        (&system_selector, "Follow System Style", "system", crate::theme::ColorScheme::System),
+        (&light_selector, "Light Style", "light", crate::theme::ColorScheme::Light),
+        (&dark_selector, "Dark Style", "dark", crate::theme::ColorScheme::Dark),
+    ] {
+        selector.set_tooltip_text(Some(tooltip));
+        selector.add_css_class(class);
+
+        let selector_overlay = Overlay::new();
+        selector_overlay.set_halign(Align::Center);
+        selector_overlay.set_child(Some(selector));
+
+        let check = Image::from_icon_name("object-select-symbolic");
+        check.set_pixel_size(13);
+        check.set_halign(Align::End);
+        check.set_valign(Align::End);
+        check.add_css_class("check");
+        check.set_visible(selector.is_active());
+        selector_overlay.add_overlay(&check);
+
+        let check_indicator = check.clone();
+        selector.connect_toggled(move |button| {
+            check_indicator.set_visible(button.is_active());
+        });
+
+        let pop_close = popover.clone();
+        selector.connect_toggled(move |button| {
+            if button.is_active() {
+                scheme.apply();
+                if let Err(error) = scheme.save() {
+                    tracing::warn!(%error, "Could not save color scheme preference");
+                }
+                pop_close.popdown();
             }
-            pop_close_system.popdown();
-        }
-    });
-    vbox.append(&system_colors);
+        });
 
-    let pop_close_light = popover.clone();
-    light_colors.connect_toggled(move |button| {
-        if button.is_active() {
-            let scheme = crate::theme::ColorScheme::Light;
-            scheme.apply();
-            if let Err(error) = scheme.save() {
-                tracing::warn!(%error, "Could not save color scheme preference");
-            }
-            pop_close_light.popdown();
-        }
-    });
-    vbox.append(&light_colors);
+        theme_switcher.append(&selector_overlay);
+    }
 
-    let pop_close_dark = popover.clone();
-    dark_colors.connect_toggled(move |button| {
-        if button.is_active() {
-            let scheme = crate::theme::ColorScheme::Dark;
-            scheme.apply();
-            if let Err(error) = scheme.save() {
-                tracing::warn!(%error, "Could not save color scheme preference");
-            }
-            pop_close_dark.popdown();
-        }
-    });
-    vbox.append(&dark_colors);
+    vbox.append(&theme_switcher);
 
     let appearance_sep = Separator::new(Orientation::Horizontal);
     appearance_sep.set_margin_top(4);
