@@ -200,13 +200,12 @@ impl VideoDecoder {
                     .copy_from_slice(&source[source_start..source_start + stride]);
             }
 
-            let timestamp = decoded.pts().or_else(|| decoded.timestamp());
-            let pts = timestamp
-                .map(|value| {
-                    value as f64 * backend.time_base_num as f64
-                        / backend.time_base_den as f64
-                })
-                .unwrap_or(0.0);
+            let timestamp = decoded
+                .pts()
+                .or_else(|| decoded.timestamp())
+                .ok_or_else(|| "Decoded video frame has no presentation timestamp".to_string())?;
+            let pts = timestamp as f64 * backend.time_base_num as f64
+                / backend.time_base_den as f64;
             let frame = VideoFrameData {
                 width,
                 height,
