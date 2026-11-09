@@ -193,9 +193,8 @@ impl GlimpseWindow {
         let fs_icon = Image::from_icon_name("view-fullscreen-symbolic");
         fs_icon.set_pixel_size(14);
         fullscreen_btn.set_child(Some(&fs_icon));
-        fullscreen_btn.add_css_class("flat");
-        fullscreen_btn.add_css_class("header-button");
-        fullscreen_btn.set_size_request(28, 28);
+        fullscreen_btn.add_css_class("osd-icon-button");
+        fullscreen_btn.set_size_request(32, 32);
         fullscreen_btn.set_can_focus(false);
         fullscreen_btn.set_halign(Align::Start);
         fullscreen_btn.set_tooltip_text(Some("Toggle Fullscreen (F)"));
@@ -230,20 +229,18 @@ impl GlimpseWindow {
 
         let menu_btn = MenuButton::new();
         menu_btn.set_icon_name("open-menu-symbolic");
-        menu_btn.add_css_class("flat");
         menu_btn.add_css_class("osd-icon-button");
-        menu_btn.set_size_request(28, 28);
+        menu_btn.set_size_request(32, 32);
         menu_btn.set_can_focus(false);
         menu_btn.set_tooltip_text(Some("Main Menu"));
         right_top_box.append(&menu_btn);
 
         let close_btn = Button::new();
         let close_icon = Image::from_icon_name("window-close-symbolic");
-        close_icon.set_pixel_size(12);
+        close_icon.set_pixel_size(14);
         close_btn.set_child(Some(&close_icon));
-        close_btn.add_css_class("flat");
-        close_btn.add_css_class("header-close-button");
-        close_btn.set_size_request(24, 24);
+        close_btn.add_css_class("osd-icon-button");
+        close_btn.set_size_request(32, 32);
         close_btn.set_valign(Align::Center);
         close_btn.set_halign(Align::Center);
         close_btn.set_can_focus(false);
@@ -493,6 +490,14 @@ impl GlimpseWindow {
 
         let hide_timer: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
         let motion = EventControllerMotion::new();
+        motion.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        let top_motion = top_controls.clone();
+        let bottom_motion = bottom_controls.container.clone();
+        let timer_motion = Rc::clone(&hide_timer);
+        let window_motion = window.clone();
+        motion.connect_enter(move |_, _, _| {
+            reveal_and_schedule_controls(&window_motion, &top_motion, &bottom_motion, &timer_motion);
+        });
         let top_motion = top_controls.clone();
         let bottom_motion = bottom_controls.container.clone();
         let timer_motion = Rc::clone(&hide_timer);
@@ -985,14 +990,15 @@ fn reveal_and_schedule_controls(
     top.set_can_target(true); bottom.set_can_target(true);
     if let Some(source) = timer.borrow_mut().take() { source.remove(); }
     if window.is_fullscreen() {
-        let win_hide = window.clone(); let top_hide = top.clone(); let bottom_hide = bottom.clone();
+        let top_hide = top.clone();
+        let bottom_hide = bottom.clone();
         let timer_slot = Rc::clone(timer);
         let source = glib::timeout_add_local_once(Duration::from_secs(2), move || {
             *timer_slot.borrow_mut() = None;
-            if win_hide.is_fullscreen() {
-                top_hide.set_opacity(0.0); bottom_hide.set_opacity(0.0);
-                top_hide.set_can_target(false); bottom_hide.set_can_target(false);
-            }
+            top_hide.set_opacity(0.0);
+            bottom_hide.set_opacity(0.0);
+            top_hide.set_can_target(false);
+            bottom_hide.set_can_target(false);
         });
         *timer.borrow_mut() = Some(source);
     }
