@@ -494,22 +494,16 @@ impl GlimpseWindow {
         let top_motion = top_controls.clone();
         let bottom_motion = bottom_controls.container.clone();
         let timer_motion = Rc::clone(&hide_timer);
-        let window_motion = window.clone();
         motion.connect_enter(move |_, _, _| {
-            if window_motion.is_fullscreen() {
-                reveal_and_schedule_controls(&top_motion, &bottom_motion, &timer_motion);
-            }
+            reveal_and_schedule_controls(&top_motion, &bottom_motion, &timer_motion);
         });
         let top_motion = top_controls.clone();
         let bottom_motion = bottom_controls.container.clone();
         let timer_motion = Rc::clone(&hide_timer);
-        let window_motion = window.clone();
         motion.connect_motion(move |_, _, _| {
-            if window_motion.is_fullscreen() {
-                reveal_and_schedule_controls(&top_motion, &bottom_motion, &timer_motion);
-            }
+            reveal_and_schedule_controls(&top_motion, &bottom_motion, &timer_motion);
         });
-        player_overlay.add_controller(motion);
+        window.add_controller(motion);
 
         let top_fullscreen = top_controls.clone();
         let bottom_fullscreen = bottom_controls.container.clone();
@@ -997,7 +991,7 @@ fn reveal_and_schedule_controls(
     let top_hide = top.clone();
     let bottom_hide = bottom.clone();
     let timer_slot = Rc::clone(timer);
-    let source = glib::timeout_add_local_once(Duration::from_secs(2), move || {
+    let source = glib::timeout_add_local_once(Duration::from_secs(3), move || {
         *timer_slot.borrow_mut() = None;
         top_hide.set_opacity(0.0);
         bottom_hide.set_opacity(0.0);
