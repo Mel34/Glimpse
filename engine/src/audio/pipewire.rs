@@ -19,7 +19,6 @@ use super::AudioSink;
 use crate::decoder::{AUDIO_OUTPUT_CHANNELS, AUDIO_OUTPUT_RATE};
 
 const PCM_RING_CAPACITY: usize = AUDIO_OUTPUT_RATE as usize * AUDIO_OUTPUT_CHANNELS / 2;
-const MAX_STALE_SAMPLES_PER_CALLBACK: usize = 8_192;
 const STREAM_UNCONNECTED: u8 = 0;
 const STREAM_CONNECTING: u8 = 1;
 const STREAM_PAUSED: u8 = 2;
@@ -29,18 +28,16 @@ const STREAM_ERROR: u8 = 4;
 #[derive(Debug, Clone, Copy)]
 struct PcmSample {
     value: f32,
-    generation: u32,
 }
 
+
 struct SharedState {
-    generation: AtomicU32,
     paused: AtomicBool,
     volume: AtomicU32,
     dropped_samples: AtomicU64,
     underflow_samples: AtomicU64,
     eof_silence_samples: AtomicU64,
     end_of_stream: AtomicBool,
-    flushed_samples: AtomicU64,
     last_requested_frames: AtomicU64,
     graph_ticks: AtomicU64,
     device_delay_ms: AtomicU64,
@@ -52,14 +49,12 @@ struct SharedState {
 impl SharedState {
     fn new() -> Self {
         Self {
-            generation: AtomicU32::new(0),
             paused: AtomicBool::new(false),
             volume: AtomicU32::new(1.0f32.to_bits()),
             dropped_samples: AtomicU64::new(0),
             underflow_samples: AtomicU64::new(0),
             eof_silence_samples: AtomicU64::new(0),
             end_of_stream: AtomicBool::new(false),
-            flushed_samples: AtomicU64::new(0),
             last_requested_frames: AtomicU64::new(0),
             graph_ticks: AtomicU64::new(0),
             device_delay_ms: AtomicU64::new(0.0f64.to_bits()),
@@ -83,8 +78,6 @@ pub struct PipeWireAudioSinkStats {
     pub underflow_samples: u64,
     /// Individual f32 samples rendered as silence after the producer reached EOF.
     pub eof_silence_samples: u64,
-    /// Stale samples discarded after pause or flush.
-    pub flushed_samples: u64,
     /// Frame count from the most recent PipeWire playback request.
     pub last_requested_frames: u64,
     /// Most recent PipeWire graph position in ticks.
@@ -179,7 +172,6 @@ impl PipeWireAudioSink {
             dropped_samples: self.shared.dropped_samples.load(Ordering::Relaxed),
             underflow_samples: self.shared.underflow_samples.load(Ordering::Relaxed),
             eof_silence_samples: self.shared.eof_silence_samples.load(Ordering::Relaxed),
-            flushed_samples: self.shared.flushed_samples.load(Ordering::Relaxed),
             last_requested_frames: self.shared.last_requested_frames.load(Ordering::Relaxed),
             graph_ticks: self.shared.graph_ticks.load(Ordering::Relaxed),
             device_delay_ms: f64::from_bits(self.shared.device_delay_ms.load(Ordering::Relaxed)),
@@ -197,11 +189,10 @@ impl AudioSink for PipeWireAudioSink {
             return;
         }
 
-        let generation = self.shared.generation.load(Ordering::Acquire);
         let mut producer = self.producer.lock();
         let mut dropped = 0u64;
         for &value in &samples[..sample_count] {
-            if producer.push(PcmSample { value, generation }).is_err() {
+            if producer.push(PcmSample { value }).is_err() {
                 dropped += 1;
             }
         }
@@ -234,10 +225,6 @@ impl AudioSink for PipeWireAudioSink {
 
     fn get_volume(&self) -> f32 {
         f32::from_bits(self.shared.volume.load(Ordering::Relaxed))
-    }
-
-    fn flush(&self) {
-        self.shared.generation.fetch_add(1, Ordering::AcqRel);
     }
 }
 
@@ -325,7 +312,7 @@ fn run_pipewire_thread(
             };
 
             let written_bytes = if let Some(bytes) = data.data() {
-                let (written, underflow, eof_silence, flushed) = render_pcm(
+                let (written, underflow, eof_silence) = render_pcm(
                     &mut process_data.consumer,
                     &process_data.shared,
                     bytes,
@@ -342,12 +329,6 @@ fn run_pipewire_thread(
                         .shared
                         .eof_silence_samples
                         .fetch_add(eof_silence as u64, Ordering::Relaxed);
-                }
-                if flushed != 0 {
-                    process_data
-                        .shared
-                        .flushed_samples
-                        .fetch_add(flushed as u64, Ordering::Relaxed);
                 }
                 written
             } else {
@@ -472,7 +453,7 @@ fn render_pcm(
     shared: &SharedState,
     output: &mut [u8],
     requested_frames: usize,
-) -> (usize, usize, usize, usize) {
+) -> (usize, usize, usize) {
     let bytes_per_frame = AUDIO_OUTPUT_CHANNELS * std::mem::size_of::<f32>();
     let frame_capacity = output.len() / bytes_per_frame;
     let frame_count = if requested_frames == 0 {
@@ -484,54 +465,30 @@ fn render_pcm(
     let written_bytes = sample_count * std::mem::size_of::<f32>();
     output[..written_bytes].fill(0);
     if sample_count == 0 || shared.paused.load(Ordering::Acquire) {
-        return (written_bytes, 0, 0, 0);
+        return (written_bytes, 0, 0);
     }
 
-    let generation = shared.generation.load(Ordering::Acquire);
     let end_of_stream = shared.end_of_stream.load(Ordering::Acquire);
     let volume = f32::from_bits(shared.volume.load(Ordering::Relaxed));
     let mut underflow_samples = 0usize;
     let mut eof_silence_samples = 0usize;
-    let mut flushed_samples = 0usize;
-    let mut stale_limit_reached = false;
 
     for (index, destination) in output[..written_bytes].chunks_exact_mut(4).enumerate() {
-        if stale_limit_reached {
-            break;
-        }
-
-        let mut value = 0.0f32;
-        loop {
-            match consumer.pop() {
-                Ok(sample) if sample.generation != generation => {
-                    flushed_samples += 1;
-                    if flushed_samples >= MAX_STALE_SAMPLES_PER_CALLBACK {
-                        stale_limit_reached = true;
-                        break;
-                    }
+        let value = match consumer.pop() {
+            Ok(sample) => sample.value * volume,
+            Err(_) => {
+                if end_of_stream {
+                    eof_silence_samples = sample_count - index;
+                } else {
+                    underflow_samples = sample_count - index;
                 }
-                Ok(sample) => {
-                    value = sample.value * volume;
-                    break;
-                }
-                Err(_) => {
-                    if end_of_stream {
-                        eof_silence_samples = sample_count - index;
-                    } else {
-                        underflow_samples = sample_count - index;
-                    }
-                    break;
-                }
+                break;
             }
-        }
-
-        if underflow_samples != 0 || eof_silence_samples != 0 {
-            break;
-        }
+        };
         destination.copy_from_slice(&value.to_le_bytes());
     }
 
-    (written_bytes, underflow_samples, eof_silence_samples, flushed_samples)
+    (written_bytes, underflow_samples, eof_silence_samples)
 }
 
 #[cfg(test)]
@@ -546,16 +503,15 @@ mod tests {
     fn renders_interleaved_float_samples_and_silences_underflow() {
         let (mut producer, mut consumer) = RingBuffer::new(8);
         let shared = shared_state();
-        producer.push(PcmSample { value: 0.25, generation: 0 }).unwrap();
-        producer.push(PcmSample { value: -0.5, generation: 0 }).unwrap();
+        producer.push(PcmSample { value: 0.25 }).unwrap();
+        producer.push(PcmSample { value: -0.5 }).unwrap();
 
         let mut output = [0xff; 16];
-        let (written, underflow, _, flushed) =
+        let (written, underflow, _) =
             render_pcm(&mut consumer, &shared, &mut output, 2);
 
         assert_eq!(written, 16);
         assert_eq!(underflow, 2);
-        assert_eq!(flushed, 0);
         assert_eq!(f32::from_le_bytes(output[0..4].try_into().unwrap()), 0.25);
         assert_eq!(f32::from_le_bytes(output[4..8].try_into().unwrap()), -0.5);
         assert_eq!(&output[8..], &[0; 8]);
@@ -565,12 +521,12 @@ mod tests {
     fn eof_empty_ring_is_counted_separately_from_active_starvation() {
         let (mut producer, mut consumer) = RingBuffer::new(8);
         let shared = shared_state();
-        producer.push(PcmSample { value: 0.25, generation: 0 }).unwrap();
-        producer.push(PcmSample { value: -0.5, generation: 0 }).unwrap();
+        producer.push(PcmSample { value: 0.25 }).unwrap();
+        producer.push(PcmSample { value: -0.5 }).unwrap();
         shared.end_of_stream.store(true, Ordering::Release);
 
         let mut output = [0xff; 16];
-        let (written, underflow, eof_silence, flushed) =
+        let (written, underflow, eof_silence) =
             render_pcm(&mut consumer, &shared, &mut output, 2);
 
         assert_eq!(written, 16);
@@ -583,35 +539,15 @@ mod tests {
     }
 
     #[test]
-    fn flush_discards_old_samples_and_preserves_new_generation() {
-        let (mut producer, mut consumer) = RingBuffer::new(8);
-        let shared = shared_state();
-        producer.push(PcmSample { value: 0.1, generation: 0 }).unwrap();
-        shared.generation.store(1, Ordering::Release);
-        producer.push(PcmSample { value: 0.75, generation: 1 }).unwrap();
-        producer.push(PcmSample { value: -0.25, generation: 1 }).unwrap();
-
-        let mut output = [0; 8];
-        let (written, underflow, _, flushed) =
-            render_pcm(&mut consumer, &shared, &mut output, 1);
-
-        assert_eq!(written, 8);
-        assert_eq!(underflow, 0);
-        assert_eq!(flushed, 1);
-        assert_eq!(f32::from_le_bytes(output[0..4].try_into().unwrap()), 0.75);
-        assert_eq!(f32::from_le_bytes(output[4..8].try_into().unwrap()), -0.25);
-    }
-
-    #[test]
     fn renders_only_the_requested_frames_and_preserves_remaining_pcm() {
         let (mut producer, mut consumer) = RingBuffer::new(8);
         let shared = shared_state();
         for value in [0.1, 0.2, 0.3, 0.4] {
-            producer.push(PcmSample { value, generation: 0 }).unwrap();
+            producer.push(PcmSample { value }).unwrap();
         }
 
         let mut output = [0xff; 16];
-        let (written, underflow, _, flushed) =
+        let (written, underflow, _) =
             render_pcm(&mut consumer, &shared, &mut output, 1);
 
         assert_eq!(written, 8);
@@ -627,11 +563,11 @@ mod tests {
     fn pause_outputs_silence_without_consuming_queued_samples() {
         let (mut producer, mut consumer) = RingBuffer::new(8);
         let shared = shared_state();
-        producer.push(PcmSample { value: 0.5, generation: 0 }).unwrap();
+        producer.push(PcmSample { value: 0.5 }).unwrap();
         shared.paused.store(true, Ordering::Release);
 
         let mut output = [0xff; 8];
-        let (written, underflow, _, flushed) =
+        let (written, underflow, _) =
             render_pcm(&mut consumer, &shared, &mut output, 1);
 
         assert_eq!(written, 8);
