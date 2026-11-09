@@ -33,6 +33,7 @@ pub struct Player {
     duration: Arc<Mutex<Option<Duration>>>,
     tracks: Arc<Mutex<TrackList>>,
     volume: Arc<Mutex<f32>>,
+    audio_enabled: AtomicBool,
     current_serial: Arc<Mutex<Serial>>,
     event_sender: Sender<Event>,
     path: String,
@@ -70,6 +71,7 @@ impl Player {
             duration,
             tracks,
             volume,
+            audio_enabled: AtomicBool::new(true),
             current_serial,
             event_sender: event_tx,
             path: path_or_uri.to_owned(),
@@ -89,7 +91,7 @@ impl Player {
 
         #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
         {
-            let initial_volume = self.volume();
+            let initial_volume = if self.audio_enabled.load(Ordering::Acquire) { self.volume() } else { 0.0 };
             let mut start_position = *self.seek_position.lock();
             let mut reset_position = false;
             let mut session = self.audio_session.lock();
@@ -169,7 +171,7 @@ impl Player {
 
         #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
         {
-            let initial_volume = self.volume();
+            let initial_volume = if self.audio_enabled.load(Ordering::Acquire) { self.volume() } else { 0.0 };
             let mut session = self.audio_session.lock();
             if let Some(mut previous) = session.take() {
                 let restart = was_playing && !previous.is_finished();
@@ -220,7 +222,8 @@ impl Player {
         }
         #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
         if let Some(handle) = self.audio_session.lock().as_ref() {
-            handle.set_volume(clamped);
+            let effective = if self.audio_enabled.load(Ordering::Acquire) { clamped } else { 0.0 };
+            handle.set_volume(effective);
         }
     }
 
@@ -233,6 +236,12 @@ impl Player {
     }
 
     pub fn select_audio(&self, id: Option<TrackId>) {
+        self.audio_enabled.store(id.is_some(), Ordering::Release);
+        #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
+        if let Some(handle) = self.audio_session.lock().as_ref() {
+            handle.set_volume(if id.is_some() { self.volume() } else { 0.0 });
+        }
+
         let mut t = self.tracks.lock();
         t.active_audio = id;
         let _ = self.event_sender.send(Event::TracksChanged(t.clone()));
