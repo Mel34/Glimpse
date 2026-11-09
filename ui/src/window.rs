@@ -747,7 +747,8 @@ impl GlimpseWindow {
 
         // Keyboard Shortcuts: Space (play/pause), F (fullscreen), Escape (unfullscreen), etc.
         let key_controller = EventControllerKey::new();
-        key_controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        // Let focused controls handle their native keys before window shortcuts.
+        key_controller.set_propagation_phase(gtk4::PropagationPhase::Bubble);
         let p_keys = Rc::clone(&player);
         let win_keys = window.clone();
         let win_open_k = window.clone();
