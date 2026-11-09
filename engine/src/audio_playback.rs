@@ -7,7 +7,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::audio::{AudioSink, PipeWireAudioSink, PipeWireAudioSinkStats};
 use crate::clock::MasterClock;
@@ -199,8 +199,14 @@ fn run_file(path: &str, clock: Arc<MasterClock>) -> Result<AudioPlaybackReport, 
     // the ring is empty, wait out the reported hardware delay before freezing
     // the clock at the end of the submitted media timeline.
     let final_pts = playback_stats.last_end_pts.unwrap_or(0.0);
+    let drain_deadline = Instant::now() + Duration::from_secs(2);
     while sink.buffered_sample_frames() > 0 {
         update_audio_clock(&sink, &clock, final_pts);
+        if Instant::now() >= drain_deadline {
+            sink.pause();
+            clock.pause();
+            return Err("Timed out draining the final PipeWire audio buffer".to_string());
+        }
         thread::sleep(Duration::from_millis(2));
     }
     let pipewire = sink.stats();
