@@ -321,7 +321,9 @@ impl AudioDecoder {
     #[cfg(feature = "ffmpeg-system")]
     pub fn discard_before_pts(&mut self, pts: f64) {
         if let Some(backend) = self.backend.as_mut() {
-            backend.discard_before_pts = pts.max(0.0);
+            let pts = pts.max(0.0);
+            backend.discard_before_pts = pts;
+            backend.next_pts = pts;
         }
     }
 
