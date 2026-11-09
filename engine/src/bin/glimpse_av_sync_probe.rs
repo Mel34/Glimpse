@@ -85,8 +85,23 @@ fn run(path: &str) -> Result<(), String> {
     // the master clock, so opening the video decoder cannot make the first
     // frames appear artificially late.
     let audio_session = AudioPlaybackSession::new(Arc::clone(&clock));
-    let audio_handle = audio_session.spawn(path.to_owned(), 1.0, event_sender)?;
-    wait_for_audio_clock(&clock, &audio_handle, &events)?;
+    let audio_handle = match audio_session.spawn(path.to_owned(), 1.0, event_sender) {
+        Ok(handle) => handle,
+        Err(error) => {
+            queues.abort();
+            if let Some(worker) = demux_worker.take() {
+                let _ = worker.join();
+            }
+            return Err(error);
+        }
+    };
+    if let Err(error) = wait_for_audio_clock(&clock, &audio_handle, &events) {
+        queues.abort();
+        if let Some(worker) = demux_worker.take() {
+            let _ = worker.join();
+        }
+        return Err(error);
+    }
 
     let mut scheduler = VideoScheduler::new(Arc::clone(&clock));
     let mut displayed_drift_ms = Vec::new();
