@@ -894,16 +894,13 @@ fn watch_player_events(receiver: crossbeam_channel::Receiver<Event>, window: App
             match receiver.try_recv() {
                 Ok(Event::Error(error)) => {
                     tracing::error!(%error, "Playback engine reported an error");
-                    let dialog = gtk4::MessageDialog::builder()
-                        .transient_for(&window)
+                    let dialog = gtk4::AlertDialog::builder()
                         .modal(true)
-                        .message_type(gtk4::MessageType::Error)
-                        .buttons(gtk4::ButtonsType::Close)
-                        .text("Playback error")
-                        .secondary_text(&error)
+                        .message("Playback error")
+                        .detail(&error)
+                        .buttons(["Close"])
                         .build();
-                    dialog.connect_response(|dialog, _| dialog.close());
-                    dialog.present();
+                    dialog.show(Some(&window));
                 }
                 Ok(_) => {}
                 Err(crossbeam_channel::TryRecvError::Empty) => break,
