@@ -134,6 +134,12 @@ pub fn update_volume_indicator(
     vol: f64,
     is_muted: bool,
 ) {
+    // A video-only file keeps the mute indicator fixed; volume shortcuts and
+    // wheel events must not turn it back into an apparently active control.
+    if !volume_button.is_sensitive() {
+        return;
+    }
+
     let clamped = vol.clamp(0.0, 1.0);
     let pct = (clamped * 100.0).round() as i32;
     percent_label.set_text(&format!("{}%", pct));
@@ -158,6 +164,28 @@ pub fn update_volume_indicator(
 
     if (volume_slider.value() - clamped).abs() > 0.01 {
         volume_slider.set_value(clamped);
+    }
+}
+
+/// Reflect whether the loaded media contains an audio stream without changing
+/// the Player's stored volume.
+pub fn set_audio_available(controls: &ControlBarWidgets, has_audio: bool, volume: f64) {
+    controls.volume_button.set_sensitive(has_audio);
+    controls.volume_slider.set_sensitive(has_audio);
+
+    if has_audio {
+        update_volume_indicator(
+            &controls.volume_icon,
+            &controls.volume_button,
+            &controls.volume_slider,
+            &controls.volume_percent_label,
+            volume,
+            volume <= 0.001,
+        );
+    } else {
+        controls.volume_icon.set_icon_name(Some("audio-volume-muted-symbolic"));
+        controls.volume_button.set_tooltip_text(Some("No audio track"));
+        controls.volume_percent_label.set_text("No audio");
     }
 }
 
