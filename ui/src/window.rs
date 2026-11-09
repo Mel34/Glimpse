@@ -634,20 +634,17 @@ impl GlimpseWindow {
         drop_target.connect_drop(move |_, val, _, _| {
             drop_overlay_drop.set_visible(false);
             if let Ok(file) = val.get::<gio::File>() {
-                if let Some(path) = file.path() {
-                    if let Some(p_str) = path.to_str() {
-                        load_and_play_file(
-                            p_str,
-                            &win_for_drop,
-                            &stack_for_drop,
-                            &player_for_drop,
-                            &video_for_drop,
-                            &picture_for_drop,
-                            &bottom_for_drop,
-                        );
-                        return true;
-                    }
-                }
+                let uri = file.uri();
+                load_and_play_file(
+                    uri.as_str(),
+                    &win_for_drop,
+                    &stack_for_drop,
+                    &player_for_drop,
+                    &video_for_drop,
+                    &picture_for_drop,
+                    &bottom_for_drop,
+                );
+                return true;
             }
             false
         });
@@ -927,10 +924,10 @@ impl GlimpseWindow {
         }
     }
 
-    /// Open a video file, start hardware playback, populate tracks and timeline.
-    pub fn open_file(&self, path: &str) {
+    /// Open a media URI, start playback, and populate tracks and timeline.
+    pub fn open_file(&self, uri: &str) {
         load_and_play_file(
-            path,
+            uri,
             &self.window,
             &self.stack,
             &self.player,
@@ -992,19 +989,16 @@ fn trigger_open_file_dialog(
 
     file_dialog.open(Some(window), gio::Cancellable::NONE, move |result| {
         if let Ok(file) = result {
-            if let Some(path) = file.path() {
-                if let Some(p_str) = path.to_str() {
-                    load_and_play_file(
-                        p_str,
-                        &win_cb,
-                        &stack_cb,
-                        &player_cb,
-                        &video_cb,
-                        &pic_cb,
-                        &bottom_cb,
-                    );
-                }
-            }
+            let uri = file.uri();
+            load_and_play_file(
+                uri.as_str(),
+                &win_cb,
+                &stack_cb,
+                &player_cb,
+                &video_cb,
+                &pic_cb,
+                &bottom_cb,
+            );
         }
     });
 }
@@ -1049,13 +1043,20 @@ fn load_and_play_file(
     picture: &Picture,
     bottom_controls: &ControlBarWidgets,
 ) {
-    let file_name = std::path::Path::new(path)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(path);
+    let file_name = gio::File::for_uri(path)
+        .basename()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_owned());
+    let source = match media_source_from_uri(path) {
+        Ok(source) => source,
+        Err(error) => {
+            eprintln!("Could not open media: {}", error);
+            return;
+        }
+    };
 
     window.set_title(Some(&format!("Glimpse - {}", file_name)));
-    bottom_controls.title_label.set_text(file_name);
+    bottom_controls.title_label.set_text(&file_name);
 
     // Retire both playback paths before attempting to open the replacement.
     video_playback.borrow_mut().take();
@@ -1074,7 +1075,7 @@ fn load_and_play_file(
     );
 
     // Initialize the playback engine and retain its event stream.
-    match Player::open(path) {
+    match Player::open(&source) {
         Ok((p, event_rx)) => {
             let duration = p.duration();
             watch_player_events(event_rx, window.clone());
@@ -1100,7 +1101,7 @@ fn load_and_play_file(
                 );
 
                 *video_playback.borrow_mut() = crate::video_texture::present_continuous_frames(
-                    path,
+                    &source,
                     tracks.clone(),
                     picture,
                     current_p.master_clock(),
@@ -1166,6 +1167,43 @@ fn load_and_play_file(
             bottom_controls.seekbar.set_value(0.0);
             stack.set_visible_child_name("loader");
         }
+    }
+}
+
+/// Convert local GFile URIs to decoded filesystem paths before passing them to
+/// FFmpeg. Keep non-local URIs (for example HTTP/HTTPS) unchanged.
+fn media_source_from_uri(uri: &str) -> Result<String, String> {
+    let file = gio::File::for_uri(uri);
+    match file.path() {
+        Some(path) => path.into_os_string().into_string().map_err(|_| {
+            "Local file paths containing non-UTF-8 bytes are not supported by the current FFmpeg input interface".to_string()
+        }),
+        None => Ok(uri.to_owned()),
+    }
+}
+
+#[cfg(test)]
+mod media_source_tests {
+    use super::*;
+
+    #[test]
+    fn decodes_local_file_uri_with_spaces_and_unicode() {
+        let path = std::path::Path::new(
+            "/tmp/Guns Badassery - Is this useful？ [1911318219983384576].mp4",
+        );
+        let uri = gio::File::for_path(path).uri();
+
+        assert_eq!(
+            media_source_from_uri(uri.as_str()).unwrap(),
+            path.to_str().unwrap(),
+        );
+    }
+
+    #[test]
+    fn preserves_remote_media_uri() {
+        let uri = "https://samplelib.com/mp4/sample-5s.mp4";
+
+        assert_eq!(media_source_from_uri(uri).unwrap(), uri);
     }
 }
 
