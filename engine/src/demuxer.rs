@@ -211,7 +211,7 @@ pub fn probe_media(path: &str) -> Result<MediaProbe, String> {
             "-show_format",
             "-show_streams",
             "-show_entries",
-            "format=duration:stream=index,codec_type,codec_name,width,height,sample_rate,channels:stream_tags=language,title:stream_disposition=default",
+            "format=duration:stream=index,codec_type,codec_name,width,height,sample_rate,channels:stream_tags=language,title:stream_disposition=default,attached_pic",
             "-of", "json",
         ])
         .arg(path)
@@ -270,11 +270,21 @@ fn parse_ffprobe_output(json: &str) -> Result<MediaProbe, String> {
             .ok_or_else(|| "ffprobe returned a stream without a valid index".to_string())?;
 
         let tags = stream.get("tags");
-        let disposition_default = stream
-            .get("disposition")
+        let disposition = stream.get("disposition");
+        let disposition_default = disposition
             .and_then(|disposition| disposition.get("default"))
             .and_then(Value::as_u64)
             .unwrap_or(0) != 0;
+        let is_attached_picture = disposition
+            .and_then(|disposition| disposition.get("attached_pic"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0) != 0;
+
+        // Album art is encoded as a video stream by some containers, but it
+        // must not participate in playable video-track selection.
+        if stream_type == TrackType::Video && is_attached_picture {
+            continue;
+        }
 
         let track = TrackInfo {
             id: TrackId(index),
@@ -313,6 +323,10 @@ fn parse_ffprobe_output(json: &str) -> Result<MediaProbe, String> {
             TrackType::Subtitle => tracks.subtitle_tracks.push(track),
         }
     }
+
+    // Prefer the container's declared default video stream, falling back
+    // to the first playable stream when no video default is marked.
+    tracks.video_tracks.sort_by_key(|track| !track.is_default);
 
     tracks.active_audio = tracks
         .audio_tracks
@@ -378,6 +392,36 @@ mod tests {
         assert_eq!(probe.tracks.active_audio, Some(TrackId(2)));
         assert_eq!(probe.tracks.subtitle_tracks.len(), 1);
         assert_eq!(probe.tracks.active_subtitle, None);
+    }
+
+    #[test]
+    fn excludes_attached_pictures_and_prefers_default_video_track() {
+        let json = r#"{
+            "format": {"duration": "12.0"},
+            "streams": [
+                {
+                    "index": 0, "codec_type": "video", "codec_name": "mjpeg",
+                    "width": 600, "height": 600,
+                    "disposition": {"default": 0, "attached_pic": 1}
+                },
+                {
+                    "index": 1, "codec_type": "video", "codec_name": "h264",
+                    "width": 1920, "height": 1080,
+                    "disposition": {"default": 0, "attached_pic": 0}
+                },
+                {
+                    "index": 2, "codec_type": "video", "codec_name": "hevc",
+                    "width": 1280, "height": 720,
+                    "disposition": {"default": 1, "attached_pic": 0}
+                }
+            ]
+        }"#;
+
+        let probe = parse_ffprobe_output(json).expect("valid ffprobe JSON");
+        assert_eq!(probe.tracks.video_tracks.len(), 2);
+        assert_eq!(probe.tracks.video_tracks[0].id, TrackId(2));
+        assert_eq!(probe.tracks.video_tracks[1].id, TrackId(1));
+        assert_eq!(probe.tracks.video_tracks[0].width, Some(1280));
     }
 
     #[test]
