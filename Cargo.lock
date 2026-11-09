@@ -448,7 +448,7 @@ dependencies = [
 
 [[package]]
 name = "glimpse"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "crossbeam-channel",
  "gdk4",
@@ -463,7 +463,7 @@ dependencies = [
 
 [[package]]
 name = "glimpse-engine"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "crossbeam-channel",
  "ffmpeg-the-third",

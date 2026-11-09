@@ -312,7 +312,7 @@ Successful decode and DRM PRIME mapping of a format do not by themselves
 imply that EGL import or shader rendering supports it.
 
 
-## Synchronization check
+## Stage 3 synchronization check
 
 The renderer inserts an OpenGL 3.2 sync object immediately after each frame's draw call, flushes the command stream, and waits for that fence to signal before framebuffer readback and before the EGL images, GL textures, and mapped DRM frame are released. Fence creation or wait failures fail the frame.
 
@@ -321,7 +321,7 @@ To exercise repeated frame handoff, request a bounded sequence:
 ```bash
 /tmp/glimpse-stage2-inspect \
     "$HOME/Videos/Clips/Gungun.mp4" \
-    /tmp/glimpse-stage4-frame.rgba \
+    /tmp/glimpse-stage3-frame.rgba \
     0 \
     30
 ```
