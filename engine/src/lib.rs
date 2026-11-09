@@ -89,13 +89,14 @@ impl Player {
         {
             let initial_volume = self.volume();
             let mut start_position = *self.seek_position.lock();
+            let mut reset_position = false;
             let mut session = self.audio_session.lock();
             if session.as_ref().is_some_and(AudioPlaybackHandle::is_finished) {
                 let reached_eof = session.as_ref().is_some_and(AudioPlaybackHandle::reached_end_of_stream);
                 session.take();
                 if reached_eof {
                     start_position = Duration::ZERO;
-                    *self.seek_position.lock() = Duration::ZERO;
+                    reset_position = true;
                     self.clock.reset(0.0);
                 }
             }
@@ -118,6 +119,10 @@ impl Player {
                 }
             } else if let Some(handle) = session.as_ref() {
                 handle.resume();
+            }
+            drop(session);
+            if reset_position {
+                *self.seek_position.lock() = Duration::ZERO;
             }
         }
 
