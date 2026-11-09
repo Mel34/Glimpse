@@ -126,4 +126,28 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(10));
         assert!(clock.get_pts() > 2.0);
     }
+
+    #[test]
+    fn audio_clock_subtracts_device_latency_and_clamps_at_zero() {
+        let clock = MasterClock::new();
+        clock.set_audio_pts(1.0, 0.250);
+        assert_eq!(clock.get_pts(), 0.750);
+
+        clock.set_audio_pts(0.100, 0.250);
+        assert_eq!(clock.get_pts(), 0.0);
+    }
+
+    #[test]
+    fn pause_freezes_the_audio_master_clock() {
+        let clock = MasterClock::new();
+        clock.set_audio_pts(4.0, 0.0);
+        clock.resume();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        clock.pause();
+        let paused_pts = clock.get_pts();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        assert_eq!(clock.get_pts(), paused_pts);
+    }
 }

@@ -176,4 +176,52 @@ mod tests {
         assert!(producer.push(1, Serial(0), 1).is_err());
         assert!(queue.pop_timeout(Duration::from_millis(1)).is_none());
     }
+
+    #[test]
+    fn flush_discards_items_and_resets_byte_accounting() {
+        let queue = BoundedQueue::new(4, 16);
+        queue.push("old", Serial(0), 12).unwrap();
+
+        queue.flush(Serial(1));
+
+        assert_eq!(queue.stats(), (0, 0, Serial(1)));
+        queue.push("new", Serial(1), 5).unwrap();
+        assert_eq!(queue.stats(), (1, 5, Serial(1)));
+        assert_eq!(queue.pop_timeout(Duration::ZERO).unwrap().item, "new");
+        assert_eq!(queue.stats().1, 0);
+    }
+
+    #[test]
+    fn abort_wakes_a_producer_blocked_by_queue_capacity() {
+        let queue = BoundedQueue::new(1, 8);
+        queue.push("occupied", Serial(0), 1).unwrap();
+
+        let producer = queue.clone();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            producer.push("blocked", Serial(0), 1)
+        });
+
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        queue.abort();
+
+        assert!(worker.join().unwrap().is_err());
+    }
+
+    #[test]
+    fn abort_wakes_a_consumer_waiting_for_items() {
+        let queue = BoundedQueue::<u8>::new(1, 8);
+        let consumer = queue.clone();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            consumer.pop_timeout(Duration::from_secs(5))
+        });
+
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        queue.abort();
+
+        assert!(worker.join().unwrap().is_none());
+    }
 }
