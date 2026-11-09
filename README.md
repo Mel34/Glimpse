@@ -12,7 +12,7 @@ Glimpse uses its in-process `glimpse-engine` for playback; GTK `MediaFile` is no
 
 - FFmpeg/libavformat demuxes media and routes timestamped packets into bounded audio, video, and subtitle queues.
 - FFmpeg/libavcodec decodes video in a worker thread. Decoded frames are presented as GTK memory textures and scheduled against the audio master clock.
-- Audio is decoded and sent directly to PipeWire.
+- Audio is decoded and sent directly to PipeWire; video-only files use the monotonic playback clock.
 - Seeking restarts the video demux/decode run at the target while the audio engine seeks its master timeline. Paused seeks remain paused.
 - Audio track selection is supported; subtitle playback is not available yet.
 
