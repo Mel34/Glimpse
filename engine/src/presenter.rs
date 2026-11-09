@@ -74,3 +74,35 @@ impl VideoScheduler {
 pub trait VideoPresenter: Send + Sync {
     fn present_frame(&self, frame: VideoFrameData);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drops_frames_beyond_the_maximum_lateness_even_with_long_frame_duration() {
+        let clock = Arc::new(MasterClock::new());
+        clock.set_audio_pts(1.0, 0.0);
+        clock.resume();
+        let mut scheduler = VideoScheduler::new(clock);
+
+        assert_eq!(
+            scheduler.schedule(0.95, 1.0),
+            ScheduleAction::DropFrame
+        );
+        assert_eq!(scheduler.total_dropped, 1);
+    }
+
+    #[test]
+    fn waits_for_frames_more_than_five_milliseconds_early() {
+        let clock = Arc::new(MasterClock::new());
+        clock.set_audio_pts(1.0, 0.0);
+        clock.resume();
+        let mut scheduler = VideoScheduler::new(clock);
+
+        assert!(matches!(
+            scheduler.schedule(1.02, 0.033),
+            ScheduleAction::Wait(delay) if delay > Duration::from_millis(10)
+        ));
+    }
+}
