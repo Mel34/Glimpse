@@ -29,6 +29,7 @@ fn main() -> ExitCode {
             if let (Some(start), Some(end)) = (report.first_pts, report.last_end_pts) {
                 println!("Audio timeline: {:.3}s to {:.3}s", start, end);
             }
+            println!("Audio master clock at completion: {:.3}s", report.master_clock_pts);
             println!(
                 "Demuxed {} audio packets ({} bytes across all streams)",
                 report.demux.audio_packets,
