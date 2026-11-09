@@ -72,10 +72,6 @@ impl VideoScheduler {
     }
 }
 
-pub trait VideoPresenter: Send + Sync {
-    fn present_frame(&self, frame: VideoFrameData);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

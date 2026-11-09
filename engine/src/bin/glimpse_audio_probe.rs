@@ -54,11 +54,10 @@ fn main() {
     thread::sleep(Duration::from_millis(250));
     let stats = sink.stats();
     println!(
-        "PipeWire output stats: connected={}, dropped={} samples, underflow={} samples, flushed={} samples",
+        "PipeWire output stats: connected={}, dropped={} samples, underflow={} samples",
         stats.connected,
         stats.dropped_samples,
-        stats.underflow_samples,
-        stats.flushed_samples
+        stats.underflow_samples
     );
     println!("If you heard the tone, native PipeWire PCM output is working.");
 }
