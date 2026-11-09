@@ -956,18 +956,12 @@ fn load_and_play_file(
                 }
 
                 let p_audio = Rc::clone(player);
-                let p_sub = Rc::clone(player);
 
                 let popover = create_track_popover(
                     &tracks,
                     move |aid| {
                         if let Some(ref p) = *p_audio.borrow() {
                             p.select_audio(aid);
-                        }
-                    },
-                    move |sid| {
-                        if let Some(ref p) = *p_sub.borrow() {
-                            p.select_subtitle(sid);
                         }
                     },
                 );
