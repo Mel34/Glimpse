@@ -165,8 +165,8 @@ impl Player {
                 handle.stop();
             }
         }
-        self.clock.reset(0.0);
         self.clock.pause();
+        self.clock.reset(0.0);
         *state = PlayerState::Paused;
         let _ = self.event_sender.send(Event::StateChanged(PlayerState::Paused));
     }
