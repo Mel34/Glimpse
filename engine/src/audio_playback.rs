@@ -32,6 +32,7 @@ pub struct AudioPlaybackReport {
     pub sample_frames: u64,
     pub first_pts: Option<f64>,
     pub last_end_pts: Option<f64>,
+    pub master_clock_pts: f64,
 }
 
 /// Owns the audio master clock for a synchronous playback session.
@@ -194,10 +195,20 @@ fn run_file(path: &str, clock: Arc<MasterClock>) -> Result<AudioPlaybackReport, 
     playback_stats.last_end_pts = worker_stats.last_end_pts.or(playback_stats.last_end_pts);
     let demux = decode_result?;
 
-    // Capture device stats before the final tail drains, then allow the device
-    // to consume the final queued samples before stopping the clock.
-    thread::sleep(Duration::from_millis(600));
+    // Keep the clock tied to the device while the final PCM ring drains. Once
+    // the ring is empty, wait out the reported hardware delay before freezing
+    // the clock at the end of the submitted media timeline.
+    let final_pts = playback_stats.last_end_pts.unwrap_or(0.0);
+    while sink.buffered_sample_frames() > 0 {
+        update_audio_clock(&sink, &clock, final_pts);
+        thread::sleep(Duration::from_millis(2));
+    }
     let pipewire = sink.stats();
+    let device_tail = Duration::from_secs_f64(
+        (pipewire.device_delay_ms / 1_000.0).clamp(0.0, 0.5)
+    );
+    thread::sleep(device_tail + Duration::from_millis(10));
+    clock.set_audio_pts(final_pts, 0.0);
     sink.pause();
     clock.pause();
 
@@ -212,6 +223,7 @@ fn run_file(path: &str, clock: Arc<MasterClock>) -> Result<AudioPlaybackReport, 
         sample_frames: playback_stats.sample_frames,
         first_pts: playback_stats.first_pts,
         last_end_pts: playback_stats.last_end_pts,
+        master_clock_pts: clock.get_pts(),
     })
 }
 
