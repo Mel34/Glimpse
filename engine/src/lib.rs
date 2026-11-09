@@ -82,6 +82,7 @@ impl Player {
         let mut state = self.state.lock();
         *state = PlayerState::Playing;
         self.clock.resume();
+        let _ = self.event_sender.send(Event::StateChanged(PlayerState::Playing));
 
         #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
         {
@@ -105,7 +106,6 @@ impl Player {
             }
         }
 
-        let _ = self.event_sender.send(Event::StateChanged(PlayerState::Playing));
     }
 
     pub fn pause(&self) {
@@ -167,19 +167,18 @@ impl Player {
     }
 
     pub fn state(&self) -> PlayerState {
+        let mut state = self.state.lock();
         #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
         if let Some(handle) = self.audio_session.lock().as_ref() {
             if handle.is_finished() {
-                let completed_state = if handle.reached_end_of_stream() {
+                *state = if handle.reached_end_of_stream() {
                     PlayerState::Ended
                 } else {
                     PlayerState::Paused
                 };
-                *self.state.lock() = completed_state;
-                return completed_state;
             }
         }
-        *self.state.lock()
+        *state
     }
 }
 
