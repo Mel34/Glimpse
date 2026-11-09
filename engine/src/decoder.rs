@@ -469,13 +469,13 @@ impl AudioDecoder {
 
         let stereo = converted.plane::<(f32, f32)>(0);
         let original_duration = stereo.len() as f64 / AUDIO_OUTPUT_RATE as f64;
-        let skip_frames = if pts < backend.discard_before_pts {
+        let skip_frames = (if pts < backend.discard_before_pts {
             ((backend.discard_before_pts - pts) * AUDIO_OUTPUT_RATE as f64)
                 .ceil()
                 .max(0.0) as usize
         } else {
             0
-        }
+        })
         .min(stereo.len());
 
         let frame_pts = pts + skip_frames as f64 / AUDIO_OUTPUT_RATE as f64;
