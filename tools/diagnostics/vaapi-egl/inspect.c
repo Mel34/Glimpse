@@ -99,8 +99,7 @@ static EGLDisplay get_egl_display_for_render_node(const char *render_node)
     if (!extensions ||
         !strstr(extensions, "EGL_EXT_device_enumeration") ||
         !strstr(extensions, "EGL_EXT_device_query") ||
-        !strstr(extensions, "EGL_EXT_platform_device") ||
-        !strstr(extensions, "EGL_EXT_device_drm_render_node")) {
+        !strstr(extensions, "EGL_EXT_platform_device")) {
         fprintf(stderr,
                 "EGL device/render-node extensions are required to match "
                 "EGL with VAAPI device %s\n", render_node);
@@ -142,6 +141,12 @@ static EGLDisplay get_egl_display_for_render_node(const char *render_node)
 
     EGLDisplay display = EGL_NO_DISPLAY;
     for (EGLint i = 0; i < actual_count; i++) {
+        const char *device_extensions = query_device_string(
+            devices[i], EGL_EXTENSIONS);
+        if (!device_extensions ||
+            !strstr(device_extensions, "EGL_EXT_device_drm_render_node"))
+            continue;
+
         const char *candidate = query_device_string(
             devices[i], EGL_DRM_RENDER_NODE_FILE_EXT);
         if (candidate && strcmp(candidate, render_node) == 0) {
