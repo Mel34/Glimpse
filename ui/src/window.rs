@@ -297,8 +297,7 @@ impl GlimpseWindow {
 
         window.set_content(Some(&root_overlay));
 
-        // =====================================================================
-        // GESTURES & INTERACTION RULES (Rules 1 - 5)
+        // =====================================================================        // GESTURES & INTERACTION RULES (Rules 1 - 5)
         // =====================================================================
 
         // Rule 1 & Rule 2: Single-click = play/pause, double-click = fullscreen
@@ -503,21 +502,13 @@ impl GlimpseWindow {
         motion.connect_motion(move |_, _, _| {
             reveal_and_schedule_controls(&top_motion, &bottom_motion, &timer_motion);
         });
-        window.add_controller(motion);
+        player_overlay.add_controller(motion);
 
         let top_fullscreen = top_controls.clone();
         let bottom_fullscreen = bottom_controls.container.clone();
         let timer_fullscreen = Rc::clone(&hide_timer);
-        window.connect_fullscreened_notify(move |win| {
-            if win.is_fullscreen() {
-                reveal_and_schedule_controls(&top_fullscreen, &bottom_fullscreen, &timer_fullscreen);
-            } else {
-                if let Some(source) = timer_fullscreen.borrow_mut().take() { source.remove(); }
-                top_fullscreen.set_opacity(1.0);
-                bottom_fullscreen.set_opacity(1.0);
-                top_fullscreen.set_can_target(true);
-                bottom_fullscreen.set_can_target(true);
-            }
+        window.connect_fullscreened_notify(move |_| {
+            reveal_and_schedule_controls(&top_fullscreen, &bottom_fullscreen, &timer_fullscreen);
         });
 
         // =====================================================================
@@ -597,8 +588,7 @@ impl GlimpseWindow {
         loader_menu_btn.set_popover(Some(&loader_popover));
 
         let player_popover = create_main_menu_popover(
-            &window,
-            &stack,
+            &window,            &stack,
             &player,
             &video_playback,
             &picture,
@@ -897,8 +887,7 @@ fn load_and_play_file(
 
     picture.set_paintable(gdk4::Paintable::NONE);
 
-    let p_seek = Rc::clone(player);
-    let v_seek = Rc::clone(video_playback);
+    let p_seek = Rc::clone(player);    let v_seek = Rc::clone(video_playback);
     bottom_controls.seekbar.connect_change_value(move |_, _, val| {
         let target = Duration::from_secs_f64(val.max(0.0));
         if let Some(ref p) = *p_seek.borrow() { p.seek(target); }
