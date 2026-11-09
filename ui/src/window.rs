@@ -6,7 +6,7 @@ use adw::{Application, ApplicationWindow};
 use gdk4::DragAction;
 use gio::SimpleAction;
 use gtk4::{
-    Align, Box as GtkBox, Button, DropTarget, EventControllerKey, EventControllerMotion, EventControllerLegacy,
+    Align, Box as GtkBox, Button, DropTarget, EventControllerKey, EventControllerMotion,
     FileDialog, FileFilter, GestureClick, Image, Label, MenuButton,
     Orientation, Overlay, Picture, Separator, Settings, Stack, StackTransitionType, WindowHandle,
 };
