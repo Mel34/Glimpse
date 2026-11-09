@@ -2,6 +2,7 @@
 
 use glimpse_engine::{MasterClock, TrackList};
 use gtk4::prelude::WidgetExtManual;
+use std::cell::RefCell;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,6 +17,13 @@ struct PlaybackRun {
     queues: PacketQueues,
     cancelled: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
+}
+
+struct FrameSchedulerState {
+    pending: Option<VideoFrameData>,
+    present_first_frame: bool,
+    displayed_frames: u64,
+    dropped_frames: u64,
 }
 
 pub struct VideoPlaybackHandle {
@@ -218,47 +226,57 @@ fn schedule_frames(
     clock: Arc<MasterClock>,
     cancelled: Arc<AtomicBool>,
 ) {
-    let mut pending: Option<VideoFrameData> = None;
-    // A fresh scheduler must show its first decoded frame even when the master
-    // clock is paused at the seek target and cannot advance to that frame's PTS.
-    let mut present_first_frame = true;
-    let mut displayed_frames = 0u64;
-    let mut dropped_frames = 0u64;
+    let state = std::cell::RefCell::new(FrameSchedulerState {
+        pending: None,
+        present_first_frame: true,
+        displayed_frames: 0,
+        dropped_frames: 0,
+    });
+    // A weak reference avoids a Picture -> tick callback -> Picture cycle.
+    let picture = picture.downgrade();
 
-    // Let GTK schedule presentation work on the widget's frame clock rather
-    // than polling independently of the display refresh cycle.
+    // GTK tick callbacks are Fn, not FnMut, so keep per-run scheduler state
+    // behind RefCell and update the Picture through the callback's weak ref.
     picture.add_tick_callback(move |_, _frame_clock| {
         if cancelled.load(Ordering::Acquire) {
             return glib::ControlFlow::Break;
         }
+        let Some(picture) = picture.upgrade() else {
+            return glib::ControlFlow::Break;
+        };
+        let mut state = state.borrow_mut();
         loop {
-            if pending.is_none() {
+            if state.pending.is_none() {
                 match receiver.try_recv() {
-                    Ok(Ok(frame)) => pending = Some(frame),
+                    Ok(Ok(frame)) => state.pending = Some(frame),
                     Ok(Err(error)) => {
                         tracing::error!(%error, "Engine video decoder failed");
                         return glib::ControlFlow::Break;
                     }
                     Err(TryRecvError::Empty) => return glib::ControlFlow::Continue,
                     Err(TryRecvError::Disconnected) => {
-                        tracing::info!(displayed_frames, dropped_frames, "Engine video stream finished");
+                        tracing::info!(
+                            displayed_frames = state.displayed_frames,
+                            dropped_frames = state.dropped_frames,
+                            "Engine video stream finished"
+                        );
                         return glib::ControlFlow::Break;
                     }
                 }
             }
-            let Some(frame) = pending.as_ref() else {
+            let Some(frame) = state.pending.as_ref() else {
                 return glib::ControlFlow::Continue;
             };
             let master_pts = clock.get_pts();
             let lateness = master_pts - frame.pts;
-            if !present_first_frame && lateness > 0.040 {
-                pending = None;
-                dropped_frames += 1;
+            if !state.present_first_frame && lateness > 0.040 {
+                state.pending = None;
+                state.dropped_frames += 1;
                 continue;
             }
-            if present_first_frame || frame.pts <= master_pts + 0.005 {
-                let frame = pending.take().expect("pending frame was checked");
-                present_first_frame = false;
+            if state.present_first_frame || frame.pts <= master_pts + 0.005 {
+                let frame = state.pending.take().expect("pending frame was checked");
+                state.present_first_frame = false;
                 // The decoded frame normally has a single owner here. Transfer
                 // its pixel allocation into GBytes instead of cloning every frame.
                 let pixels = Arc::try_unwrap(frame.rgba_data)
@@ -272,7 +290,7 @@ fn schedule_frames(
                     frame.stride,
                 );
                 picture.set_paintable(Some(&texture));
-                displayed_frames += 1;
+                state.displayed_frames += 1;
             }
             return glib::ControlFlow::Continue;
         }
