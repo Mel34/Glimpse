@@ -65,6 +65,16 @@ fn run(path: &str) -> Result<(), String> {
     }
     println!("Resume: clock advanced to {resumed_at:?}");
 
+    player.seek(Duration::from_secs(10));
+    thread::sleep(Duration::from_millis(700));
+    let seek_position = player.position();
+    if seek_position < Duration::from_millis(10_050)
+        || seek_position > Duration::from_secs(13)
+    {
+        return Err(format!("Seek did not restart near 10s: {seek_position:?}"));
+    }
+    println!("Seek: resumed from {seek_position:?}");
+
     let timeout = player
         .duration()
         .unwrap_or(Duration::from_secs(600))
