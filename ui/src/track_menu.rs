@@ -3,6 +3,7 @@
 use gtk4::prelude::*;
 use gtk4::{Box as GtkBox, CheckButton, Label, Orientation, Popover};
 use glimpse_engine::{TrackId, TrackList};
+use crate::interaction::attach_popover_scroll_guard;
 
 pub fn create_track_popover<FAudio>(
     tracks: &TrackList,
@@ -68,5 +69,6 @@ where
     container.append(&subtitle_status);
 
     popover.set_child(Some(&container));
+    attach_popover_scroll_guard(&popover);
     popover
 }
