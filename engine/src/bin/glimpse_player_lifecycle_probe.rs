@@ -54,13 +54,19 @@ fn run(path: &str) -> Result<(), String> {
     }
     println!("Pause: clock held at {paused_after:?}");
 
+    player.seek(Duration::from_secs(5));
+    if player.position().abs_diff(Duration::from_secs(5)) > Duration::from_millis(10) {
+        return Err(format!("Paused seek did not set the requested position: {:?}", player.position()));
+    }
+    println!("Paused seek: positioned at {:?}", player.position());
+
     player.set_volume(0.6);
     player.play();
     thread::sleep(Duration::from_millis(500));
     let resumed_at = player.position();
-    if resumed_at <= paused_after + Duration::from_millis(50) {
+    if resumed_at <= Duration::from_millis(5_050) {
         return Err(format!(
-            "Playback clock did not resume: paused={paused_after:?}, resumed={resumed_at:?}"
+            "Playback did not resume from paused seek: resumed={resumed_at:?}"
         ));
     }
     println!("Resume: clock advanced to {resumed_at:?}");
