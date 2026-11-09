@@ -4,7 +4,7 @@ use std::env;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use glimpse_engine::{audio_playback, MasterClock};
+use glimpse_engine::{audio_playback::AudioPlaybackSession, MasterClock};
 
 fn main() -> ExitCode {
     let mut args = env::args().skip(1);
@@ -17,7 +17,8 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
 
-    match audio_playback::play_file(&path, Arc::new(MasterClock::new())) {
+    let session = AudioPlaybackSession::new(Arc::new(MasterClock::new()));
+    match session.play_file(&path) {
         Ok(report) => {
             println!(
                 "PipeWire playback: {} PCM blocks, {} sample frames, {:.3}s decoded",
