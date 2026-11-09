@@ -28,6 +28,7 @@ pub struct ControlBarWidgets {
     pub seekbar_dragging: Rc<Cell<bool>>,
     pub elapsed_label: Label,
     pub duration_label: Label,
+    pub open_popovers: Rc<Cell<usize>>,
 }
 
 pub fn create_floating_bottom_bar() -> ControlBarWidgets {
@@ -49,6 +50,8 @@ pub fn create_floating_bottom_bar() -> ControlBarWidgets {
     top_row.append(&title_label);
 
     let last_nonzero_volume = Rc::new(Cell::new(1.0));
+
+    let open_popovers = Rc::new(Cell::new(0));
 
     let volume_button = MenuButton::new();
     let volume_icon = Image::from_icon_name("audio-volume-high-symbolic");
@@ -82,6 +85,7 @@ pub fn create_floating_bottom_bar() -> ControlBarWidgets {
     vol_vbox.append(&volume_slider);
 
     volume_popover.set_child(Some(&vol_vbox));
+    track_popover_visibility(&volume_popover, &open_popovers);
     attach_popover_scroll_guard(&volume_popover);
     volume_button.set_popover(Some(&volume_popover));
     top_row.append(&volume_button);
@@ -134,7 +138,24 @@ pub fn create_floating_bottom_bar() -> ControlBarWidgets {
         seekbar_dragging,
         elapsed_label,
         duration_label,
+        open_popovers,
     }
+}
+
+
+/// Track visible playback popovers so the OSD does not auto-hide behind an open menu.
+pub fn track_popover_visibility(popover: &gtk4::Popover, open_popovers: &Rc<Cell<usize>>) {
+    let was_visible = Rc::new(Cell::new(popover.is_visible()));
+    let count = Rc::clone(open_popovers);
+    popover.connect_notify_local(Some("visible"), move |popover, _| {
+        let visible = popover.is_visible();
+        let previous = was_visible.replace(visible);
+        if visible && !previous {
+            count.set(count.get() + 1);
+        } else if !visible && previous {
+            count.set(count.get().saturating_sub(1));
+        }
+    });
 }
 
 /// Remember the most recent audible level without replacing it with zero while muted.
