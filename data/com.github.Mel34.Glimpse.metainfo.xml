@@ -17,4 +17,11 @@
   <provides>
     <binary>glimpse</binary>
   </provides>
+  <releases>
+    <release version="0.2.0" date="2026-11-09">
+      <description>
+        <p>Introduces the in-process FFmpeg playback engine with native PipeWire audio output, audio-track selection, and improved playback synchronization.</p>
+      </description>
+    </release>
+  </releases>
 </component>
