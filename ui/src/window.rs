@@ -790,7 +790,7 @@ impl GlimpseWindow {
                     let v = if cfg!(feature = "experimental-engine") {
                         if let Some(ref p) = *p_keys.borrow() { (p.volume() + 0.05).min(1.0) } else { 1.0 }
                     } else {
-                        m_keys.borrow().as_ref().map(|m| (m.volume() + 0.05).min(1.0)).unwrap_or(1.0)
+                        m_keys.borrow().as_ref().map(|m| (m.volume() + 0.05).min(1.0) as f32).unwrap_or(1.0_f32)
                     };
                     if let Some(ref m) = *m_keys.borrow() { m.set_volume(v); m.set_muted(v <= 0.001); }
                     if let Some(ref p) = *p_keys.borrow() { p.set_volume(v as f32); }
@@ -806,7 +806,7 @@ impl GlimpseWindow {
                     let v = if cfg!(feature = "experimental-engine") {
                         if let Some(ref p) = *p_keys.borrow() { (p.volume() - 0.05).max(0.0) } else { 1.0 }
                     } else {
-                        m_keys.borrow().as_ref().map(|m| (m.volume() - 0.05).max(0.0)).unwrap_or(1.0)
+                        m_keys.borrow().as_ref().map(|m| (m.volume() - 0.05).max(0.0) as f32).unwrap_or(1.0_f32)
                     };
                     if let Some(ref m) = *m_keys.borrow() { m.set_volume(v); m.set_muted(v <= 0.001); }
                     if let Some(ref p) = *p_keys.borrow() { p.set_volume(v as f32); }
@@ -1018,6 +1018,7 @@ fn load_and_play_file(
     // GTK-owned timeline is used only by the legacy playback path.
     #[cfg(not(feature = "experimental-engine"))]
     let seekbar_pos = bottom_controls.seekbar.clone();
+    #[cfg(not(feature = "experimental-engine"))]
     let el_label = bottom_controls.elapsed_label.clone();
     #[cfg(not(feature = "experimental-engine"))]
     media.connect_timestamp_notify(move |m| {
