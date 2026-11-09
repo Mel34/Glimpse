@@ -185,6 +185,9 @@ impl Player {
         let clamped = clamp_seek_target(to, *self.duration.lock());
         let was_playing = *state == PlayerState::Playing;
         *self.seek_position.lock() = clamped;
+        // Freeze wall-clock extrapolation while the old audio worker is
+        // stopped and the replacement session probes and prebuffers.
+        self.clock.pause();
         self.clock.reset(clamped.as_secs_f64());
 
         #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
@@ -222,10 +225,20 @@ impl Player {
             }
         }
 
+        #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
+        if was_playing && self.tracks.lock().audio_tracks.is_empty() {
+            // Video-only playback has no audio session to resume the clock.
+            self.clock.resume();
+        }
+
         #[cfg(not(all(feature = "audio-pipewire", feature = "ffmpeg-system")))]
-        if *state == PlayerState::Ended {
-            *state = PlayerState::Paused;
-            let _ = self.event_sender.send(Event::StateChanged(PlayerState::Paused));
+        {
+            if *state == PlayerState::Ended {
+                *state = PlayerState::Paused;
+                let _ = self.event_sender.send(Event::StateChanged(PlayerState::Paused));
+            } else if was_playing {
+                self.clock.resume();
+            }
         }
 
         let mut serial = self.current_serial.lock();
