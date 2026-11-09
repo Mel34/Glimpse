@@ -18,7 +18,6 @@ use glimpse_engine::{Event, MasterClock, ScheduleAction, Serial, VideoScheduler}
 const PACKET_QUEUE_BYTES: usize = 64 * 1024 * 1024;
 const FRAME_QUEUE_BYTES: usize = 256 * 1024 * 1024;
 const AUDIO_CLOCK_START_TIMEOUT: Duration = Duration::from_secs(8);
-const AUDIO_FINISH_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_PAUSED_CLOCK_DRIFT_SECS: f64 = 0.040;
 
 fn main() -> ExitCode {
@@ -87,7 +86,8 @@ fn run(path: &str) -> Result<(), String> {
     );
 
     let mut scheduler = VideoScheduler::new(Arc::clone(&clock));
-    let mut drift_samples_ms = Vec::new();
+    let mut displayed_drift_ms = Vec::new();
+    let mut dropped_lateness_ms = Vec::new();
     let mut decoded_frames = 0u64;
 
     loop {
@@ -109,7 +109,21 @@ fn run(path: &str) -> Result<(), String> {
 
         while let Some(frame) = frame_queue.pop_timeout(Duration::ZERO) {
             decoded_frames += 1;
-            drift_samples_ms.push(schedule_frame(&mut scheduler, &clock, frame)?);
+            let (drift_ms, dropped) = match schedule_frame(&mut scheduler, &clock, frame) {
+                Ok(result) => result,
+                Err(error) => {
+                    queues.abort();
+                    if let Some(worker) = demux_worker.take() {
+                        let _ = worker.join();
+                    }
+                    return Err(error);
+                }
+            };
+            if dropped {
+                dropped_lateness_ms.push((-drift_ms).max(0.0));
+            } else {
+                displayed_drift_ms.push(drift_ms);
+            }
         }
 
         // Decode video only here; drain unrelated streams so the demux worker
@@ -134,21 +148,32 @@ fn run(path: &str) -> Result<(), String> {
     decoder.finish(serial)?;
     while let Some(frame) = frame_queue.pop_timeout(Duration::ZERO) {
         decoded_frames += 1;
-        drift_samples_ms.push(schedule_frame(&mut scheduler, &clock, frame)?);
+        let (drift_ms, dropped) = schedule_frame(&mut scheduler, &clock, frame)?;
+        if dropped {
+            dropped_lateness_ms.push((-drift_ms).max(0.0));
+        } else {
+            displayed_drift_ms.push(drift_ms);
+        }
     }
 
     if decoded_frames == 0 {
         return Err("The video stream produced no decoded frames".to_string());
     }
 
-    wait_for_audio_finish(&audio_handle, &events)?;
+    wait_for_audio_finish(
+        &audio_handle,
+        &events,
+        probe.duration.unwrap_or(Duration::from_secs(600)) + Duration::from_secs(10),
+    )?;
 
-    drift_samples_ms.sort_by(f64::total_cmp);
-    let mut absolute_drifts: Vec<f64> = drift_samples_ms.iter().map(|value| value.abs()).collect();
-    absolute_drifts.sort_by(f64::total_cmp);
-    let max_early_ms = drift_samples_ms.iter().copied().fold(0.0f64, f64::max);
-    let max_late_ms = drift_samples_ms.iter().copied().fold(0.0f64, |max, value| max.max(-value));
-    let max_abs_ms = absolute_drifts.iter().copied().fold(0.0f64, f64::max);
+    let mut absolute_displayed_drifts: Vec<f64> =
+        displayed_drift_ms.iter().map(|value| value.abs()).collect();
+    absolute_displayed_drifts.sort_by(f64::total_cmp);
+    dropped_lateness_ms.sort_by(f64::total_cmp);
+    let max_early_ms = displayed_drift_ms.iter().copied().fold(0.0f64, f64::max);
+    let max_late_ms = displayed_drift_ms.iter().copied().fold(0.0f64, |max, value| max.max(-value));
+    let max_abs_displayed_ms = absolute_displayed_drifts.iter().copied().fold(0.0f64, f64::max);
+    let max_dropped_lateness_ms = dropped_lateness_ms.iter().copied().fold(0.0f64, f64::max);
 
     println!(
         "Demuxed {} video packets ({} bytes across all streams); decoded {} video frames",
@@ -159,16 +184,21 @@ fn run(path: &str) -> Result<(), String> {
         scheduler.total_displayed, scheduler.total_dropped
     );
     println!(
-        "Audio-master drift: max={:.3} ms, p95={:.3} ms, p99={:.3} ms, max_early={:.3} ms, max_late={:.3} ms",
-        max_abs_ms,
-        percentile(&absolute_drifts, 0.95),
-        percentile(&absolute_drifts, 0.99),
+        "Displayed-frame drift: max_abs={:.3} ms, p95_abs={:.3} ms, p99_abs={:.3} ms, max_early={:.3} ms, max_late={:.3} ms",
+        max_abs_displayed_ms,
+        percentile(&absolute_displayed_drifts, 0.95),
+        percentile(&absolute_displayed_drifts, 0.99),
         max_early_ms,
         max_late_ms
     );
     println!(
+        "Dropped-frame lateness: {} frames, max={:.3} ms",
+        dropped_lateness_ms.len(),
+        max_dropped_lateness_ms
+    );
+    println!(
         "A/V sync probe: {} frames measured against PipeWire audio clock",
-        drift_samples_ms.len()
+        displayed_drift_ms.len() + dropped_lateness_ms.len()
     );
     Ok(())
 }
@@ -197,8 +227,9 @@ fn wait_for_audio_clock(
 fn wait_for_audio_finish(
     audio_handle: &glimpse_engine::audio_playback::AudioPlaybackHandle,
     events: &Receiver<Event>,
+    timeout: Duration,
 ) -> Result<(), String> {
-    let deadline = Instant::now() + AUDIO_FINISH_TIMEOUT;
+    let deadline = Instant::now() + timeout;
     while !audio_handle.is_finished() {
         if let Some(error) = take_audio_error(events) {
             return Err(format!("Audio playback failed: {error}"));
@@ -228,7 +259,7 @@ fn schedule_frame(
     scheduler: &mut VideoScheduler,
     clock: &MasterClock,
     frame: VideoFrameData,
-) -> Result<f64, String> {
+) -> Result<(f64, bool), String> {
     loop {
         if clock.is_paused() {
             let drift = frame.pts - clock.get_pts();
@@ -238,15 +269,18 @@ fn schedule_frame(
                     frame.pts, clock.get_pts()
                 ));
             }
-            return Ok(drift * 1_000.0);
+            return Ok((drift * 1_000.0, false));
         }
 
         match scheduler.schedule(frame.pts, frame.duration) {
             ScheduleAction::Wait(delay) => {
                 thread::sleep(delay.min(Duration::from_millis(5)));
             }
-            ScheduleAction::ShowNow | ScheduleAction::DropFrame => {
-                return Ok(scheduler.report_drift(frame.pts).drift_ms);
+            ScheduleAction::ShowNow => {
+                return Ok((scheduler.report_drift(frame.pts).drift_ms, false));
+            }
+            ScheduleAction::DropFrame => {
+                return Ok((scheduler.report_drift(frame.pts).drift_ms, true));
             }
         }
     }
