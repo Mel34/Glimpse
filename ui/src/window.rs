@@ -517,6 +517,9 @@ impl GlimpseWindow {
         let p_vol_wheel = Rc::clone(&player);
         let p_vol_wheel_value = Rc::clone(&player);
         let win_ref = window.clone().upcast::<gtk4::Window>();
+        let volume_menu_wheel = bottom_controls.volume_button.clone();
+        let settings_menu_wheel = bottom_controls.settings_button.clone();
+        let main_menu_wheel = menu_btn.clone();
 
         let v_icon_w = bottom_controls.volume_icon.clone();
         let v_btn_w = bottom_controls.volume_button.clone();
@@ -543,6 +546,11 @@ impl GlimpseWindow {
                     new_vol as f64,
                     new_vol <= 0.001,
                 );
+            },
+            move || {
+                volume_menu_wheel.is_active()
+                    || settings_menu_wheel.is_active()
+                    || main_menu_wheel.is_active()
             },
         );
 
