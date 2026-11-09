@@ -942,7 +942,7 @@ fn load_and_play_file(
 
     picture.set_paintable(gdk4::Paintable::NONE);
 
-    // Initialize Glimpse engine for stream probing and audio master clock tracking
+    // Initialize the playback engine and retain its event stream.
     match Player::open(path) {
         Ok((p, event_rx)) => {
             let duration = p.duration();
@@ -950,7 +950,7 @@ fn load_and_play_file(
             p.play();
             *player.borrow_mut() = Some(p);
 
-            // The engine owns duration metadata in the experimental playback path.
+            // The engine owns duration metadata for the loaded media.
             if let Some(duration) = duration {
                 let seconds = duration.as_secs_f64();
                 bottom_controls.seekbar.set_range(0.0, seconds);
@@ -959,7 +959,7 @@ fn load_and_play_file(
                 );
             }
 
-            // Setup track popover with Rule 5 (Subtitles OFF by default)
+            // Setup audio stream selection and report current subtitle support.
             if let Some(ref current_p) = *player.borrow() {
                 let tracks = current_p.tracks();
 
