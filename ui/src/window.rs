@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 use adw::prelude::*;
@@ -277,8 +277,7 @@ impl GlimpseWindow {
         drop_overlay.set_halign(Align::Fill);
         drop_overlay.set_visible(false);
 
-        let drop_center = GtkBox::new(Orientation::Vertical, 0);
-        drop_center.set_vexpand(true);
+        let drop_center = GtkBox::new(Orientation::Vertical, 0);        drop_center.set_vexpand(true);
         drop_center.set_hexpand(true);
         drop_center.set_valign(Align::Center);
         drop_center.set_halign(Align::Center);
@@ -488,19 +487,33 @@ impl GlimpseWindow {
         });
 
         let hide_timer: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
+        let last_pointer_position: Rc<Cell<Option<(f64, f64)>>> = Rc::new(Cell::new(None));
         let motion = EventControllerMotion::new();
         motion.set_propagation_phase(gtk4::PropagationPhase::Capture);
         let top_motion = top_controls.clone();
         let bottom_motion = bottom_controls.container.clone();
         let timer_motion = Rc::clone(&hide_timer);
-        motion.connect_enter(move |_, _, _| {
+        let pointer_enter = Rc::clone(&last_pointer_position);
+        motion.connect_enter(move |_, x, y| {
+            pointer_enter.set(Some((x, y)));
             reveal_and_schedule_controls(&top_motion, &bottom_motion, &timer_motion);
         });
         let top_motion = top_controls.clone();
         let bottom_motion = bottom_controls.container.clone();
         let timer_motion = Rc::clone(&hide_timer);
-        motion.connect_motion(move |_, _, _| {
-            reveal_and_schedule_controls(&top_motion, &bottom_motion, &timer_motion);
+        let pointer_motion = Rc::clone(&last_pointer_position);
+        motion.connect_motion(move |_, x, y| {
+            let moved = pointer_motion.get()
+                .map(|(last_x, last_y)| (x - last_x).hypot(y - last_y) >= 1.0)
+                .unwrap_or(true);
+            if moved {
+                pointer_motion.set(Some((x, y)));
+                reveal_and_schedule_controls(&top_motion, &bottom_motion, &timer_motion);
+            }
+        });
+        let pointer_leave = Rc::clone(&last_pointer_position);
+        motion.connect_leave(move |_| {
+            pointer_leave.set(None);
         });
         player_overlay.add_controller(motion);
 
@@ -557,8 +570,7 @@ impl GlimpseWindow {
         });
         window.add_controller(drop_target);
 
-        // "Open..." button on loader page opens native GTK FileDialog
-        let win_for_dialog = window.clone();
+        // "Open..." button on loader page opens native GTK FileDialog        let win_for_dialog = window.clone();
         let stack_for_dialog = stack.clone();
         let player_for_dialog = Rc::clone(&player);
         let video_for_dialog = Rc::clone(&video_playback);
@@ -837,8 +849,7 @@ fn trigger_open_file_dialog(
 
     let win_cb = window.clone();
     let stack_cb = stack.clone();
-    let player_cb = Rc::clone(player);
-    let video_cb = Rc::clone(video_playback);
+    let player_cb = Rc::clone(player);    let video_cb = Rc::clone(video_playback);
     let pic_cb = picture.clone();
     let bottom_cb = bottom_controls.clone();
 
@@ -1118,70 +1129,3 @@ fn create_main_menu_popover(
     let video_op = Rc::clone(video_playback);
     let pic_op = picture.clone();
     let btm_op = bottom_controls.clone();
-    btn_open.connect_clicked(move |_| {
-        pop_close2.popdown();
-        trigger_open_file_dialog(&win_op, &stack_op, &p_op, &video_op, &pic_op, &btm_op);
-    });
-    vbox.append(&btn_open);
-
-    // Separator
-    let sep = Separator::new(Orientation::Horizontal);
-    sep.set_margin_top(4);
-    sep.set_margin_bottom(4);
-    vbox.append(&sep);
-
-    // 3. Keyboard Shortcuts (Ctrl+?)
-    let btn_shortcuts = Button::new();
-    btn_shortcuts.add_css_class("flat");
-    btn_shortcuts.add_css_class("menu-item-button");
-    let box_sc = GtkBox::new(Orientation::Horizontal, 20);
-    let l3 = Label::new(Some("Keyboard Shortcuts"));
-    l3.set_halign(Align::Start);
-    l3.set_hexpand(true);
-    let s3 = Label::new(Some("Ctrl+?"));
-    s3.add_css_class("dim-label");
-    s3.set_halign(Align::End);
-    box_sc.append(&l3);
-    box_sc.append(&s3);
-    btn_shortcuts.set_child(Some(&box_sc));
-
-    let pop_close3 = popover.clone();
-    let win_sc = window.clone();
-    btn_shortcuts.connect_clicked(move |_| {
-        pop_close3.popdown();
-        show_shortcuts_dialog(&win_sc);
-    });
-    vbox.append(&btn_shortcuts);
-
-    // 4. About Glimpse
-    let btn_about = Button::new();
-    btn_about.add_css_class("flat");
-    btn_about.add_css_class("menu-item-button");
-    let box_ab = GtkBox::new(Orientation::Horizontal, 20);
-    let l4 = Label::new(Some("About Glimpse"));
-    l4.set_halign(Align::Start);
-    l4.set_hexpand(true);
-    box_ab.append(&l4);
-    btn_about.set_child(Some(&box_ab));
-
-    let pop_close4 = popover.clone();
-    let win_ab = window.clone();
-    btn_about.connect_clicked(move |_| {
-        pop_close4.popdown();
-        let about = gtk4::AboutDialog::builder()
-            .transient_for(&win_ab)
-            .modal(true)
-            .program_name("Glimpse")
-            .version("0.1.0")
-            .comments("Clean, predictable Linux video player built with GTK4 and libadwaita, with an evolving in-process playback engine.")
-            .website("https://github.com/Mel34/Glimpse")
-            .logo_icon_name("com.github.Mel34.Glimpse")
-            .license_type(gtk4::License::Lgpl21)
-            .build();
-        about.present();
-    });
-    vbox.append(&btn_about);
-
-    popover.set_child(Some(&vbox));
-    popover
-}
