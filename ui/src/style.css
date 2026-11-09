@@ -109,9 +109,19 @@ menubutton.osd-icon-button > button:checked {
     color: @window_fg_color;
 }
 
-.osd-icon-button image {
+.osd-icon-button image,
+.header-button image,
+button.header-close-button image {
     padding: 0;
     margin: 0;
+    -gtk-icon-shadow: 1px 0 1px @window_bg_color,
+                     -1px 0 1px @window_bg_color,
+                     0 1px 1px @window_bg_color,
+                     0 -1px 1px @window_bg_color,
+                     1px 1px 1px @window_bg_color,
+                     -1px -1px 1px @window_bg_color,
+                     1px -1px 1px @window_bg_color,
+                     -1px 1px 1px @window_bg_color;
 }
 
 /* Loader-page header controls remain separate from the playback OSD. */
@@ -348,8 +358,4 @@ scale.volume-scale slider {
     background-color: var(--light-bg);
 }
 
-.themeswitcher .check.hovered {
-    background: @window_fg_color;
-    color: @window_bg_color;
-}
 
