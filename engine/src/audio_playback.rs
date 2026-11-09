@@ -48,6 +48,8 @@ struct PlaybackControl {
     stopped: AtomicBool,
     volume: AtomicU32,
     queues: Mutex<Option<(PacketQueues, Arc<AudioFrameQueue>)>>,
+    finished: AtomicBool,
+    ended: AtomicBool,
 }
 
 /// A joinable PipeWire playback worker owned by its Player.
@@ -84,9 +86,20 @@ impl AudioPlaybackSession {
                 let result = run_file_control(&path, clock, worker_control.clone());
                 if !worker_control.stopped.load(Ordering::Acquire) {
                     match result {
-                        Ok(_) => { let _ = events.send(Event::EndOfStream); }
-                        Err(error) => { let _ = events.send(Event::Error(error)); }
+                        Ok(_) => {
+                            worker_control.ended.store(true, Ordering::Release);
+                            worker_control.finished.store(true, Ordering::Release);
+                            let _ = events.send(Event::StateChanged(crate::types::PlayerState::Ended));
+                            let _ = events.send(Event::EndOfStream);
+                        }
+                        Err(error) => {
+                            worker_control.finished.store(true, Ordering::Release);
+                            let _ = events.send(Event::StateChanged(crate::types::PlayerState::Paused));
+                            let _ = events.send(Event::Error(error));
+                        }
                     }
+                } else {
+                    worker_control.finished.store(true, Ordering::Release);
                 }
             })
             .map_err(|error| format!("Could not start audio session worker: {error}"))?;
@@ -107,6 +120,16 @@ impl AudioPlaybackHandle {
         self.control.volume.store(sanitise_volume(volume).to_bits(), Ordering::Relaxed);
     }
 
+    /// Returns true once the worker has completed and published its result.
+    pub fn is_finished(&self) -> bool {
+        self.control.finished.load(Ordering::Acquire)
+    }
+
+    /// Returns true when the worker completed successfully at natural EOF.
+    pub fn reached_end_of_stream(&self) -> bool {
+        self.control.ended.load(Ordering::Acquire)
+    }
+
     pub fn stop(&mut self) {
         self.control.stopped.store(true, Ordering::Release);
         if let Some((queues, frames)) = self.control.queues.lock().as_ref() {
@@ -116,6 +139,7 @@ impl AudioPlaybackHandle {
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
+        self.control.finished.store(true, Ordering::Release);
     }
 }
 
@@ -149,6 +173,8 @@ fn run_file(path: &str, clock: Arc<MasterClock>) -> Result<AudioPlaybackReport, 
         stopped: AtomicBool::new(false),
         volume: AtomicU32::new(1.0f32.to_bits()),
         queues: Mutex::new(None),
+        finished: AtomicBool::new(false),
+        ended: AtomicBool::new(false),
     }))
 }
 
