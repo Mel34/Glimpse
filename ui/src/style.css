@@ -78,7 +78,8 @@ window.glimpse-window {
 
 /* Shared circular OSD button geometry for every playback action. */
 .osd-icon-button,
-.osd-icon-button > button {
+.osd-icon-button > button,
+menubutton.osd-icon-button > button {
     min-width: 32px;
     min-height: 32px;
     padding: 0;
@@ -91,7 +92,8 @@ window.glimpse-window {
 }
 
 .osd-icon-button:hover,
-.osd-icon-button > button:hover {
+.osd-icon-button > button:hover,
+menubutton.osd-icon-button > button:hover {
     background-color: rgba(60, 60, 60, 0.9);
     color: #ffffff;
 }
@@ -99,7 +101,9 @@ window.glimpse-window {
 .osd-icon-button:active,
 .osd-icon-button:checked,
 .osd-icon-button > button:active,
-.osd-icon-button > button:checked {
+.osd-icon-button > button:checked,
+menubutton.osd-icon-button > button:active,
+menubutton.osd-icon-button > button:checked {
     background-color: rgba(80, 80, 80, 0.95);
     color: #ffffff;
 }
@@ -220,20 +224,7 @@ popover label.dim-label,
     transition: opacity 250ms ease-in-out;
 }
 
-.osd-icon-button {
-    border-radius: 9999px;
-    min-width: 32px;
-    min-height: 32px;
-    padding: 4px;
-    background-color: rgba(30, 30, 30, 0.65);
-    color: #ffffff;
-    border: none;
-    box-shadow: none;
-}
 
-.osd-icon-button:hover {
-    background-color: rgba(60, 60, 60, 0.85);
-}
 
 .video-title {
     font-size: 15px;
