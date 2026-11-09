@@ -23,6 +23,12 @@ textures. The longer-term goal is a GPU-native rendering pipeline built around
 [libplacebo](https://github.com/haasn/libplacebo), with Vulkan as the eventual
 video output backend.
 
+The current FFmpeg `swscale` conversion does not yet explicitly apply each
+decoded frame's color-matrix and range metadata. This can affect color accuracy
+for sources that rely on non-default conversion settings. Complete color
+management—including transfer characteristics and HDR handling—is part of the
+planned libplacebo rendering work below.
+
 The work is expected to progress in stages:
 
 1. **Complete hardware-frame interoperability.** Build on the VAAPI and DRM
