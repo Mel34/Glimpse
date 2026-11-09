@@ -21,7 +21,7 @@ fn main() -> ExitCode {
 
     match run(&path) {
         Ok(()) => {
-            println!("Player lifecycle: pause, resume, EOF, replay, and stop all passed");
+            println!("Player lifecycle: pause, resume, paused/active seek, EOF, replay, and stop all passed");
             ExitCode::SUCCESS
         }
         Err(error) => {
