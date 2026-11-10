@@ -25,6 +25,9 @@ struct PlaybackRun {
     worker: Option<JoinHandle<()>>,
 }
 
+// Retained for the debug tick-history dump; derived Debug output isn't counted
+// as a field read by Rust's dead-code analysis.
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 struct TickSample {
     interval_us: Option<u64>,
@@ -546,7 +549,7 @@ fn schedule_frames(
                     let frame_pts = frame.pts;
                     state.pending = None;
                     state.dropped_stale_ingest += 1;
-                    if state.dropped_stale_ingest == 1 || state.dropped_stale_ingest % 120 == 0 {
+                    if video_debug && (state.dropped_stale_ingest == 1 || state.dropped_stale_ingest % 120 == 0) {
                         tracing::warn!(
                             frame_pts,
                             master_pts,
@@ -672,7 +675,7 @@ fn schedule_frames(
         }
         state.tick_history.push_back(sample);
         state.tick_count += 1;
-        if tick_interval_us.is_some_and(|interval| interval >= 100_000) {
+        if video_debug && tick_interval_us.is_some_and(|interval| interval >= 100_000) {
             tracing::warn!(
                 gap_ms = tick_interval_us.unwrap_or_default() as f64 / 1000.0,
                 frame_time_us,
@@ -760,7 +763,7 @@ fn schedule_frames(
                 let lateness = master_pts - frame.pts;
                 if lateness > 0.040 {
                     state.dropped_late_presentation += 1;
-                    if state.dropped_late_presentation == 1 || state.dropped_late_presentation % 120 == 0 {
+                    if video_debug && (state.dropped_late_presentation == 1 || state.dropped_late_presentation % 120 == 0) {
                         tracing::warn!(
                             frame_pts = frame.pts,
                             master_pts,
@@ -861,7 +864,7 @@ fn schedule_frames(
         let paintable_started = Instant::now();
         picture.set_paintable(Some(&texture));
         let set_paintable_us = paintable_started.elapsed().as_micros() as u64;
-        if texture_import_us >= 5_000 || set_paintable_us >= 2_000 {
+        if video_debug && (texture_import_us >= 5_000 || set_paintable_us >= 2_000) {
             tracing::warn!(
                 pts = frame.pts,
                 texture_import_us,
