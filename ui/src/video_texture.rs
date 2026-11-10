@@ -40,11 +40,75 @@ fn apply_subtitle_font_size(label: &gtk4::Label, display_width: i32) {
     let font_size = ((display_width.max(1) as f64 / 1280.0) * 28.0)
         .round()
         .clamp(20.0, 48.0) as i32;
-    let attributes = gtk4::pango::AttrList::new();
-    attributes.insert(gtk4::pango::AttrSize::new_size_absolute(
+    // Keep attributes created by set_markup() (bold/italic/etc.) and only
+    // replace the width-dependent size attribute.
+    let attributes = label
+        .attributes()
+        .unwrap_or_else(gtk4::pango::AttrList::new);
+    attributes.change(gtk4::pango::AttrSize::new_size_absolute(
         font_size * gtk4::pango::SCALE,
     ));
     label.set_attributes(Some(&attributes));
+}
+
+fn subtitle_cue_markup(cue: &SubtitleCue) -> String {
+    let mut markup = String::new();
+    for span in &cue.spans {
+        let escaped = glib::markup_escape_text(&span.text);
+        if span.bold { markup.push_str("<b>"); }
+        if span.italic { markup.push_str("<i>"); }
+        if span.underline { markup.push_str("<u>"); }
+        if span.strikethrough { markup.push_str("<s>"); }
+        markup.push_str(escaped.as_str());
+        if span.strikethrough { markup.push_str("</s>"); }
+        if span.underline { markup.push_str("</u>"); }
+        if span.italic { markup.push_str("</i>"); }
+        if span.bold { markup.push_str("</b>"); }
+    }
+    markup
+}
+
+#[cfg(test)]
+mod subtitle_markup_tests {
+    use super::subtitle_cue_markup;
+    use glimpse_engine::decoder::{SubtitleCue, SubtitleSpan};
+
+    #[test]
+    fn renders_all_inline_styles_as_pango_markup() {
+        let cue = SubtitleCue {
+            start: 0.0,
+            end: 1.0,
+            text: "formatted".to_string(),
+            spans: vec![SubtitleSpan {
+                text: "formatted".to_string(),
+                bold: true,
+                italic: true,
+                underline: true,
+                strikethrough: true,
+            }],
+        };
+        assert_eq!(
+            subtitle_cue_markup(&cue),
+            "<b><i><u><s>formatted</s></u></i></b>"
+        );
+    }
+
+    #[test]
+    fn escapes_markup_characters_in_subtitle_text() {
+        let cue = SubtitleCue {
+            start: 0.0,
+            end: 1.0,
+            text: "<unsafe & text>".to_string(),
+            spans: vec![SubtitleSpan {
+                text: "<unsafe & text>".to_string(),
+                bold: false,
+                italic: false,
+                underline: false,
+                strikethrough: false,
+            }],
+        };
+        assert_eq!(subtitle_cue_markup(&cue), "&lt;unsafe &amp; text&gt;");
+    }
 }
 
 pub fn bind_subtitle_scaling(picture: &gtk4::Picture, subtitle_label: &gtk4::Label) {
@@ -397,9 +461,9 @@ fn schedule_frames(
             }
         }
         if let Some(cue) = subtitle_state.active.as_ref() {
-            subtitle_label.set_text(&cue.text);
-            // GtkLabel::set_text() clears its Pango attributes, so restore the
-            // width-derived size after every cue update (including fullscreen).
+            subtitle_label.set_markup(&subtitle_cue_markup(cue));
+            // set_markup() supplies inline style attributes; preserve them while
+            // restoring the width-derived font size (including fullscreen).
             apply_subtitle_font_size(&subtitle_label, picture.width());
             subtitle_label.set_visible(true);
         } else {
