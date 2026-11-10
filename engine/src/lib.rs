@@ -188,8 +188,31 @@ impl Player {
 
     pub fn seek(&self, to: Duration) {
         let mut state = self.state.lock();
-        let clamped = clamp_seek_target(to, *self.duration.lock());
+        let duration = *self.duration.lock();
+        let clamped = clamp_seek_target(to, duration);
         let was_playing = *state == PlayerState::Playing;
+
+        // Seeking to or beyond EOF is a normal end-of-playback request. Do
+        // not start a replacement audio session: there are no PCM samples
+        // after the duration, so prebuffering would incorrectly report an error.
+        if duration.is_some_and(|duration| clamped >= duration) {
+            *self.seek_position.lock() = clamped;
+            #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
+            if let Some(mut session) = self.audio_session.lock().take() {
+                session.stop();
+            }
+            self.clock.pause();
+            self.clock.reset(clamped.as_secs_f64());
+            *state = PlayerState::Ended;
+
+            let mut serial = self.current_serial.lock();
+            *serial = serial.next();
+            let _ = self.event_sender.send(Event::PositionChanged(clamped));
+            let _ = self.event_sender.send(Event::StateChanged(PlayerState::Ended));
+            let _ = self.event_sender.send(Event::EndOfStream);
+            return;
+        }
+
         *self.seek_position.lock() = clamped;
         // Freeze wall-clock extrapolation while the old audio worker is
         // stopped and the replacement session probes and prebuffers.
@@ -411,6 +434,18 @@ mod tests {
             clamp_seek_target(Duration::from_secs(5000), None),
             Duration::from_secs(3600)
         );
+    }
+
+    #[test]
+    fn seeking_past_duration_ends_playback_without_restarting_audio() {
+        let (player, events) = test_player(Some(Duration::from_secs(120)));
+
+        player.play();
+        player.seek(Duration::from_secs(125));
+
+        assert_eq!(player.state(), PlayerState::Ended);
+        assert_eq!(player.position(), Duration::from_secs(120));
+        assert!(events.try_iter().any(|event| event == Event::EndOfStream));
     }
 
     fn test_player(duration: Option<Duration>) -> (Player, Receiver<Event>) {

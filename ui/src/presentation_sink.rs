@@ -6,7 +6,7 @@
 //! for audio playback); GDK's frame clock controls presentation cadence only.
 
 use crate::video_texture::apply_subtitle_font_size;
-use crossbeam_channel::{Receiver, TryRecvError};
+use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use glimpse_engine::decoder::SubtitleCue;
 use glimpse_engine::{MasterClock, VideoFrameData};
 use glib::object::ObjectExt;
@@ -143,6 +143,7 @@ impl GtkPresentationSink {
         subtitle_label: gtk4::Label,
         media_clock: Arc<MasterClock>,
         cancelled: Arc<AtomicBool>,
+        first_frame_ready: Option<Sender<()>>,
     ) {
         schedule_frames(
             receiver,
@@ -151,6 +152,7 @@ impl GtkPresentationSink {
             subtitle_label,
             media_clock,
             cancelled,
+            first_frame_ready,
         );
     }
 }
@@ -182,7 +184,9 @@ fn schedule_frames(
     subtitle_label: gtk4::Label,
     media_clock: Arc<MasterClock>,
     cancelled: Arc<AtomicBool>,
+    first_frame_ready: Option<Sender<()>>,
 ) {
+    let first_frame_ready = Rc::new(RefCell::new(first_frame_ready));
     // The sink reads engine media time but never adjusts it. PipeWire remains
     // authoritative for audio playback; this callback only chooses a frame
     // that is ready for the current GDK presentation opportunity.
@@ -666,6 +670,9 @@ fn schedule_frames(
         let texture_import_us = texture_import_started.elapsed().as_micros() as u64;
         let paintable_started = Instant::now();
         picture.set_paintable(Some(&texture));
+        if let Some(ready) = first_frame_ready.borrow_mut().take() {
+            let _ = ready.send(());
+        }
         let set_paintable_us = paintable_started.elapsed().as_micros() as u64;
         if video_debug && (texture_import_us >= 5_000 || set_paintable_us >= 2_000) {
             tracing::warn!(

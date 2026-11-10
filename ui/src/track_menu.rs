@@ -1,7 +1,9 @@
 //! Audio, embedded subtitle, and external subtitle selection.
 
 use gtk4::prelude::*;
-use gtk4::{Box as GtkBox, CheckButton, Label, Orientation, Popover, PolicyType, ScrolledWindow};
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+use gtk4::{Box as GtkBox, CheckButton, Label, Orientation, Popover, PolicyType, ScrolledWindow, Separator};
 use glimpse_engine::{TrackId, TrackInfo, TrackList};
 use crate::interaction::attach_popover_scroll_guard;
 
@@ -10,6 +12,8 @@ pub fn create_track_popover<FAudio, FSubtitle, FExternal>(
     on_audio_selected: FAudio,
     on_subtitle_selected: FSubtitle,
     on_external_selected: FExternal,
+    loop_enabled: &Rc<Cell<bool>>,
+    loop_menu_buttons: &Rc<RefCell<Vec<CheckButton>>>,
 ) -> Popover
 where
     FAudio: Fn(Option<TrackId>) + 'static + Clone,
@@ -23,6 +27,37 @@ where
     container.set_margin_end(12);
     container.set_margin_top(12);
     container.set_margin_bottom(12);
+
+    let playback_label = Label::new(Some("Playback"));
+    playback_label.set_halign(gtk4::Align::Start);
+    playback_label.add_css_class("heading");
+    container.append(&playback_label);
+
+    let loop_row = GtkBox::new(Orientation::Horizontal, 20);
+    let loop_toggle = CheckButton::with_label("Loop");
+    loop_toggle.set_hexpand(true);
+    loop_toggle.set_halign(gtk4::Align::Start);
+    loop_toggle.set_active(loop_enabled.get());
+    loop_menu_buttons.borrow_mut().clear();
+    loop_menu_buttons.borrow_mut().push(loop_toggle.clone());
+    let loop_shortcut = Label::new(Some("Shift+L"));
+    loop_shortcut.add_css_class("dim-label");
+    loop_shortcut.set_halign(gtk4::Align::End);
+    loop_row.append(&loop_toggle);
+    loop_row.append(&loop_shortcut);
+    let loop_enabled_toggle = Rc::clone(loop_enabled);
+    let loop_buttons_toggle = Rc::clone(loop_menu_buttons);
+    loop_toggle.connect_toggled(move |button| {
+        let enabled = button.is_active();
+        loop_enabled_toggle.set(enabled);
+        for menu_button in loop_buttons_toggle.borrow().iter() {
+            menu_button.set_active(enabled);
+        }
+    });
+    container.append(&loop_row);
+
+    let playback_separator = Separator::new(Orientation::Horizontal);
+    container.append(&playback_separator);
 
     let audio_label = Label::new(Some("Audio Streams"));
     audio_label.set_halign(gtk4::Align::Start);

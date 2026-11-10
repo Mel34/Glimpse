@@ -64,6 +64,68 @@ impl VideoClickStateMachine {
     }
 }
 
+fn seekbar_wheel_target(
+    current: Duration,
+    duration: Duration,
+    dy: f64,
+) -> Option<Duration> {
+    let bounded_current = current.min(duration);
+    let step = Duration::from_secs(5);
+
+    let target = if dy > 0.0 {
+        bounded_current.saturating_add(step).min(duration)
+    } else {
+        bounded_current.saturating_sub(step)
+    };
+
+    (target != current).then_some(target)
+}
+
+#[cfg(test)]
+mod seekbar_wheel_tests {
+    use super::seekbar_wheel_target;
+    use std::time::Duration;
+
+    #[test]
+    fn downward_scroll_advances_and_stops_at_end() {
+        let duration = Duration::from_secs(120);
+        assert_eq!(
+            seekbar_wheel_target(Duration::from_secs(118), duration, 1.0),
+            Some(duration)
+        );
+        assert_eq!(
+            seekbar_wheel_target(duration, duration, 1.0),
+            None
+        );
+    }
+
+    #[test]
+    fn upward_scroll_rewinds_and_stops_at_start() {
+        let duration = Duration::from_secs(120);
+        assert_eq!(
+            seekbar_wheel_target(Duration::from_secs(3), duration, -1.0),
+            Some(Duration::ZERO)
+        );
+        assert_eq!(
+            seekbar_wheel_target(Duration::ZERO, duration, -1.0),
+            None
+        );
+    }
+
+    #[test]
+    fn out_of_range_position_is_corrected_once() {
+        let duration = Duration::from_secs(120);
+        assert_eq!(
+            seekbar_wheel_target(Duration::from_secs(125), duration, 1.0),
+            Some(duration)
+        );
+        assert_eq!(
+            seekbar_wheel_target(duration, duration, 1.0),
+            None
+        );
+    }
+}
+
 pub fn attach_seekbar_wheel<FSeek>(
     scale: &gtk4::Scale,
     get_duration: impl Fn() -> Option<Duration> + 'static,
@@ -80,15 +142,9 @@ pub fn attach_seekbar_wheel<FSeek>(
         };
 
         let current = get_position();
-        let step = Duration::from_secs(5);
-
-        let new_pos = if dy < 0.0 {
-            (current + step).min(duration)
-        } else {
-            current.saturating_sub(step)
-        };
-
-        seek_cb(new_pos);
+        if let Some(new_pos) = seekbar_wheel_target(current, duration, dy) {
+            seek_cb(new_pos);
+        }
         glib::Propagation::Stop
     });
 

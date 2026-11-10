@@ -17,6 +17,47 @@ use crate::interaction::{attach_popover_scroll_guard, attach_seekbar_wheel, atta
 use crate::track_menu::create_track_popover;
 use crate::video_texture::{bind_subtitle_scaling, VideoPlaybackHandle};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AbLoopState {
+    Unset,
+    PointA(Duration),
+    Range { start: Duration, end: Duration },
+}
+
+fn next_ab_loop_state(state: AbLoopState, position: Duration) -> AbLoopState {
+    match state {
+        AbLoopState::Unset => AbLoopState::PointA(position),
+        AbLoopState::PointA(start) if position > start => {
+            AbLoopState::Range { start, end: position }
+        }
+        AbLoopState::PointA(_) => state,
+        AbLoopState::Range { .. } => AbLoopState::Unset,
+    }
+}
+
+fn playback_loop_target(
+    position: Duration,
+    duration: Option<Duration>,
+    playback_state: PlayerState,
+    has_audio: bool,
+    loop_enabled: bool,
+    ab_loop: AbLoopState,
+) -> Option<Duration> {
+    if let AbLoopState::Range { start, end } = ab_loop {
+        if position >= end && matches!(playback_state, PlayerState::Playing | PlayerState::Ended) {
+            return Some(start);
+        }
+    }
+
+    let reached_end = if has_audio {
+        playback_state == PlayerState::Ended
+    } else {
+        duration.is_some_and(|duration| position >= duration)
+    };
+
+    (loop_enabled && reached_end).then_some(Duration::ZERO)
+}
+
 pub struct GlimpseWindow {
     window: ApplicationWindow,
     player: Rc<RefCell<Option<Player>>>,
@@ -29,6 +70,7 @@ pub struct GlimpseWindow {
     #[allow(dead_code)]
     overlay: Overlay,
     stack: Stack,
+    ab_loop: Rc<Cell<AbLoopState>>,
     #[allow(dead_code)]
     drop_overlay: GtkBox,
 }
@@ -47,6 +89,7 @@ impl GlimpseWindow {
 
         let player: Rc<RefCell<Option<Player>>> = Rc::new(RefCell::new(None));
         let video_playback: Rc<RefCell<Option<VideoPlaybackHandle>>> = Rc::new(RefCell::new(None));
+        let ab_loop = Rc::new(Cell::new(AbLoopState::Unset));
         let video_playback_on_focus = Rc::clone(&video_playback);
         window.connect_is_active_notify(move |window| {
             if let Some(video) = video_playback_on_focus.borrow_mut().as_mut() {
@@ -191,6 +234,8 @@ impl GlimpseWindow {
         // Build the bottom controls first so the filename label can live in
         // the top-left OSD while remaining part of the shared control state.
         let bottom_controls = create_floating_bottom_bar();
+        let loop_enabled = Rc::clone(&bottom_controls.loop_enabled);
+        let loop_menu_buttons = Rc::clone(&bottom_controls.loop_menu_buttons);
 
         // Top Floating OSD Bar (margins 6px from corner matching standard Libadwaita)
         let top_controls = GtkBox::new(Orientation::Horizontal, 0);
@@ -277,6 +322,11 @@ impl GlimpseWindow {
         // Keep the timeline independent of video-frame presentation so audio-only
         // playback and audio that outlives the video stream still update the controls.
         let timeline_player = Rc::clone(&player);
+        let timeline_video = Rc::clone(&video_playback);
+        let timeline_loop_enabled = Rc::clone(&loop_enabled);
+        let timeline_ab_loop = Rc::clone(&ab_loop);
+        let loop_resume: Rc<RefCell<Option<crossbeam_channel::Receiver<()>>>> = Rc::new(RefCell::new(None));
+        let timeline_loop_resume = Rc::clone(&loop_resume);
         let timeline_seekbar = bottom_controls.seekbar.clone();
         let timeline_elapsed = bottom_controls.elapsed_label.clone();
         let timeline_dragging = Rc::clone(&bottom_controls.seekbar_dragging);
@@ -287,6 +337,41 @@ impl GlimpseWindow {
             };
             if !timeline_dragging.get() {
                 if let Some(current_player) = timeline_player.borrow().as_ref() {
+                    let media_position = current_player.position();
+                    let readiness = timeline_loop_resume.borrow().as_ref().map(|ready| ready.try_recv());
+                    if let Some(readiness) = readiness {
+                        match readiness {
+                            Ok(()) | Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                                timeline_loop_resume.borrow_mut().take();
+                                current_player.play();
+                            }
+                            Err(crossbeam_channel::TryRecvError::Empty) => {}
+                        }
+                    } else {
+                        let target = playback_loop_target(
+                            media_position,
+                            current_player.duration(),
+                            current_player.state(),
+                            !current_player.tracks().audio_tracks.is_empty(),
+                            timeline_loop_enabled.get(),
+                            timeline_ab_loop.get(),
+                        );
+                        if let Some(target) = target {
+                            // Keep the shared media clock frozen while both paths
+                            // prepare the new loop iteration. Audio starts only
+                            // after GTK presents the first frame at A.
+                            current_player.pause();
+                            current_player.seek(target);
+                            let ready = timeline_video.borrow_mut().as_mut()
+                                .and_then(|video| video.seek_for_sync(target));
+                            if let Some(ready) = ready {
+                                *timeline_loop_resume.borrow_mut() = Some(ready);
+                            } else {
+                                current_player.play();
+                            }
+                        }
+                    }
+
                     let position = current_player.position().as_secs_f64().max(0.0);
                     let position = current_player.duration()
                         .map(|duration| position.min(duration.as_secs_f64()))
@@ -655,6 +740,7 @@ impl GlimpseWindow {
         let picture_for_drop = picture.clone();
         let subtitle_for_drop = subtitle_label.clone();
         let bottom_for_drop = bottom_controls.clone();
+        let ab_loop_for_drop = Rc::clone(&ab_loop);
 
         drop_target.connect_drop(move |_, val, _, _| {
             drop_overlay_drop.set_visible(false);
@@ -669,6 +755,7 @@ impl GlimpseWindow {
                     &picture_for_drop,
                     &subtitle_for_drop,
                     &bottom_for_drop,
+                    &ab_loop_for_drop,
                 );
                 return true;
             }
@@ -684,6 +771,7 @@ impl GlimpseWindow {
         let picture_for_dialog = picture.clone();
         let subtitle_for_dialog = subtitle_label.clone();
         let bottom_for_dialog = bottom_controls.clone();
+        let ab_loop_for_dialog = Rc::clone(&ab_loop);
 
         open_btn.connect_clicked(move |_| {
             trigger_open_file_dialog(
@@ -694,6 +782,7 @@ impl GlimpseWindow {
                 &picture_for_dialog,
                 &subtitle_for_dialog,
                 &bottom_for_dialog,
+                &ab_loop_for_dialog,
             );
         });
 
@@ -706,6 +795,7 @@ impl GlimpseWindow {
             &picture,
             &subtitle_label,
             &bottom_controls,
+            &ab_loop,
         );
         crate::controls::track_popover_visibility(&loader_popover, &bottom_controls.open_popovers);
         loader_menu_btn.set_popover(Some(&loader_popover));
@@ -718,6 +808,7 @@ impl GlimpseWindow {
             &picture,
             &subtitle_label,
             &bottom_controls,
+            &ab_loop,
         );
         crate::controls::track_popover_visibility(&player_popover, &bottom_controls.open_popovers);
         menu_btn.set_popover(Some(&player_popover));
@@ -731,6 +822,7 @@ impl GlimpseWindow {
         let pic_act = picture.clone();
         let sub_act = subtitle_label.clone();
         let btm_act = bottom_controls.clone();
+        let ab_loop_act = Rc::clone(&ab_loop);
         action_open.connect_activate(move |_, _| {
             trigger_open_file_dialog(
                 &win_act,
@@ -740,6 +832,7 @@ impl GlimpseWindow {
                 &pic_act,
                 &sub_act,
                 &btm_act,
+                &ab_loop_act,
             );
         });
         window.add_action(&action_open);
@@ -805,6 +898,9 @@ impl GlimpseWindow {
         let key_controller = EventControllerKey::new();
         key_controller.set_propagation_phase(gtk4::PropagationPhase::Bubble);
         let p_keys = Rc::clone(&player);
+        let loop_enabled_keys = Rc::clone(&loop_enabled);
+        let loop_menu_buttons_keys = Rc::clone(&loop_menu_buttons);
+        let ab_loop_keys = Rc::clone(&ab_loop);
         let win_keys = window.clone();
         let win_open_k = window.clone();
         let stack_open_k = stack.clone();
@@ -813,6 +909,7 @@ impl GlimpseWindow {
         let pic_open_k = picture.clone();
         let sub_open_k = subtitle_label.clone();
         let btm_open_k = bottom_controls.clone();
+        let ab_loop_open_k = Rc::clone(&ab_loop);
         let top_keys = top_controls.clone();
         let bottom_keys = bottom_controls.container.clone();
         let timer_keys = Rc::clone(&hide_timer);
@@ -821,6 +918,27 @@ impl GlimpseWindow {
 
         key_controller.connect_key_pressed(move |_, keyval, _keycode, modifier| {
             match keyval {
+                // Shift+L toggles whole-file looping; lowercase l cycles A-B loop points.
+                gdk4::Key::l | gdk4::Key::L => {
+                    reveal_and_schedule_controls(&top_keys, &bottom_keys, &timer_keys, &popovers_keys);
+                    if modifier.contains(gdk4::ModifierType::SHIFT_MASK) {
+                        let enabled = !loop_enabled_keys.get();
+                        loop_enabled_keys.set(enabled);
+                        for button in loop_menu_buttons_keys.borrow().iter() {
+                            button.set_active(enabled);
+                        }
+                    } else if let Some(ref p) = *p_keys.borrow() {
+                        let position = p.position();
+                        let next = next_ab_loop_state(ab_loop_keys.get(), position);
+                        ab_loop_keys.set(next);
+                        match next {
+                            AbLoopState::PointA(point) => tracing::info!(point = point.as_secs_f64(), "A-B loop point A set"),
+                            AbLoopState::Range { start, end } => tracing::info!(start = start.as_secs_f64(), end = end.as_secs_f64(), "A-B loop enabled"),
+                            AbLoopState::Unset => tracing::info!("A-B loop cleared"),
+                        }
+                    }
+                    glib::Propagation::Stop
+                }
                 // 'f' or 'F': Fullscreen toggle
                 gdk4::Key::f | gdk4::Key::F => {
                     if win_keys.is_fullscreen() {
@@ -849,6 +967,7 @@ impl GlimpseWindow {
                         &pic_open_k,
                         &sub_open_k,
                         &btm_open_k,
+                        &ab_loop_open_k,
                     );
                     glib::Propagation::Stop
                 }
@@ -959,6 +1078,7 @@ impl GlimpseWindow {
             top_controls,
             overlay: player_overlay,
             stack,
+            ab_loop,
             drop_overlay,
         }
     }
@@ -974,6 +1094,7 @@ impl GlimpseWindow {
             &self.picture,
             &self.subtitle_label,
             &self.bottom_controls,
+            &self.ab_loop,
         );
     }
 
@@ -991,6 +1112,7 @@ fn trigger_open_file_dialog(
     picture: &Picture,
     subtitle_label: &Label,
     bottom_controls: &ControlBarWidgets,
+    ab_loop: &Rc<Cell<AbLoopState>>,
 ) {
     let file_dialog = FileDialog::builder()
         .title("Open Video")
@@ -1009,6 +1131,7 @@ fn trigger_open_file_dialog(
     let pic_cb = picture.clone();
     let sub_cb = subtitle_label.clone();
     let bottom_cb = bottom_controls.clone();
+    let ab_loop_cb = Rc::clone(ab_loop);
 
     file_dialog.open(Some(window), gio::Cancellable::NONE, move |result| {
         if let Ok(file) = result {
@@ -1022,6 +1145,7 @@ fn trigger_open_file_dialog(
                 &pic_cb,
                 &sub_cb,
                 &bottom_cb,
+                &ab_loop_cb,
             );
         }
     });
@@ -1125,6 +1249,7 @@ fn load_and_play_file(
     picture: &Picture,
     subtitle_label: &Label,
     bottom_controls: &ControlBarWidgets,
+    ab_loop: &Rc<Cell<AbLoopState>>,
 ) {
     let file_name = gio::File::for_uri(path)
         .basename()
@@ -1138,6 +1263,7 @@ fn load_and_play_file(
         }
     };
 
+    ab_loop.set(AbLoopState::Unset);
     window.set_title(Some(&format!("Glimpse - {}", file_name)));
     bottom_controls.title_label.set_text(&file_name);
 
@@ -1258,6 +1384,8 @@ fn load_and_play_file(
                             &off_button,
                         );
                     },
+                    &bottom_controls.loop_enabled,
+                    &bottom_controls.loop_menu_buttons,
                 );
                 crate::controls::track_popover_visibility(&popover, &bottom_controls.open_popovers);
                 bottom_controls.settings_button.set_popover(Some(&popover));
@@ -1381,6 +1509,8 @@ fn show_shortcuts_dialog(parent: &ApplicationWindow) {
         ("Left / Right", "Seek ±5 seconds"),
         ("Up / Down", "Volume ±5%"),
         ("M", "Toggle Mute"),
+        ("Shift + L", "Toggle Loop"),
+        ("L", "Set A / B loop points or clear loop"),
     ];
 
     for (key, desc) in shortcuts {
@@ -1419,6 +1549,7 @@ fn create_main_menu_popover(
     picture: &Picture,
     subtitle_label: &Label,
     bottom_controls: &ControlBarWidgets,
+    ab_loop: &Rc<Cell<AbLoopState>>,
 ) -> gtk4::Popover {
     let popover = gtk4::Popover::new();
     popover.add_css_class("menu-popover");
@@ -1551,9 +1682,10 @@ fn create_main_menu_popover(
     let pic_op = picture.clone();
     let sub_op = subtitle_label.clone();
     let btm_op = bottom_controls.clone();
+    let ab_loop_op = Rc::clone(ab_loop);
     btn_open.connect_clicked(move |_| {
         pop_close2.popdown();
-        trigger_open_file_dialog(&win_op, &stack_op, &p_op, &video_op, &pic_op, &sub_op, &btm_op);
+        trigger_open_file_dialog(&win_op, &stack_op, &p_op, &video_op, &pic_op, &sub_op, &btm_op, &ab_loop_op);
     });
     vbox.append(&btn_open);
 
@@ -1612,4 +1744,85 @@ fn create_main_menu_popover(
     popover.set_child(Some(&vbox));
     attach_popover_scroll_guard(&popover);
     popover
+}
+#[cfg(test)]
+mod looping_tests {
+    use super::*;
+
+    #[test]
+    fn lowercase_l_cycles_a_b_loop_points_and_clear() {
+        let a = Duration::from_secs(10);
+        let b = Duration::from_secs(20);
+        let state = next_ab_loop_state(AbLoopState::Unset, a);
+        assert_eq!(state, AbLoopState::PointA(a));
+
+        let state = next_ab_loop_state(state, b);
+        assert_eq!(state, AbLoopState::Range { start: a, end: b });
+
+        assert_eq!(next_ab_loop_state(state, Duration::from_secs(30)), AbLoopState::Unset);
+    }
+
+    #[test]
+    fn a_b_loop_requires_b_after_a() {
+        let a = Duration::from_secs(10);
+        assert_eq!(
+            next_ab_loop_state(AbLoopState::PointA(a), Duration::from_secs(9)),
+            AbLoopState::PointA(a),
+        );
+    }
+
+    #[test]
+    fn a_b_loop_takes_precedence_over_whole_file_loop() {
+        let a = Duration::from_secs(10);
+        let b = Duration::from_secs(20);
+        assert_eq!(
+            playback_loop_target(
+                b,
+                Some(Duration::from_secs(60)),
+                PlayerState::Playing,
+                true,
+                true,
+                AbLoopState::Range { start: a, end: b },
+            ),
+            Some(a),
+        );
+    }
+
+    #[test]
+    fn whole_file_loop_waits_for_audio_eof_but_uses_duration_for_video_only() {
+        let duration = Duration::from_secs(60);
+        assert_eq!(
+            playback_loop_target(
+                duration,
+                Some(duration),
+                PlayerState::Playing,
+                true,
+                true,
+                AbLoopState::Unset,
+            ),
+            None,
+        );
+        assert_eq!(
+            playback_loop_target(
+                duration,
+                Some(duration),
+                PlayerState::Ended,
+                true,
+                true,
+                AbLoopState::Unset,
+            ),
+            Some(Duration::ZERO),
+        );
+        assert_eq!(
+            playback_loop_target(
+                duration,
+                Some(duration),
+                PlayerState::Playing,
+                false,
+                true,
+                AbLoopState::Unset,
+            ),
+            Some(Duration::ZERO),
+        );
+    }
 }

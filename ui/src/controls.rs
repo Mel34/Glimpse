@@ -3,11 +3,11 @@
 //! The media filename lives in the top-left OSD row; this bar contains
 //! volume/track controls, the seekbar, and timestamps.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 use gtk4::prelude::*;
-use gtk4::{Box as GtkBox, Image, Label, MenuButton, Orientation, Scale};
+use gtk4::{Box as GtkBox, CheckButton, Image, Label, MenuButton, Orientation, Scale};
 use crate::interaction::attach_popover_scroll_guard;
 
 #[derive(Clone)]
@@ -25,6 +25,8 @@ pub struct ControlBarWidgets {
     pub elapsed_label: Label,
     pub duration_label: Label,
     pub open_popovers: Rc<Cell<usize>>,
+    pub loop_enabled: Rc<Cell<bool>>,
+    pub loop_menu_buttons: Rc<RefCell<Vec<CheckButton>>>,
 }
 
 pub fn create_floating_bottom_bar() -> ControlBarWidgets {
@@ -48,6 +50,8 @@ pub fn create_floating_bottom_bar() -> ControlBarWidgets {
     let last_nonzero_volume = Rc::new(Cell::new(1.0));
 
     let open_popovers = Rc::new(Cell::new(0));
+    let loop_enabled = Rc::new(Cell::new(false));
+    let loop_menu_buttons = Rc::new(RefCell::new(Vec::new()));
 
     let volume_button = MenuButton::new();
     let volume_icon = Image::from_icon_name("audio-volume-high-symbolic");
@@ -135,6 +139,8 @@ pub fn create_floating_bottom_bar() -> ControlBarWidgets {
         elapsed_label,
         duration_label,
         open_popovers,
+        loop_enabled,
+        loop_menu_buttons,
     }
 }
 
