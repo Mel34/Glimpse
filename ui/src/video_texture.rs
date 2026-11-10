@@ -671,40 +671,40 @@ fn schedule_frames(
         };
 
         let texture = match frame.vaapi_frame.as_ref() {
-                Some(vaapi_frame) => {
-                    #[cfg(feature = "vaapi-hdr")]
-                    {
-                        match crate::vaapi_texture::create_texture(vaapi_frame) {
-                            Ok(texture) => texture,
-                            Err(error) => {
-                                tracing::error!(%error, pts = frame.pts, "Could not import VAAPI frame into GTK");
-                                return glib::ControlFlow::Break;
-                            }
+            Some(vaapi_frame) => {
+                #[cfg(feature = "vaapi-hdr")]
+                {
+                    match crate::vaapi_texture::create_texture(vaapi_frame) {
+                        Ok(texture) => texture,
+                        Err(error) => {
+                            tracing::error!(%error, pts = frame.pts, "Could not import VAAPI frame into GTK");
+                            return glib::ControlFlow::Break;
                         }
                     }
-                    #[cfg(not(feature = "vaapi-hdr"))]
-                    {
-                        let _ = vaapi_frame;
-                        tracing::error!(
-                            "A VAAPI frame reached the presenter, but Glimpse was built without the vaapi-hdr feature"
-                        );
-                        return glib::ControlFlow::Break;
-                    }
                 }
-                None => {
-                    let pixels = Arc::try_unwrap(frame.rgba_data)
-                        .unwrap_or_else(|shared| shared.as_ref().clone());
-                    let bytes = glib::Bytes::from_owned(pixels);
-                    gdk4::MemoryTexture::new(
-                        frame.width as i32,
-                        frame.height as i32,
-                        gdk4::MemoryFormat::R8g8b8a8,
-                        &bytes,
-                        frame.stride,
-                    )
-                    .upcast()
+                #[cfg(not(feature = "vaapi-hdr"))]
+                {
+                    let _ = vaapi_frame;
+                    tracing::error!(
+                        "A VAAPI frame reached the presenter, but Glimpse was built without the vaapi-hdr feature"
+                    );
+                    return glib::ControlFlow::Break;
                 }
-            };
+            }
+            None => {
+                let pixels = Arc::try_unwrap(frame.rgba_data)
+                    .unwrap_or_else(|shared| shared.as_ref().clone());
+                let bytes = glib::Bytes::from_owned(pixels);
+                gdk4::MemoryTexture::new(
+                    frame.width as i32,
+                    frame.height as i32,
+                    gdk4::MemoryFormat::R8g8b8a8,
+                    &bytes,
+                    frame.stride,
+                )
+                .upcast()
+            }
+        };
         picture.set_paintable(Some(&texture));
         state.displayed_frames += 1;
         if state.displayed_frames == 1 {
