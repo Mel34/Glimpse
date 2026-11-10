@@ -1067,7 +1067,7 @@ fn trigger_open_subtitle_dialog(
                 p.select_subtitle(None);
             }
             match playback.select_external_subtitle(path) {
-                Ok(()) => button.set_label(&format!("External: {name}")),
+                Ok(()) => button.set_label(Some(&format!("External: {name}"))),
                 Err(error) => {
                     tracing::error!(%error, "Could not load external subtitle");
                     off_button.set_active(true);
