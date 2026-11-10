@@ -65,10 +65,27 @@ impl VideoPlaybackHandle {
         self.subtitle_label.set_visible(false);
         self.stop_run();
         if self.window_active {
-            if let Err(error) = self.start_run(target) {
+            if let Err(error) = self.start_run(target, None) {
                 tracing::error!(%error, "Could not restart video after seek");
             }
         }
+    }
+
+    /// Restart video at a seek target and report when its first frame is
+    /// presented by GTK. Returns None when video presentation is inactive.
+    pub fn seek_for_sync(&mut self, target: Duration) -> Option<crossbeam_channel::Receiver<()>> {
+        self.subtitle_label.set_text("");
+        self.subtitle_label.set_visible(false);
+        self.stop_run();
+        if !self.window_active {
+            return None;
+        }
+        let (ready_sender, ready_receiver) = bounded(1);
+        if let Err(error) = self.start_run(target, Some(ready_sender)) {
+            tracing::error!(%error, "Could not restart video for synchronized loop");
+            return None;
+        }
+        Some(ready_receiver)
     }
 
     pub fn select_subtitle(&mut self, id: Option<glimpse_engine::TrackId>) {
@@ -79,7 +96,7 @@ impl VideoPlaybackHandle {
         self.stop_run();
         if self.window_active {
             let position = Duration::from_secs_f64(self.clock.get_pts().max(0.0));
-            if let Err(error) = self.start_run(position) {
+            if let Err(error) = self.start_run(position, None) {
                 tracing::error!(%error, "Could not restart video after subtitle selection");
             }
         }
@@ -93,7 +110,7 @@ impl VideoPlaybackHandle {
         self.stop_run();
         if self.window_active {
             let position = Duration::from_secs_f64(self.clock.get_pts().max(0.0));
-            self.start_run(position)
+            self.start_run(position, None)
         } else {
             Ok(())
         }
@@ -110,7 +127,7 @@ impl VideoPlaybackHandle {
             self.stop_run();
         } else if self.run.is_none() {
             let position = Duration::from_secs_f64(self.clock.get_pts().max(0.0));
-            if let Err(error) = self.start_run(position) {
+            if let Err(error) = self.start_run(position, None) {
                 tracing::error!(%error, "Could not resume video after window activation");
             }
         }
@@ -132,7 +149,7 @@ impl VideoPlaybackHandle {
         }
     }
 
-    fn start_run(&mut self, start_position: Duration) -> Result<(), String> {
+    fn start_run(&mut self, start_position: Duration, first_frame_ready: Option<Sender<()>>) -> Result<(), String> {
         if !self.window_active {
             return Ok(());
         }
@@ -161,6 +178,7 @@ impl VideoPlaybackHandle {
             self.subtitle_label.clone(),
             Arc::clone(&self.clock),
             Arc::clone(&cancelled),
+            first_frame_ready,
         );
         self.run = Some(PlaybackRun { queues, cancelled, worker: Some(worker) });
         Ok(())
@@ -189,7 +207,7 @@ pub fn present_continuous_frames(
         path: path.to_owned(), tracks, picture: picture.clone(), subtitle_label: subtitle_label.clone(),
         external_subtitle_path: None, clock, window_active, run: None,
     };
-    if let Err(error) = handle.start_run(Duration::ZERO) {
+    if let Err(error) = handle.start_run(Duration::ZERO, None) {
         tracing::error!(%error, "Could not start engine video playback");
         return None;
     }
