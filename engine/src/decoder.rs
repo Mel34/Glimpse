@@ -61,20 +61,20 @@ unsafe extern "C" fn select_vaapi_pixel_format(
 ) -> ffmpeg_the_third::ffi::AVPixelFormat {
     use ffmpeg_the_third::ffi::AVPixelFormat;
     if formats.is_null() {
-        return AVPixelFormat::AV_PIX_FMT_NONE;
+        return AVPixelFormat::NONE;
     }
     let mut current = formats;
     loop {
         let format = unsafe { *current };
-        if format == AVPixelFormat::AV_PIX_FMT_NONE {
+        if format == AVPixelFormat::NONE {
             break;
         }
-        if format == AVPixelFormat::AV_PIX_FMT_VAAPI {
+        if format == AVPixelFormat::VAAPI {
             return format;
         }
         current = unsafe { current.add(1) };
     }
-    AVPixelFormat::AV_PIX_FMT_NONE
+    AVPixelFormat::NONE
 }
 
 pub struct VideoDecoder {
@@ -153,7 +153,7 @@ impl VideoDecoder {
             let result = unsafe {
                 ffmpeg::ffi::av_hwdevice_ctx_create(
                     &mut device,
-                    ffmpeg::ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI,
+                    ffmpeg::ffi::AVHWDeviceType::VAAPI,
                     device_name,
                     std::ptr::null_mut(),
                     0,
