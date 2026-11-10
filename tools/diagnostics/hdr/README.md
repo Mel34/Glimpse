@@ -1,28 +1,31 @@
 # GTK HDR / PQ diagnostic
 
-This probe is deliberately separate from Glimpse's production playback path.
+This probe is a standalone Cargo workspace, deliberately isolated from
+Glimpse's production workspace. It uses GTK 4.16-era Rust bindings
+(gtk4/gdk4 0.9), while the production application remains on its existing
+GTK 4.12 binding baseline (gtk4/gdk4 0.8) with libadwaita 0.6.
 
-It uses the GTK 4.16-era Rust bindings (gtk4/gdk4 0.9) only for this optional
-diagnostic binary. The production application remains on its existing GTK 4.12
-binding baseline (gtk4/gdk4 0.8).
+The isolation is required because Cargo permits only one crate in a dependency
+graph to link the native `gtk-4` library. The production app and this probe
+therefore have separate dependency graphs and lockfiles.
 
-It creates an opaque, 16-bit RGB test pattern tagged with the GDK Rec. 2100
-PQ color state and places it in a `GtkGraphicsOffload` widget. The bands are
-absolute PQ luminance values from 0.1 to 4000 cd/m².
+The probe creates an opaque, 16-bit RGB test pattern tagged with the GDK
+Rec. 2100 PQ color state and places it in a `GtkGraphicsOffload` widget. The
+bands are absolute PQ luminance values from 0.1 to 4000 cd/m².
 
 ## Run
 
 From the repository root:
 
 ```sh
-GDK_DEBUG=offload,dmabuf cargo run -p glimpse --features hdr-probe --bin glimpse-hdr-probe
+GDK_DEBUG=offload,dmabuf cargo run --manifest-path tools/diagnostics/hdr/Cargo.toml
 ```
 
 For Wayland protocol tracing:
 
 ```sh
 GDK_DEBUG=offload,dmabuf WAYLAND_DEBUG=1 \
-  cargo run -p glimpse --features hdr-probe --bin glimpse-hdr-probe 2>hdr-probe-wayland.log
+  cargo run --manifest-path tools/diagnostics/hdr/Cargo.toml 2>hdr-probe-wayland.log
 grep -Ei 'wp_color|image_description|set_image_description|offload|dmabuf' \
   hdr-probe-wayland.log
 ```
