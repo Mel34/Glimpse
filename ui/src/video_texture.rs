@@ -6,6 +6,7 @@ use glib::prelude::Cast;
 use gtk4::prelude::WidgetExtManual;
 use gtk4::prelude::WidgetExt;
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -23,6 +24,16 @@ struct PlaybackRun {
     worker: Option<JoinHandle<()>>,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct TickSample {
+    interval_us: Option<u64>,
+    frame_time_us: i64,
+    frame_time_delta_us: Option<i64>,
+    refresh_interval_us: i64,
+    presentation_time_us: i64,
+    window_active: Option<bool>,
+}
+
 struct FrameSchedulerState {
     pending: Option<VideoFrameData>,
     present_first_frame: bool,
@@ -35,6 +46,10 @@ struct FrameSchedulerState {
     ingest_tick_count: u64,
     tick_count: u64,
     last_gdk_tick_at: Option<Instant>,
+    last_frame_time_us: Option<i64>,
+    tick_history: VecDeque<TickSample>,
+    last_ingest_at: Option<Instant>,
+    max_ingest_interval_us: u64,
     stream_finished: bool,
 }
 
@@ -445,6 +460,10 @@ fn schedule_frames(
         ingest_tick_count: 0,
         tick_count: 0,
         last_gdk_tick_at: None,
+        last_frame_time_us: None,
+        tick_history: VecDeque::with_capacity(32),
+        last_ingest_at: None,
+        max_ingest_interval_us: 0,
         stream_finished: false,
     }));
     let picture_weak = picture.downgrade();
@@ -479,6 +498,11 @@ fn schedule_frames(
         if state.stream_finished {
             return glib::ControlFlow::Break;
         }
+        let ingest_now = Instant::now();
+        if let Some(last_ingest_at) = state.last_ingest_at.replace(ingest_now) {
+            let interval_us = last_ingest_at.elapsed().as_micros() as u64;
+            state.max_ingest_interval_us = state.max_ingest_interval_us.max(interval_us);
+        }
         state.ingest_tick_count += 1;
         if state.ingest_tick_count % 200 == 0 {
             tracing::info!(
@@ -495,6 +519,11 @@ fn schedule_frames(
                 since_last_gdk_tick_ms = state.last_gdk_tick_at
                     .as_ref()
                     .map(|last_tick| last_tick.elapsed().as_secs_f64() * 1000.0),
+                ingest_interval_us = state.last_ingest_at
+                    .as_ref()
+                    .map(|last_tick| last_tick.elapsed().as_micros() as u64),
+                max_ingest_interval_us = state.max_ingest_interval_us,
+                last_frame_time_us = state.last_frame_time_us,
                 mapped = picture.is_mapped(),
                 visible = picture.is_visible(),
                 "Video ingestion heartbeat"
@@ -572,7 +601,14 @@ fn schedule_frames(
             return glib::ControlFlow::Break;
         };
 
-        let (refresh_interval_us, _) = frame_clock.refresh_info(frame_clock.frame_time());
+        let tick_now = Instant::now();
+        let tick_interval_us = state.borrow().last_gdk_tick_at
+            .as_ref()
+            .map(|last_tick| last_tick.elapsed().as_micros() as u64);
+        let frame_time_us = frame_clock.frame_time();
+        let frame_time_delta_us = state.borrow().last_frame_time_us
+            .map(|last_time| frame_time_us - last_time);
+        let (refresh_interval_us, presentation_time_us) = frame_clock.refresh_info(frame_time_us);
         let refresh_interval_us = if refresh_interval_us > 0 {
             refresh_interval_us
         } else {
@@ -611,12 +647,47 @@ fn schedule_frames(
             subtitle_label.set_visible(false);
         }
 
+        let window_active = picture.root()
+            .and_then(|root| root.downcast::<gtk4::Window>().ok())
+            .map(|window| window.is_active());
         let mut state = state.borrow_mut();
-        state.last_gdk_tick_at = Some(Instant::now());
+        state.last_gdk_tick_at = Some(tick_now);
+        state.last_frame_time_us = Some(frame_time_us);
+        let sample = TickSample {
+            interval_us: tick_interval_us,
+            frame_time_us,
+            frame_time_delta_us,
+            refresh_interval_us,
+            presentation_time_us,
+            window_active,
+        };
+        if state.tick_history.len() == 32 {
+            state.tick_history.pop_front();
+        }
+        state.tick_history.push_back(sample);
         state.tick_count += 1;
+        if tick_interval_us.is_some_and(|interval| interval >= 100_000) {
+            tracing::warn!(
+                gap_ms = tick_interval_us.unwrap_or_default() as f64 / 1000.0,
+                frame_time_us,
+                frame_time_delta_us,
+                refresh_interval_us,
+                presentation_time_us,
+                window_active,
+                mapped = picture.is_mapped(),
+                visible = picture.is_visible(),
+                tick_history = ?state.tick_history,
+                "Long gap between GDK frame-clock callbacks"
+            );
+        }
         if state.tick_count % 250 == 0 {
             tracing::info!(
                 ticks = state.tick_count,
+                frame_time_us,
+                frame_time_delta_us,
+                tick_interval_us,
+                presentation_time_us,
+                window_active,
                 frames_received = state.frames_received,
                 displayed_frames = state.displayed_frames,
                 dropped_stale_ingest = state.dropped_stale_ingest,
@@ -736,6 +807,7 @@ fn schedule_frames(
             return glib::ControlFlow::Continue;
         };
 
+        let texture_import_started = Instant::now();
         let texture = match frame.vaapi_frame.as_ref() {
             Some(vaapi_frame) => {
                 #[cfg(feature = "vaapi-hdr")]
@@ -777,7 +849,20 @@ fn schedule_frames(
                 .upcast()
             }
         };
+        let texture_import_us = texture_import_started.elapsed().as_micros() as u64;
+        let paintable_started = Instant::now();
         picture.set_paintable(Some(&texture));
+        let set_paintable_us = paintable_started.elapsed().as_micros() as u64;
+        if texture_import_us >= 5_000 || set_paintable_us >= 2_000 {
+            tracing::warn!(
+                pts = frame.pts,
+                texture_import_us,
+                set_paintable_us,
+                refresh_interval_us,
+                frame_time_us,
+                "Slow video texture presentation operation"
+            );
+        }
         state.displayed_frames += 1;
         if state.displayed_frames == 1 {
             tracing::info!(
