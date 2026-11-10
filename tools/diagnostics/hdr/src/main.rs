@@ -8,8 +8,7 @@ use gdk4::{ColorState, DmabufTextureBuilder};
 use gbm::{BufferObjectFlags, Device, Format, Modifier};
 use gtk4::prelude::*;
 use gtk4::{
-    Application, ApplicationWindow, Box as GtkBox, GraphicsOffload,
-    GraphicsOffloadEnabled, Label, Orientation, Picture,
+    Application, ApplicationWindow, Box as GtkBox, Label, Orientation, Picture,
 };
 use std::error::Error;
 use std::fmt::Display;
@@ -182,11 +181,6 @@ fn main() -> glib::ExitCode {
             }
         };
 
-        let offload = GraphicsOffload::new(Some(&picture));
-        offload.set_enabled(GraphicsOffloadEnabled::Enabled);
-        offload.set_hexpand(true);
-        offload.set_vexpand(true);
-
         let levels = LEVELS_NITS
             .iter()
             .map(|level| format!("{level}"))
@@ -196,7 +190,7 @@ fn main() -> glib::ExitCode {
             "{status}\n\
              BT.2020 / ST 2084 PQ · left to right: {levels} cd/m²\n\
              {details}\n\
-             10-bit packed RGB DMA-BUF · GTK graphics offload requested\n\
+             10-bit packed RGB DMA-BUF · normal GTK texture rendering (graphics offload disabled)\n\
              This tests RGB DMA-BUF import, not decoder YUV/P010 import."
         )));
         explanation.set_wrap(true);
@@ -207,7 +201,7 @@ fn main() -> glib::ExitCode {
         content.set_margin_bottom(12);
         content.set_margin_start(12);
         content.set_margin_end(12);
-        content.append(&offload);
+        content.append(&picture);
         content.append(&explanation);
         window.set_child(Some(&content));
         window.present();
