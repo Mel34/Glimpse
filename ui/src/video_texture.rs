@@ -49,6 +49,7 @@ struct FrameSchedulerState {
     last_frame_time_us: Option<i64>,
     tick_history: VecDeque<TickSample>,
     last_ingest_at: Option<Instant>,
+    last_ingest_interval_us: u64,
     max_ingest_interval_us: u64,
     stream_finished: bool,
 }
@@ -463,6 +464,7 @@ fn schedule_frames(
         last_frame_time_us: None,
         tick_history: VecDeque::with_capacity(32),
         last_ingest_at: None,
+        last_ingest_interval_us: 0,
         max_ingest_interval_us: 0,
         stream_finished: false,
     }));
@@ -501,6 +503,7 @@ fn schedule_frames(
         let ingest_now = Instant::now();
         if let Some(last_ingest_at) = state.last_ingest_at.replace(ingest_now) {
             let interval_us = last_ingest_at.elapsed().as_micros() as u64;
+            state.last_ingest_interval_us = interval_us;
             state.max_ingest_interval_us = state.max_ingest_interval_us.max(interval_us);
         }
         state.ingest_tick_count += 1;
@@ -519,9 +522,7 @@ fn schedule_frames(
                 since_last_gdk_tick_ms = state.last_gdk_tick_at
                     .as_ref()
                     .map(|last_tick| last_tick.elapsed().as_secs_f64() * 1000.0),
-                ingest_interval_us = state.last_ingest_at
-                    .as_ref()
-                    .map(|last_tick| last_tick.elapsed().as_micros() as u64),
+                last_ingest_interval_us = state.last_ingest_interval_us,
                 max_ingest_interval_us = state.max_ingest_interval_us,
                 last_frame_time_us = state.last_frame_time_us,
                 mapped = picture.is_mapped(),
