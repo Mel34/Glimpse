@@ -188,8 +188,31 @@ impl Player {
 
     pub fn seek(&self, to: Duration) {
         let mut state = self.state.lock();
-        let clamped = clamp_seek_target(to, *self.duration.lock());
+        let duration = *self.duration.lock();
+        let clamped = clamp_seek_target(to, duration);
         let was_playing = *state == PlayerState::Playing;
+
+        // Seeking to or beyond EOF is a normal end-of-playback request. Do
+        // not start a replacement audio session: there are no PCM samples
+        // after the duration, so prebuffering would incorrectly report an error.
+        if duration.is_some_and(|duration| clamped >= duration) {
+            *self.seek_position.lock() = clamped;
+            #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
+            if let Some(mut session) = self.audio_session.lock().take() {
+                session.stop();
+            }
+            self.clock.pause();
+            self.clock.reset(clamped.as_secs_f64());
+            *state = PlayerState::Ended;
+
+            let mut serial = self.current_serial.lock();
+            *serial = serial.next();
+            let _ = self.event_sender.send(Event::PositionChanged(clamped));
+            let _ = self.event_sender.send(Event::StateChanged(PlayerState::Ended));
+            let _ = self.event_sender.send(Event::EndOfStream);
+            return;
+        }
+
         *self.seek_position.lock() = clamped;
         // Freeze wall-clock extrapolation while the old audio worker is
         // stopped and the replacement session probes and prebuffers.
