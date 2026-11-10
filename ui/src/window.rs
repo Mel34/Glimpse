@@ -89,8 +89,6 @@ impl GlimpseWindow {
 
         let player: Rc<RefCell<Option<Player>>> = Rc::new(RefCell::new(None));
         let video_playback: Rc<RefCell<Option<VideoPlaybackHandle>>> = Rc::new(RefCell::new(None));
-        let loop_enabled = Rc::clone(&bottom_controls.loop_enabled);
-        let loop_menu_buttons = Rc::clone(&bottom_controls.loop_menu_buttons);
         let ab_loop = Rc::new(Cell::new(AbLoopState::Unset));
         let video_playback_on_focus = Rc::clone(&video_playback);
         window.connect_is_active_notify(move |window| {
@@ -236,6 +234,8 @@ impl GlimpseWindow {
         // Build the bottom controls first so the filename label can live in
         // the top-left OSD while remaining part of the shared control state.
         let bottom_controls = create_floating_bottom_bar();
+        let loop_enabled = Rc::clone(&bottom_controls.loop_enabled);
+        let loop_menu_buttons = Rc::clone(&bottom_controls.loop_menu_buttons);
 
         // Top Floating OSD Bar (margins 6px from corner matching standard Libadwaita)
         let top_controls = GtkBox::new(Orientation::Horizontal, 0);
@@ -808,8 +808,6 @@ impl GlimpseWindow {
             &picture,
             &subtitle_label,
             &bottom_controls,
-            &loop_enabled,
-            &loop_menu_buttons,
             &ab_loop,
         );
         crate::controls::track_popover_visibility(&player_popover, &bottom_controls.open_popovers);
