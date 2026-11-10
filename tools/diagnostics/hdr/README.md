@@ -9,7 +9,7 @@ The isolation is required because Cargo permits only one crate in a dependency
 graph to link the native `gtk-4` library. The production app and this probe
 therefore have separate dependency graphs and lockfiles.
 
-## What it displays
+## Synthetic DMA-BUF pattern
 
 The window has five columns:
 
@@ -63,7 +63,7 @@ before GDK imports it.
 The default DRM node is `/dev/dri/renderD128`. Override it with
 `GLIMPSE_DRM_DEVICE` if the render node has a different path.
 
-## Run
+## Run the synthetic probe
 
 From the repository root:
 
@@ -71,11 +71,61 @@ From the repository root:
 GDK_DEBUG=color-mgmt,dmabuf cargo run --manifest-path tools/diagnostics/hdr/Cargo.toml
 ```
 
-If the PQ memory image and SDR DMA-BUF appear but XRGB2101010 remains black,
-the failure is specific to the packed 10-bit opaque format or its import path.
-If ARGB2101010 works, that gives us a known-good packed RGB HDR reference.
-The P010 column then independently tells us whether GTK/Mesa can import and
-sample a multi-plane 10-bit YUV DMA-BUF with PQ color state.
+The ARGB2101010 column is the known-good packed RGB HDR reference. The P010
+column tests GTK/Mesa multi-plane 10-bit YUV DMA-BUF import and sampling.
+
+## VAAPI decoder frame → GTK
+
+`vaapi_gtk.c` is the next isolated diagnostic. It decodes one selected frame
+with FFmpeg's VAAPI hardware decoder, maps that frame directly to its DRM PRIME
+descriptor, and gives the original P010 planes to
+`GdkDmabufTextureBuilder`. It does not copy the decoded image into GBM or
+system memory.
+
+The importer currently accepts the descriptor layout already observed in the
+VAAPI probe: one or more DRM objects, with two single-plane layers in
+`R16 + GR1616` order. It requires limited-range BT.2020 non-constant-luminance
+PQ metadata and constructs the matching YUV CICP color state
+(primaries 9, transfer 16, matrix 9, narrow range). Other formats, layouts, or
+color metadata are rejected rather than silently mislabeled.
+
+The mapped DRM PRIME frame is retained by the GDK texture's release callback,
+so the decoder surface and its DMA-BUF file descriptors remain alive for the
+entire lifetime of the imported texture. This is a one-frame presentation
+test; it does not establish continuous playback scheduling or asynchronous
+decoder/GPU overlap.
+
+Build on Arch Linux:
+
+```sh
+cc -Wall -Wextra -Werror -O2 \
+  tools/diagnostics/hdr/vaapi_gtk.c \
+  -o /tmp/glimpse-vaapi-gtk-hdr-probe \
+  $(pkg-config --cflags --libs gtk4 libavformat libavcodec libavutil libdrm)
+```
+
+Run against an HDR10 HEVC Main10 file:
+
+```sh
+GDK_DEBUG=color-mgmt,dmabuf \
+  /tmp/glimpse-vaapi-gtk-hdr-probe "/path/to/HDR10-video.mkv" 0
+```
+
+The optional final argument is the decoded video-frame index (default 0).
+Set `GLIMPSE_DRM_RENDER_NODE` to select a VAAPI render node explicitly.
+The terminal reports the decoded frame's color metadata, DRM plane FDs,
+offsets, pitches and modifier, followed by GDK's import result. The GTK window
+displays the imported frame.
+
+For a useful import trace:
+
+```sh
+GDK_DEBUG=dmabuf,color-mgmt \
+  /tmp/glimpse-vaapi-gtk-hdr-probe "/path/to/HDR10-video.mkv" 0 \
+  2>vaapi-gtk-hdr.log
+grep -Ei 'P010|importing dmabuf|imported .* dmabuf|error|failed' \
+  vaapi-gtk-hdr.log
+```
 
 ## Wayland protocol tracing
 
@@ -93,4 +143,4 @@ grep -Ei 'wp_color_management_surface|wp_image_description|set_image_description
 ```
 
 No production decoder, frame scheduler, subtitle, audio, or playback code is
-changed by this probe.
+changed by either diagnostic.
