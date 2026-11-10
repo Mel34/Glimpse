@@ -325,6 +325,8 @@ impl GlimpseWindow {
         let timeline_video = Rc::clone(&video_playback);
         let timeline_loop_enabled = Rc::clone(&loop_enabled);
         let timeline_ab_loop = Rc::clone(&ab_loop);
+        let loop_resume: Rc<RefCell<Option<crossbeam_channel::Receiver<()>>>> = Rc::new(RefCell::new(None));
+        let timeline_loop_resume = Rc::clone(&loop_resume);
         let timeline_seekbar = bottom_controls.seekbar.clone();
         let timeline_elapsed = bottom_controls.elapsed_label.clone();
         let timeline_dragging = Rc::clone(&bottom_controls.seekbar_dragging);
@@ -336,21 +338,36 @@ impl GlimpseWindow {
             if !timeline_dragging.get() {
                 if let Some(current_player) = timeline_player.borrow().as_ref() {
                     let media_position = current_player.position();
-                    let target = playback_loop_target(
-                        media_position,
-                        current_player.duration(),
-                        current_player.state(),
-                        !current_player.tracks().audio_tracks.is_empty(),
-                        timeline_loop_enabled.get(),
-                        timeline_ab_loop.get(),
-                    );
-                    if let Some(target) = target {
-                        current_player.seek(target);
-                        if let Some(ref mut video) = *timeline_video.borrow_mut() {
-                            video.seek(target);
+                    if let Some(ready) = timeline_loop_resume.borrow().as_ref() {
+                        match ready.try_recv() {
+                            Ok(()) | Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                                timeline_loop_resume.borrow_mut().take();
+                                current_player.play();
+                            }
+                            Err(crossbeam_channel::TryRecvError::Empty) => {}
                         }
-                        if current_player.state() != PlayerState::Playing {
-                            current_player.play();
+                    } else {
+                        let target = playback_loop_target(
+                            media_position,
+                            current_player.duration(),
+                            current_player.state(),
+                            !current_player.tracks().audio_tracks.is_empty(),
+                            timeline_loop_enabled.get(),
+                            timeline_ab_loop.get(),
+                        );
+                        if let Some(target) = target {
+                            // Keep the shared media clock frozen while both paths
+                            // prepare the new loop iteration. Audio starts only
+                            // after GTK presents the first frame at A.
+                            current_player.pause();
+                            current_player.seek(target);
+                            let ready = timeline_video.borrow_mut().as_mut()
+                                .and_then(|video| video.seek_for_sync(target));
+                            if let Some(ready) = ready {
+                                *timeline_loop_resume.borrow_mut() = Some(ready);
+                            } else {
+                                current_player.play();
+                            }
                         }
                     }
 
