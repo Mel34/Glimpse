@@ -353,7 +353,7 @@ fn schedule_frames(
                     Err(TryRecvError::Disconnected) => {
                         subtitle_label.set_text("");
                         subtitle_label.set_visible(false);
-                        tracing::info!
+                        tracing::info!(
                             displayed_frames = state.displayed_frames,
                             dropped_frames = state.dropped_frames,
                             "Engine video stream finished"
