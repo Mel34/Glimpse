@@ -1,8 +1,7 @@
-//! Static BT.2020/PQ test pattern backed by a GBM DMA-BUF and a
-//! system-memory reference texture using GDK's supported 16-bit RGB format.
+//! Static HDR DMA-BUF probe with byte-identical system-memory and SDR controls.
 
 use gdk4::{ColorState, DmabufTextureBuilder, MemoryFormat, MemoryTextureBuilder};
-use gbm::{BufferObjectFlags, Device, Format, Modifier};
+use gbm::{BufferObject, BufferObjectFlags, Device, Format, Modifier};
 use gtk4::prelude::*;
 use gtk4::{Application, ApplicationWindow, Box as GtkBox, Label, Orientation, Picture};
 use std::error::Error;
@@ -51,12 +50,11 @@ fn modifier_value(modifier: Modifier) -> Result<u64, Box<dyn Error>> {
     }
 }
 
-fn fill_pq_dmabuf_pattern(buffer: &mut [u8], stride: usize) {
+fn fill_pq_pattern(buffer: &mut [u8], stride: usize) {
     for y in 0..HEIGHT as usize {
         let row = &mut buffer[y * stride..(y + 1) * stride];
         for x in 0..WIDTH as usize {
-            let band = (x * LEVELS_NITS.len() / WIDTH as usize)
-                .min(LEVELS_NITS.len() - 1);
+            let band = (x * LEVELS_NITS.len() / WIDTH as usize).min(LEVELS_NITS.len() - 1);
             let code16 = pq_encode(LEVELS_NITS[band]) as u32;
             let code10 = (code16 * 1023 + 32_767) / 65_535;
             // DRM_FORMAT_XRGB2101010: X[31:30], R[29:20], G[19:10], B[9:0].
@@ -66,8 +64,86 @@ fn fill_pq_dmabuf_pattern(buffer: &mut [u8], stride: usize) {
     }
 }
 
-/// Build a system-memory texture using the exact same XRGB2101010 bytes
-/// as the GBM DMA-BUF. GTK 4.24 defines this format as enum value 67.
+fn fill_sdr_control(buffer: &mut [u8], stride: usize) {
+    for y in 0..HEIGHT as usize {
+        let row = &mut buffer[y * stride..(y + 1) * stride];
+        for x in 0..WIDTH as usize {
+            let band = (x * LEVELS_NITS.len() / WIDTH as usize).min(LEVELS_NITS.len() - 1);
+            let value = 24 + (band as u32 * 15);
+            // DRM_FORMAT_XRGB8888, opaque neutral gray. GDK defaults to sRGB.
+            let packed = (0xffu32 << 24) | (value << 16) | (value << 8) | value;
+            row[x * 4..x * 4 + 4].copy_from_slice(&packed.to_ne_bytes());
+        }
+    }
+}
+
+fn verify_bo_contents<T: 'static>(
+    bo: &BufferObject<T>,
+    expected: &[u8],
+) -> Result<String, Box<dyn Error>> {
+    let result = stage(
+        bo.map(0, 0, WIDTH, HEIGHT, |mapping| {
+            let actual = mapping.buffer();
+            let compared = actual.len().min(expected.len());
+            let mismatches = actual[..compared]
+                .iter()
+                .zip(&expected[..compared])
+                .filter(|(a, b)| a != b)
+                .count();
+            let mut checksum = 0xcbf29ce484222325u64;
+            for byte in &actual[..compared] {
+                checksum ^= *byte as u64;
+                checksum = checksum.wrapping_mul(0x100000001b3);
+            }
+            let first = actual.get(..4).unwrap_or(&[]);
+            (actual.len(), compared, mismatches, checksum, first.to_vec())
+        }),
+        "read back GBM buffer after CPU write",
+    )?;
+    Ok(format!(
+        "GBM readback: mapped={} bytes, compared={} bytes, mismatches={}, FNV-1a=0x{:016x}, first pixel={:02x?}",
+        result.0, result.1, result.2, result.3, result.4
+    ))
+}
+
+fn import_bo<T: 'static>(
+    display: &gdk4::Display,
+    bo: &BufferObject<T>,
+    color_state: Option<&ColorState>,
+) -> Result<gdk4::Texture, Box<dyn Error>> {
+    if bo.plane_count() != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("Expected one DMA-BUF plane, GBM allocated {}", bo.plane_count()),
+        )
+        .into());
+    }
+
+    let modifier = modifier_value(bo.modifier())?;
+    let dmabuf = stage(bo.fd(), "export GBM buffer as DMA-BUF fd")?;
+    let raw_fd = dmabuf.as_raw_fd();
+
+    let builder = DmabufTextureBuilder::new();
+    builder.set_display(display);
+    builder.set_width(bo.width());
+    builder.set_height(bo.height());
+    builder.set_fourcc(bo.format() as u32);
+    builder.set_modifier(modifier);
+    builder.set_n_planes(1);
+    builder.set_fd(0, raw_fd);
+    builder.set_offset(0, bo.offset(0));
+    builder.set_stride(0, bo.stride());
+    if let Some(state) = color_state {
+        builder.set_color_state(Some(state));
+    }
+
+    // Keep the exported fd alive until GDK finalizes the imported texture.
+    stage(
+        unsafe { builder.build_with_release_func(move || drop(dmabuf)) },
+        "import DMA-BUF into GDK texture",
+    )
+}
+
 fn make_cpu_reference(pixels: Vec<u8>, stride: usize) -> Result<gdk4::Texture, Box<dyn Error>> {
     let bytes = glib::Bytes::from_owned(pixels);
     let builder = MemoryTextureBuilder::new();
@@ -80,9 +156,43 @@ fn make_cpu_reference(pixels: Vec<u8>, stride: usize) -> Result<gdk4::Texture, B
     Ok(builder.build())
 }
 
-fn build_pq_textures(
+fn allocate_pattern<T: 'static>(
+    gbm: &Device<std::fs::File>,
+    format: Format,
+    fill: impl FnOnce(&mut [u8], usize),
+) -> Result<(BufferObject<T>, Vec<u8>, usize), Box<dyn Error>>
+where
+    T: Default,
+{
+    let usage = BufferObjectFlags::RENDERING | BufferObjectFlags::LINEAR;
+    if !gbm.is_format_supported(format, usage) {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("GBM does not support linear renderable {format:?}"),
+        )
+        .into());
+    }
+
+    let mut bo = stage(
+        gbm.create_buffer_object::<T>(WIDTH, HEIGHT, format, usage),
+        &format!("allocate linear renderable {format:?} GBM buffer"),
+    )?;
+    let stride = bo.stride() as usize;
+    let mut pixels = vec![0u8; stride * HEIGHT as usize];
+    fill(&mut pixels, stride);
+    stage(
+        bo.map_mut(0, 0, WIDTH, HEIGHT, |mapping| {
+            assert_eq!(mapping.stride() as usize, stride, "GBM mapped stride differs from BO stride");
+            mapping.buffer_mut()[..pixels.len()].copy_from_slice(&pixels);
+        }),
+        &format!("map and write {format:?} pattern into GBM buffer"),
+    )?;
+    Ok((bo, pixels, stride))
+}
+
+fn build_textures(
     display: &gdk4::Display,
-) -> Result<(gdk4::Texture, gdk4::Texture, String), Box<dyn Error>> {
+) -> Result<(gdk4::Texture, gdk4::Texture, gdk4::Texture, String), Box<dyn Error>> {
     let device_path = std::env::var("GLIMPSE_DRM_DEVICE")
         .unwrap_or_else(|_| "/dev/dri/renderD128".to_string());
     let drm_file = stage(
@@ -91,69 +201,26 @@ fn build_pq_textures(
     )?;
     let gbm = stage(Device::new(drm_file), "create GBM device")?;
 
-    let format = Format::Xrgb2101010;
-    let usage = BufferObjectFlags::RENDERING | BufferObjectFlags::LINEAR;
-    if !gbm.is_format_supported(format, usage) {
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            format!("GBM does not support linear renderable XRGB2101010 on {device_path}"),
-        )
-        .into());
-    }
+    let (mut pq_bo, pq_pixels, pq_stride) =
+        allocate_pattern::<()>(&gbm, Format::Xrgb2101010, fill_pq_pattern)?;
+    let readback = verify_bo_contents(&pq_bo, &pq_pixels)?;
+    let pq_reference = make_cpu_reference(pq_pixels, pq_stride)?;
+    let pq_texture = import_bo(display, &pq_bo, Some(&ColorState::rec2100_pq()))?;
 
-    let mut bo = stage(
-        gbm.create_buffer_object::<()>(WIDTH, HEIGHT, format, usage),
-        "allocate linear renderable XRGB2101010 GBM buffer",
-    )?;
-    let stride = bo.stride() as usize;
-    let mut cpu_pixels = vec![0u8; stride * HEIGHT as usize];
-    fill_pq_dmabuf_pattern(&mut cpu_pixels, stride);
-    stage(
-        bo.map_mut(0, 0, WIDTH, HEIGHT, |mapping| {
-            let mapped_stride = mapping.stride() as usize;
-            assert_eq!(mapped_stride, stride, "GBM mapped stride differs from BO stride");
-            mapping.buffer_mut()[..cpu_pixels.len()].copy_from_slice(&cpu_pixels);
-        }),
-        "map and write test pattern into GBM buffer",
-    )?;
+    // An ordinary 8-bit sRGB DMA-BUF is the control for the generic import path.
+    let (sdr_bo, sdr_pixels, _) =
+        allocate_pattern::<()>(&gbm, Format::Xrgb8888, fill_sdr_control)?;
+    let sdr_readback = verify_bo_contents(&sdr_bo, &sdr_pixels)?;
+    let sdr_texture = import_bo(display, &sdr_bo, None)?;
 
-    if bo.plane_count() != 1 {
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            format!("Expected one DMA-BUF plane, GBM allocated {}", bo.plane_count()),
-        )
-        .into());
-    }
-
-    let cpu_texture = make_cpu_reference(cpu_pixels.clone(), stride)?;
-    let modifier = modifier_value(bo.modifier())?;
-    let dmabuf = stage(bo.fd(), "export GBM buffer as DMA-BUF fd")?;
-    let raw_fd = dmabuf.as_raw_fd();
-
-    let builder = DmabufTextureBuilder::new();
-    builder.set_display(display);
-    builder.set_width(WIDTH);
-    builder.set_height(HEIGHT);
-    builder.set_fourcc(format as u32);
-    builder.set_modifier(modifier);
-    builder.set_n_planes(1);
-    builder.set_fd(0, raw_fd);
-    builder.set_offset(0, bo.offset(0));
-    builder.set_stride(0, bo.stride());
-    builder.set_color_state(Some(&ColorState::rec2100_pq()));
-
-    // Keep the exported fd alive until GDK finalizes the imported texture.
-    let dmabuf_texture = stage(
-        unsafe { builder.build_with_release_func(move || drop(dmabuf)) },
-        "import DMA-BUF into GDK texture",
-    )?;
-
+    let pq_modifier = modifier_value(pq_bo.modifier())?;
+    let sdr_modifier = modifier_value(sdr_bo.modifier())?;
     let details = format!(
-        "GBM DMA-BUF · XRGB2101010 · {}×{} · stride {} · modifier 0x{modifier:016x}",
-        WIDTH, HEIGHT, stride
+        "PQ: XRGB2101010 · stride {} · modifier 0x{pq_modifier:016x}\n{readback}\nSDR control: XRGB8888 · stride {} · modifier 0x{sdr_modifier:016x}\n{sdr_readback}",
+        pq_stride, sdr_bo.stride()
     );
     println!("{details}");
-    Ok((dmabuf_texture, cpu_texture, details))
+    Ok((pq_texture, pq_reference, sdr_texture, details))
 }
 
 fn make_picture(texture: &gdk4::Texture) -> Picture {
@@ -174,7 +241,7 @@ fn main() -> glib::ExitCode {
         let window = ApplicationWindow::builder()
             .application(app)
             .title("Glimpse — HDR / DMA-BUF comparison")
-            .default_width(1400)
+            .default_width(1600)
             .default_height(800)
             .build();
 
@@ -184,24 +251,25 @@ fn main() -> glib::ExitCode {
         content.set_margin_start(12);
         content.set_margin_end(12);
 
-        match build_pq_textures(&gtk4::prelude::WidgetExt::display(&window)) {
-            Ok((dmabuf_texture, cpu_texture, details)) => {
+        match build_textures(&gtk4::prelude::WidgetExt::display(&window)) {
+            Ok((pq_dmabuf, pq_cpu, sdr_dmabuf, details)) => {
                 let images = GtkBox::new(Orientation::Horizontal, 10);
-                let dmabuf_column = GtkBox::new(Orientation::Vertical, 4);
-                let cpu_column = GtkBox::new(Orientation::Vertical, 4);
-                dmabuf_column.append(&Label::new(Some("GBM DMA-BUF texture · XRGB2101010")));
-                dmabuf_column.append(&make_picture(&dmabuf_texture));
-                cpu_column.append(&Label::new(Some("System-memory reference · XRGB2101010 (same bytes)")));
-                cpu_column.append(&make_picture(&cpu_texture));
-                images.append(&dmabuf_column);
-                images.append(&cpu_column);
+                for (label, texture) in [
+                    ("PQ DMA-BUF · XRGB2101010", &pq_dmabuf),
+                    ("PQ system memory · same bytes", &pq_cpu),
+                    ("SDR DMA-BUF control · XRGB8888", &sdr_dmabuf),
+                ] {
+                    let column = GtkBox::new(Orientation::Vertical, 4);
+                    column.set_hexpand(true);
+                    column.append(&Label::new(Some(label)));
+                    column.append(&make_picture(texture));
+                    images.append(&column);
+                }
                 content.append(&images);
 
                 let explanation = Label::new(Some(&format!(
-                    "Both images use byte-identical XRGB2101010 pixel data and Rec. 2100 PQ color state.
-                     BT.2020 / ST 2084 PQ · left to right: {} cd/m²
-                     {details}
-                     If the right image appears and the left is black, the remaining fault is specific to DMA-BUF sampling/import.",
+                    "The first two images contain byte-identical 10-bit PQ data. The third is a separate 8-bit sRGB DMA-BUF control.\n\
+                     PQ bands, left to right: {} cd/m²\n{details}",
                     LEVELS_NITS.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(" · ")
                 )));
                 explanation.set_wrap(true);
