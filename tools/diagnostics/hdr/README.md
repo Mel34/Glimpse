@@ -9,16 +9,20 @@ The isolation is required because Cargo permits only one crate in a dependency
 graph to link the native `gtk-4` library. The production app and this probe
 therefore have separate dependency graphs and lockfiles.
 
-The probe allocates a 1920×1080, single-plane XRGB2101010 DMA-BUF through GBM,
-fills it through GBM's CPU mapping API with a 10-bit Rec. 2100 PQ grayscale
-ramp, imports it with `GdkDmabufTextureBuilder`, and tags it with the
-Rec. 2100 PQ color state. It also creates a system-memory GDK texture from the
-exact same pixel bytes and color state. The two textures are displayed side by
-side.
+The probe allocates a 1920×1080, single-plane XRGB2101010 DMA-BUF through GBM
+and fills it through GBM's CPU mapping API with a 10-bit Rec. 2100 PQ grayscale
+ramp. It imports that buffer with `GdkDmabufTextureBuilder` and tags it with
+the Rec. 2100 PQ color state.
 
-This comparison separates pattern generation/color-state issues from
-DMA-BUF sampling/import issues. It does not yet test FFmpeg decoder output,
-YUV/P010 sampling, HDR mastering metadata, or direct scanout.
+A side-by-side system-memory reference uses GDK's supported RGB16 format,
+with the same PQ luminance levels at 16-bit precision. GDK 4.24's
+`MemoryFormat` does not expose packed XRGB2101010, so the reference cannot
+use byte-identical storage; it is a higher-precision reference for the same
+encoded PQ values.
+
+This comparison separates DMA-BUF sampling/import problems from PQ
+color-state and rendering problems. It does not yet test FFmpeg decoder
+output, YUV/P010 sampling, HDR mastering metadata, or direct scanout.
 
 ## Requirements
 
@@ -38,10 +42,10 @@ From the repository root:
 GDK_DEBUG=color-mgmt,dmabuf cargo run --manifest-path tools/diagnostics/hdr/Cargo.toml
 ```
 
-The application prints the allocated format, dimensions, stride, modifier,
-and packed first/last pixel values. If GBM cannot allocate or CPU-map the
-linear XRGB2101010 buffer, or GTK cannot import the exported DMA-BUF, the
-window displays the error instead of silently falling back.
+The application prints the allocated format, dimensions, stride, and
+modifier. If GBM cannot allocate or CPU-map the linear XRGB2101010 buffer, or
+GTK cannot import the exported DMA-BUF, the window displays the error instead
+of silently falling back.
 
 ## Wayland protocol tracing
 
@@ -58,10 +62,10 @@ grep -Ei 'wp_color_management_surface|wp_image_description|set_image_description
   hdr-dmabuf-normal.log hdr-dmabuf-forced-hdr.log
 ```
 
-Compare the DMA-BUF image on the left with the byte-identical system-memory
-reference on the right. If only the right side appears, PQ encoding and the
-GDK color state are working; investigate DMA-BUF storage/import/sampling.
-If both appear, compare their luminance steps and protocol image descriptions.
+Compare the DMA-BUF image on the left with the RGB16 system-memory reference
+on the right. If only the right side appears, the remaining fault is specific
+to DMA-BUF storage/import/sampling. If both appear, compare their luminance
+steps and protocol image descriptions.
 
 No production decoder, frame scheduler, subtitle, audio, or playback code is
 changed by this probe.
