@@ -722,6 +722,7 @@ impl GlimpseWindow {
         let picture_for_drop = picture.clone();
         let subtitle_for_drop = subtitle_label.clone();
         let bottom_for_drop = bottom_controls.clone();
+        let ab_loop_for_drop = Rc::clone(&ab_loop);
 
         drop_target.connect_drop(move |_, val, _, _| {
             drop_overlay_drop.set_visible(false);
@@ -736,6 +737,7 @@ impl GlimpseWindow {
                     &picture_for_drop,
                     &subtitle_for_drop,
                     &bottom_for_drop,
+                    &ab_loop_for_drop,
                 );
                 return true;
             }
@@ -751,6 +753,7 @@ impl GlimpseWindow {
         let picture_for_dialog = picture.clone();
         let subtitle_for_dialog = subtitle_label.clone();
         let bottom_for_dialog = bottom_controls.clone();
+        let ab_loop_for_dialog = Rc::clone(&ab_loop);
 
         open_btn.connect_clicked(move |_| {
             trigger_open_file_dialog(
@@ -761,6 +764,7 @@ impl GlimpseWindow {
                 &picture_for_dialog,
                 &subtitle_for_dialog,
                 &bottom_for_dialog,
+                &ab_loop_for_dialog,
             );
         });
 
@@ -775,6 +779,7 @@ impl GlimpseWindow {
             &bottom_controls,
             &loop_enabled,
             &loop_menu_buttons,
+            &ab_loop,
         );
         crate::controls::track_popover_visibility(&loader_popover, &bottom_controls.open_popovers);
         loader_menu_btn.set_popover(Some(&loader_popover));
@@ -789,6 +794,7 @@ impl GlimpseWindow {
             &bottom_controls,
             &loop_enabled,
             &loop_menu_buttons,
+            &ab_loop,
         );
         crate::controls::track_popover_visibility(&player_popover, &bottom_controls.open_popovers);
         menu_btn.set_popover(Some(&player_popover));
@@ -802,6 +808,7 @@ impl GlimpseWindow {
         let pic_act = picture.clone();
         let sub_act = subtitle_label.clone();
         let btm_act = bottom_controls.clone();
+        let ab_loop_act = Rc::clone(&ab_loop);
         action_open.connect_activate(move |_, _| {
             trigger_open_file_dialog(
                 &win_act,
@@ -811,6 +818,7 @@ impl GlimpseWindow {
                 &pic_act,
                 &sub_act,
                 &btm_act,
+                &ab_loop_act,
             );
         });
         window.add_action(&action_open);
@@ -887,6 +895,7 @@ impl GlimpseWindow {
         let pic_open_k = picture.clone();
         let sub_open_k = subtitle_label.clone();
         let btm_open_k = bottom_controls.clone();
+        let ab_loop_open_k = Rc::clone(&ab_loop);
         let top_keys = top_controls.clone();
         let bottom_keys = bottom_controls.container.clone();
         let timer_keys = Rc::clone(&hide_timer);
@@ -944,6 +953,7 @@ impl GlimpseWindow {
                         &pic_open_k,
                         &sub_open_k,
                         &btm_open_k,
+                        &ab_loop_open_k,
                     );
                     glib::Propagation::Stop
                 }
@@ -1525,6 +1535,7 @@ fn create_main_menu_popover(
     bottom_controls: &ControlBarWidgets,
     loop_enabled: &Rc<Cell<bool>>,
     loop_menu_buttons: &Rc<RefCell<Vec<CheckButton>>>,
+    ab_loop: &Rc<Cell<AbLoopState>>,
 ) -> gtk4::Popover {
     let popover = gtk4::Popover::new();
     popover.add_css_class("menu-popover");
@@ -1679,9 +1690,10 @@ fn create_main_menu_popover(
     let pic_op = picture.clone();
     let sub_op = subtitle_label.clone();
     let btm_op = bottom_controls.clone();
+    let ab_loop_op = Rc::clone(ab_loop);
     btn_open.connect_clicked(move |_| {
         pop_close2.popdown();
-        trigger_open_file_dialog(&win_op, &stack_op, &p_op, &video_op, &pic_op, &sub_op, &btm_op);
+        trigger_open_file_dialog(&win_op, &stack_op, &p_op, &video_op, &pic_op, &sub_op, &btm_op, &ab_loop_op);
     });
     vbox.append(&btn_open);
 
