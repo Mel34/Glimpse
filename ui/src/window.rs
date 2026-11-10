@@ -47,6 +47,12 @@ impl GlimpseWindow {
 
         let player: Rc<RefCell<Option<Player>>> = Rc::new(RefCell::new(None));
         let video_playback: Rc<RefCell<Option<VideoPlaybackHandle>>> = Rc::new(RefCell::new(None));
+        let video_playback_on_focus = Rc::clone(&video_playback);
+        window.connect_is_active_notify(move |window| {
+            if let Some(video) = video_playback_on_focus.borrow_mut().as_mut() {
+                video.set_window_active(window.is_active());
+            }
+        });
         let video_playback_on_close = Rc::clone(&video_playback);
         let player_on_close = Rc::clone(&player);
         window.connect_close_request(move |_| {
@@ -1183,6 +1189,7 @@ fn load_and_play_file(
                     picture,
                     subtitle_label,
                     current_p.master_clock(),
+                    window.is_active(),
                 );
 
                 // Check container stream video dimensions for immediate aspect ratio clamping
