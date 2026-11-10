@@ -587,9 +587,9 @@ fn schedule_frames(
         }
 
         // Preserve the first decoded frame for the first GDK presentation.
-        // Once playback is running, inspect every queued frame on each display
-        // tick: present the newest frame inside this refresh window and retain
-        // the earliest frame that belongs to a later refresh.
+        // During playback, consume frames in PTS order until the first future
+        // frame. Select the newest frame ready for this refresh and leave later
+        // frames in the channel for subsequent refreshes.
         let mut selected_frame = if state.present_first_frame {
             state.pending.take()
         } else {
@@ -599,56 +599,52 @@ fn schedule_frames(
         if selected_frame.is_some() {
             state.present_first_frame = false;
         } else if !state.present_first_frame {
-            let mut candidates = Vec::with_capacity(receiver.len() + 1);
-            if let Some(frame) = state.pending.take() {
-                candidates.push(frame);
-            }
+            let dropped_before = state.dropped_frames;
+            let mut candidate = state.pending.take();
 
             loop {
-                match receiver.try_recv() {
-                    Ok(Ok(frame)) => candidates.push(frame),
-                    Ok(Err(error)) => {
-                        tracing::error!(
-                            %error,
-                            displayed_frames = state.displayed_frames,
-                            dropped_frames = state.dropped_frames,
-                            "Engine video decoder failed during frame selection"
-                        );
-                        state.stream_finished = true;
-                        break;
+                let frame = if let Some(frame) = candidate.take() {
+                    frame
+                } else {
+                    match receiver.try_recv() {
+                        Ok(Ok(frame)) => frame,
+                        Ok(Err(error)) => {
+                            tracing::error!(
+                                %error,
+                                displayed_frames = state.displayed_frames,
+                                dropped_frames = state.dropped_frames,
+                                "Engine video decoder failed during frame selection"
+                            );
+                            state.stream_finished = true;
+                            break;
+                        }
+                        Err(TryRecvError::Empty) => break,
+                        Err(TryRecvError::Disconnected) => {
+                            state.stream_finished = true;
+                            break;
+                        }
                     }
-                    Err(TryRecvError::Empty) => break,
-                    Err(TryRecvError::Disconnected) => {
-                        state.stream_finished = true;
-                        break;
-                    }
-                }
-            }
+                };
 
-            let mut earliest_future: Option<VideoFrameData> = None;
-            for frame in candidates {
                 let lateness = master_pts - frame.pts;
                 if lateness > 0.040 {
                     state.dropped_frames += 1;
-                } else if frame.pts <= master_pts + presentation_window {
-                    if let Some(previous) = selected_frame.replace(frame) {
-                        let _ = previous;
-                        state.dropped_frames += 1;
-                    }
-                } else if earliest_future
-                    .as_ref()
-                    .is_none_or(|pending| frame.pts < pending.pts)
-                {
-                    if earliest_future.replace(frame).is_some() {
+                    continue;
+                }
+
+                if frame.pts <= master_pts + presentation_window {
+                    if selected_frame.replace(frame).is_some() {
                         state.dropped_frames += 1;
                     }
                 } else {
-                    state.dropped_frames += 1;
+                    // Frames arrive in presentation order. Keep the first
+                    // future frame and leave the rest queued for later ticks.
+                    state.pending = Some(frame);
+                    break;
                 }
             }
-            state.pending = earliest_future;
 
-            if state.dropped_frames > 0 && state.dropped_frames % 120 == 0 {
+            if state.dropped_frames / 120 != dropped_before / 120 {
                 tracing::debug!(
                     dropped_frames = state.dropped_frames,
                     displayed_frames = state.displayed_frames,
