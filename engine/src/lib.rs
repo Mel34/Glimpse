@@ -7,6 +7,8 @@ pub mod audio_playback;
 pub mod clock;
 pub mod decoder;
 pub mod demuxer;
+#[cfg(feature = "ffmpeg-system")]
+mod ffmpeg_log_filter;
 pub mod presenter;
 pub mod queue;
 pub mod types;
@@ -47,6 +49,8 @@ pub struct Player {
 
 impl Player {
     pub fn open(path_or_uri: &str) -> Result<(Player, Receiver<Event>), String> {
+        #[cfg(feature = "ffmpeg-system")]
+        ffmpeg_log_filter::install();
         let (event_tx, event_rx) = bounded(256);
         let probe = demuxer::probe_media(path_or_uri)?;
         let initial_duration = probe.duration;
