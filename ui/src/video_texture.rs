@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
-use crossbeam_channel::{bounded, Receiver, Sender, TryRecvError};
-use glimpse_engine::decoder::{VideoDecoder, VideoFrameQueue};
+use crossbeam_channel::{bounded, unbounded, Receiver, Sender, TryRecvError};
+use glimpse_engine::decoder::{SubtitleCue, SubtitleDecoder, VideoDecoder, VideoFrameQueue};
 use glimpse_engine::demuxer::{demux_file_from, PacketQueues};
 use glimpse_engine::{Serial, VideoFrameData};
 
@@ -27,10 +27,16 @@ struct FrameSchedulerState {
     dropped_frames: u64,
 }
 
+struct SubtitleSchedulerState {
+    pending: std::collections::VecDeque<SubtitleCue>,
+    active: Option<SubtitleCue>,
+}
+
 pub struct VideoPlaybackHandle {
     path: String,
     tracks: TrackList,
     picture: gtk4::Picture,
+    subtitle_label: gtk4::Label,
     clock: Arc<MasterClock>,
     run: Option<PlaybackRun>,
 }
@@ -43,7 +49,20 @@ impl VideoPlaybackHandle {
         }
     }
 
+    pub fn select_subtitle(&mut self, id: Option<glimpse_engine::TrackId>) {
+        self.tracks.active_subtitle = id;
+        self.subtitle_label.set_text("");
+        self.subtitle_label.set_visible(false);
+        self.stop_run();
+        let position = Duration::from_secs_f64(self.clock.get_pts().max(0.0));
+        if let Err(error) = self.start_run(position) {
+            tracing::error!(%error, "Could not restart video after subtitle selection");
+        }
+    }
+
     pub fn stop(&mut self) {
+        self.subtitle_label.set_text("");
+        self.subtitle_label.set_visible(false);
         self.stop_run();
     }
 
@@ -64,6 +83,7 @@ impl VideoPlaybackHandle {
         let queues = PacketQueues::new(64, 64 * 1024 * 1024);
         let cancelled = Arc::new(AtomicBool::new(false));
         let (sender, receiver) = bounded::<Result<VideoFrameData, String>>(2);
+        let (subtitle_sender, subtitle_receiver) = unbounded::<Result<SubtitleCue, String>>();
         let worker = spawn_decoder_worker(
             self.path.clone(),
             self.tracks.clone(),
@@ -71,11 +91,14 @@ impl VideoPlaybackHandle {
             queues.clone(),
             Arc::clone(&cancelled),
             sender,
+            subtitle_sender,
             start_position,
         )?;
         schedule_frames(
             receiver,
+            subtitle_receiver,
             self.picture.clone(),
+            self.subtitle_label.clone(),
             Arc::clone(&self.clock),
             Arc::clone(&cancelled),
         );
@@ -94,6 +117,7 @@ pub fn present_continuous_frames(
     path: &str,
     tracks: TrackList,
     picture: &gtk4::Picture,
+    subtitle_label: &gtk4::Label,
     clock: Arc<MasterClock>,
 ) -> Option<VideoPlaybackHandle> {
     if tracks.video_tracks.is_empty() {
@@ -101,7 +125,7 @@ pub fn present_continuous_frames(
         return None;
     }
     let mut handle = VideoPlaybackHandle {
-        path: path.to_owned(), tracks, picture: picture.clone(), clock,
+        path: path.to_owned(), tracks, picture: picture.clone(), subtitle_label: subtitle_label.clone(), clock,
         run: None,
     };
     if let Err(error) = handle.start_run(Duration::ZERO) {
@@ -118,13 +142,14 @@ fn spawn_decoder_worker(
     queues: PacketQueues,
     cancelled: Arc<AtomicBool>,
     sender: Sender<Result<VideoFrameData, String>>,
+    subtitle_sender: Sender<Result<SubtitleCue, String>>,
     start_position: Duration,
 ) -> Result<JoinHandle<()>, String> {
     thread::Builder::new()
         .name("glimpse-video-decode".to_string())
         .spawn(move || {
             if let Err(error) = decode_continuously(
-                &path, &tracks, video_stream_index, &queues, &cancelled, &sender, start_position,
+                &path, &tracks, video_stream_index, &queues, &cancelled, &sender, &subtitle_sender, start_position,
             ) {
                 if !cancelled.load(Ordering::Acquire) {
                     let _ = sender.try_send(Err(error));
@@ -141,6 +166,7 @@ fn decode_continuously(
     queues: &PacketQueues,
     cancelled: &AtomicBool,
     sender: &Sender<Result<VideoFrameData, String>>,
+    subtitle_sender: &Sender<Result<SubtitleCue, String>>,
     start_position: Duration,
 ) -> Result<(), String> {
     let serial = Serial(0);
@@ -152,6 +178,10 @@ fn decode_continuously(
         Arc::clone(&frame_queue),
         Arc::new(MasterClock::new()),
     )?;
+
+    let mut subtitle_decoder = tracks.active_subtitle
+        .map(|track| SubtitleDecoder::open_ffmpeg(path, track.0))
+        .transpose()?;
 
     let worker_path = path.to_owned();
     let worker_tracks = tracks.clone();
@@ -180,7 +210,22 @@ fn decode_continuously(
             return Ok(());
         }
         while queues.audio.pop_timeout(Duration::ZERO).is_some() {}
-        while queues.subtitle.pop_timeout(Duration::ZERO).is_some() {}
+        while let Some(tagged) = queues.subtitle.pop_timeout(Duration::ZERO) {
+            if tagged.serial != serial { continue; }
+            if let Some(decoder) = subtitle_decoder.as_mut() {
+                if let Some(cue) = decoder.decode_packet(&tagged.item)? {
+                    let mut message = Ok(cue);
+                    loop {
+                        if cancelled.load(Ordering::Acquire) { break; }
+                        match subtitle_sender.send_timeout(message, Duration::from_millis(5)) {
+                            Ok(()) => break,
+                            Err(crossbeam_channel::SendTimeoutError::Timeout(returned)) => message = returned,
+                            Err(crossbeam_channel::SendTimeoutError::Disconnected(_)) => break,
+                        }
+                    }
+                }
+            }
+        }
 
         if demux_worker.is_finished() && queues.video.stats().0 == 0 {
             let result = demux_worker.join()
@@ -223,7 +268,9 @@ fn forward_decoded_frames(
 
 fn schedule_frames(
     receiver: Receiver<Result<VideoFrameData, String>>,
+    subtitle_receiver: Receiver<Result<SubtitleCue, String>>,
     picture: gtk4::Picture,
+    subtitle_label: gtk4::Label,
     clock: Arc<MasterClock>,
     cancelled: Arc<AtomicBool>,
 ) {
@@ -235,6 +282,11 @@ fn schedule_frames(
     });
     // A weak reference avoids a Picture -> tick callback -> Picture cycle.
     let picture_weak = picture.downgrade();
+    let subtitle_weak = subtitle_label.downgrade();
+    let subtitle_state = RefCell::new(SubtitleSchedulerState {
+        pending: std::collections::VecDeque::new(),
+        active: None,
+    });
 
     // GTK tick callbacks are Fn, not FnMut, so keep per-run scheduler state
     // behind RefCell and update the Picture through the callback's weak ref.
@@ -245,6 +297,38 @@ fn schedule_frames(
         let Some(picture) = picture_weak.upgrade() else {
             return glib::ControlFlow::Break;
         };
+        let Some(subtitle_label) = subtitle_weak.upgrade() else {
+            return glib::ControlFlow::Break;
+        };
+        let master_pts = clock.get_pts();
+        let mut subtitle_state = subtitle_state.borrow_mut();
+        loop {
+            match subtitle_receiver.try_recv() {
+                Ok(Ok(cue)) => subtitle_state.pending.push_back(cue),
+                Ok(Err(error)) => tracing::warn!(%error, "Embedded subtitle decoder failed"),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => break,
+            }
+        }
+        while subtitle_state.pending.front().is_some_and(|cue| cue.end <= master_pts) {
+            subtitle_state.pending.pop_front();
+        }
+        if subtitle_state.active.as_ref().is_some_and(|cue| cue.end <= master_pts) {
+            subtitle_state.active = None;
+        }
+        if subtitle_state.active.is_none() {
+            if let Some(cue) = subtitle_state.pending.front() {
+                if cue.start <= master_pts {
+                    subtitle_state.active = subtitle_state.pending.pop_front();
+                }
+            }
+        }
+        if let Some(cue) = subtitle_state.active.as_ref() {
+            subtitle_label.set_text(&cue.text);
+            subtitle_label.set_visible(true);
+        } else {
+            subtitle_label.set_visible(false);
+        }
         let mut state = state.borrow_mut();
         loop {
             if state.pending.is_none() {
