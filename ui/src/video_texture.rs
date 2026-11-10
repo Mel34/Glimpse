@@ -801,12 +801,12 @@ fn schedule_frames(
                 if video_debug {
                     tracing::info!(
                         frames_received = state.frames_received,
-                    displayed_frames = state.displayed_frames,
-                    dropped_stale_ingest = state.dropped_stale_ingest,
-                    dropped_late_presentation = state.dropped_late_presentation,
-                    dropped_superseded = state.dropped_superseded,
-                    presentation_failures = state.presentation_failures,
-                    ticks = state.tick_count,
+                        displayed_frames = state.displayed_frames,
+                        dropped_stale_ingest = state.dropped_stale_ingest,
+                        dropped_late_presentation = state.dropped_late_presentation,
+                        dropped_superseded = state.dropped_superseded,
+                        presentation_failures = state.presentation_failures,
+                        ticks = state.tick_count,
                         "Engine video stream finished; stopping frame scheduler"
                     );
                 }
