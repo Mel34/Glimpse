@@ -42,7 +42,7 @@ where
     loop_menu_buttons.borrow_mut().push(loop_toggle.clone());
     let loop_shortcut = Label::new(Some("Shift+L"));
     loop_shortcut.add_css_class("dim-label");
-    loop_shortcut.set_halign(Align::End);
+    loop_shortcut.set_halign(gtk4::Align::End);
     loop_row.append(&loop_toggle);
     loop_row.append(&loop_shortcut);
     let loop_enabled_toggle = Rc::clone(loop_enabled);
