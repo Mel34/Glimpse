@@ -395,6 +395,18 @@ fn schedule_frames(
         };
         let presentation_window = refresh_interval_us as f64 / 1_000_000.0;
         let master_pts = media_clock.get_pts();
+        // GDK's predicted presentation timestamp and GLib's monotonic clock
+        // share a time domain. Map the remaining monotonic lead onto the
+        // current audio-master PTS; never alter the master clock itself.
+        let predicted_lead_us = presentation_time_us.saturating_sub(glib::monotonic_time());
+        let predicted_lead_secs = if presentation_time_us > 0 {
+            predicted_lead_us.max(0) as f64 / 1_000_000.0
+        } else {
+            // Some backends cannot provide a prediction. Retain the previous
+            // one-refresh fallback when no prediction is available at all.
+            presentation_window
+        };
+        let presentation_deadline_pts = master_pts + predicted_lead_secs;
 
         let mut subtitle_state = subtitle_state.borrow_mut();
         loop {
@@ -536,7 +548,7 @@ fn schedule_frames(
                     }
                 };
 
-                let lateness = master_pts - frame.pts;
+                let lateness = presentation_deadline_pts - frame.pts;
                 if lateness > 0.040 {
                     // Retain the newest late frame as a fallback. If another
                     // late frame arrives, the older fallback is now obsolete.
@@ -554,7 +566,7 @@ fn schedule_frames(
                     continue;
                 }
 
-                if frame.pts <= master_pts + presentation_window {
+                if frame.pts <= presentation_deadline_pts {
                     // A normally eligible frame is preferable to any late
                     // fallback because it is closer to the audio master clock.
                     if latest_late_frame.take().is_some() {
