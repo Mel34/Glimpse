@@ -1,7 +1,8 @@
 //! GTK DMA-BUF texture import for FFmpeg VAAPI frames.
 
 use ffmpeg_the_third::frame::Video;
-use glib::translate::{from_glib_full, ToGlibPtr};
+use glib::object::ObjectType;
+use glib::translate::from_glib_full;
 use std::ffi::{CStr, c_char, c_void};
 use std::ptr;
 
@@ -20,7 +21,7 @@ pub(crate) fn create_texture(frame: &Video) -> Result<gdk4::Texture, String> {
     let texture = unsafe {
         glimpse_vaapi_texture_from_frame(
             frame.as_ptr().cast(),
-            display.to_glib_none().0.cast(),
+            display.as_ptr().cast(),
             &mut error_message,
         )
     };
