@@ -65,7 +65,7 @@ where
     let external_off_button = external_button.clone();
     subtitle_off_btn.connect_toggled(move |button| {
         if button.is_active() {
-            external_off_button.set_label("Load External Subtitle…");
+            external_off_button.set_label(Some("Load External Subtitle…"));
             cb_subtitle_off(None);
         }
     });
@@ -91,7 +91,7 @@ where
         let tid = track.id;
         btn.connect_toggled(move |button| {
             if button.is_active() {
-                external_button_for_track.set_label("Load External Subtitle…");
+                external_button_for_track.set_label(Some("Load External Subtitle…"));
                 cb(Some(tid));
             }
         });
