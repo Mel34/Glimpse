@@ -1,4 +1,4 @@
-# GTK HDR / PQ diagnostic
+# GTK HDR / DMA-BUF diagnostic
 
 This probe is a standalone Cargo workspace, deliberately isolated from
 Glimpse's production workspace. It uses GTK 4.16-era Rust bindings
@@ -9,78 +9,81 @@ The isolation is required because Cargo permits only one crate in a dependency
 graph to link the native `gtk-4` library. The production app and this probe
 therefore have separate dependency graphs and lockfiles.
 
-The probe creates an opaque, 16-bit RGB test pattern tagged with the GDK
-Rec. 2100 PQ color state and places it in a `GtkGraphicsOffload` widget. The
-bands are absolute PQ luminance values from 0.1 to 4000 cd/m².
+The probe allocates a 1920×1080, single-plane XRGB2101010 DMA-BUF through GBM,
+fills it with a 10-bit Rec. 2100 PQ grayscale ramp, imports it with
+`GdkDmabufTextureBuilder`, tags the texture with the Rec. 2100 PQ color state,
+and displays it through `GtkGraphicsOffload`.
+
+This exercises a GPU-backed RGB DMA-BUF import and the Wayland surface color
+description. It does not yet test FFmpeg decoder output, YUV/P010 sampling,
+HDR mastering metadata, or direct scanout.
+
+## Requirements
+
+- GTK 4.24 or newer at runtime
+- A Wayland session with the color-management protocol
+- GBM development library (`libgbm`) and a usable DRM render node
+- Permission to open the selected DRM node read/write
+
+The default DRM node is `/dev/dri/renderD128`. Override it with
+`GLIMPSE_DRM_DEVICE` if the render node has a different path.
 
 ## Run
 
-Run from the repository root, in the HDR-enabled Wayland session. GTK 4.24
-provides GDK debug switches for color management and HDR rendering. The
-earlier probe run enabled only offload and DMA-BUF diagnostics, so its lack of
-surface image-description requests did **not** establish that GDK's HDR path
-was inactive or broken.
-
-First test the normal color-managed path:
+From the repository root:
 
 ```sh
 GDK_DEBUG=color-mgmt,offload,dmabuf \
   cargo run --manifest-path tools/diagnostics/hdr/Cargo.toml
 ```
 
-Then close the probe and run again with GTK's HDR-rendering debug override:
+The application prints the allocated format, dimensions, stride, and modifier.
+If GBM cannot allocate XRGB2101010 with scanout/write usage, or GTK cannot
+import the exported DMA-BUF, the window displays the error instead of silently
+falling back to a system-memory texture.
+
+For a forced-HDR comparison:
 
 ```sh
 GDK_DEBUG=hdr,color-mgmt,offload,dmabuf \
   cargo run --manifest-path tools/diagnostics/hdr/Cargo.toml
 ```
 
-The `hdr` switch forces HDR rendering; it is a diagnostic override, not a
-production setting. Compare the visual result of both runs.
+The `hdr` switch is a diagnostic override, not a production setting. The
+previous system-memory probe already showed that normal GTK color management
+submits a BT.2020/PQ image description to Mutter; compare this DMA-BUF run to
+that baseline.
 
 ## Wayland protocol tracing
-
-Capture each run separately so we can compare the normal and forced-HDR paths:
 
 ```sh
 GDK_DEBUG=color-mgmt,offload,dmabuf WAYLAND_DEBUG=1 \
   cargo run --manifest-path tools/diagnostics/hdr/Cargo.toml \
-  2>hdr-probe-normal.log
+  2>hdr-dmabuf-normal.log
 
 GDK_DEBUG=hdr,color-mgmt,offload,dmabuf WAYLAND_DEBUG=1 \
   cargo run --manifest-path tools/diagnostics/hdr/Cargo.toml \
-  2>hdr-probe-forced-hdr.log
+  2>hdr-dmabuf-forced-hdr.log
+
+grep -Ei 'wp_color_management_surface|wp_image_description|set_image_description|offload|dmabuf|HDR' \
+  hdr-dmabuf-normal.log hdr-dmabuf-forced-hdr.log
 ```
 
-Then extract the relevant protocol and renderer diagnostics:
+Look for the same PQ surface-description transaction as the first probe and
+for GDK diagnostics confirming DMA-BUF import/offload. Capability queries by
+Mesa alone are not proof that the texture was imported or offloaded.
 
-```sh
-grep -Ei 'wp_color|image_description|set_image_description|offload|dmabuf|HDR|color management' \
-  hdr-probe-normal.log hdr-probe-forced-hdr.log
-```
-
-Look specifically for a surface color-management object, creation of a
-parametric image description, a ready event, and
-`set_image_description` on the probe's surface. Color-manager capability
-queries by Mesa on unrelated connections are not sufficient evidence.
-
-Run windowed first, then fullscreen if the normal-path trace shows successful
-color-description negotiation. Compare the bands with an HDR reference in
-mpv. The 203 cd/m² patch is the reference-white checkpoint; higher patches
-should remain distinguishable up to the display's capabilities.
+Run windowed first, then fullscreen. Compare the grayscale bands with an HDR
+reference in mpv. The 203 cd/m² patch is the reference-white checkpoint;
+higher patches should remain distinguishable up to the display's capabilities.
 
 ## Scope and interpretation
 
-This first probe tests GDK's PQ texture color-state path. It uses a system-memory
-texture, not a DMA-BUF. GTK may therefore fall back from graphics offload to
-normal GSK rendering. The requested offload state is not proof that offload
-became active; inspect the `GDK_DEBUG` output.
-
-A successful-looking pattern alone does not prove that GTK attached a PQ image
-description to the Wayland surface. The protocol trace must show the surface
-image-description negotiation, and the compositor's preferred description
-must be checked. The next step, if this path is viable, is an opaque DMA-BUF
-test texture so `GtkGraphicsOffload` can exercise the actual video path.
+The buffer uses 10-bit packed RGB to keep the first DMA-BUF test simple and
+avoid mixing YUV range/matrix/chroma-siting questions into this stage. The
+next diagnostic step, if this succeeds, is to import a P010 DMA-BUF and
+validate the video-like YUV path. That will be closer to the VAAPI decoder
+output Glimpse intends to present.
 
 No production decoder, frame scheduler, subtitle, audio, or playback code is
 changed by this probe.
