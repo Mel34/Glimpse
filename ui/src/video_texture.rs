@@ -8,7 +8,7 @@ use gtk4::prelude::WidgetExt;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
@@ -32,7 +32,9 @@ struct FrameSchedulerState {
     dropped_late_presentation: u64,
     dropped_superseded: u64,
     presentation_failures: u64,
+    ingest_tick_count: u64,
     tick_count: u64,
+    last_gdk_tick_at: Option<Instant>,
     stream_finished: bool,
 }
 
@@ -440,7 +442,9 @@ fn schedule_frames(
         dropped_late_presentation: 0,
         dropped_superseded: 0,
         presentation_failures: 0,
+        ingest_tick_count: 0,
         tick_count: 0,
+        last_gdk_tick_at: None,
         stream_finished: false,
     }));
     let picture_weak = picture.downgrade();
@@ -464,13 +468,37 @@ fn schedule_frames(
     let ingest_cancelled = Arc::clone(&cancelled);
     let ingest_picture = picture.downgrade();
     glib::timeout_add_local(Duration::from_millis(5), move || {
-        if ingest_cancelled.load(Ordering::Acquire) || ingest_picture.upgrade().is_none() {
+        if ingest_cancelled.load(Ordering::Acquire) {
             return glib::ControlFlow::Break;
         }
+        let Some(picture) = ingest_picture.upgrade() else {
+            return glib::ControlFlow::Break;
+        };
 
         let mut state = ingest_state.borrow_mut();
         if state.stream_finished {
             return glib::ControlFlow::Break;
+        }
+        state.ingest_tick_count += 1;
+        if state.ingest_tick_count % 200 == 0 {
+            tracing::info!(
+                ingest_ticks = state.ingest_tick_count,
+                frames_received = state.frames_received,
+                displayed_frames = state.displayed_frames,
+                dropped_stale_ingest = state.dropped_stale_ingest,
+                dropped_late_presentation = state.dropped_late_presentation,
+                dropped_superseded = state.dropped_superseded,
+                presentation_failures = state.presentation_failures,
+                pending_pts = state.pending.as_ref().map(|frame| frame.pts),
+                queued_frames = ingest_receiver.len(),
+                master_pts = ingest_clock.get_pts(),
+                since_last_gdk_tick_ms = state.last_gdk_tick_at
+                    .as_ref()
+                    .map(|last_tick| last_tick.elapsed().as_secs_f64() * 1000.0),
+                mapped = picture.is_mapped(),
+                visible = picture.is_visible(),
+                "Video ingestion heartbeat"
+            );
         }
 
         loop {
@@ -584,6 +612,7 @@ fn schedule_frames(
         }
 
         let mut state = state.borrow_mut();
+        state.last_gdk_tick_at = Some(Instant::now());
         state.tick_count += 1;
         if state.tick_count % 250 == 0 {
             tracing::info!(
