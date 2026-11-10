@@ -9,19 +9,6 @@ description = "Glimpse - Modern Linux video player with GTK4 and libadwaita"
 name = "glimpse"
 path = "src/main.rs"
 
-[[bin]]
-name = "glimpse-hdr-probe"
-path = "src/bin/hdr_probe.rs"
-required-features = ["hdr-probe"]
-
-[features]
-hdr-probe = [
-    "dep:gtk4-hdr",
-    "dep:gdk4-hdr",
-    "dep:glib-hdr",
-    "gtk4-hdr/v4_16",
-]
-
 [dependencies]
 glimpse-engine = { path = "../engine", features = ["ffmpeg-system", "audio-pipewire"] }
 gtk4 = { version = "0.8", features = ["v4_12"] }
@@ -32,8 +19,3 @@ tracing-subscriber = "0.3"
 gio = "0.19"
 glib = "0.19"
 gdk4 = "0.8"
-
-# Newer bindings are isolated to the optional diagnostic binary.
-gtk4-hdr = { package = "gtk4", version = "0.9", features = ["v4_16"], optional = true }
-gdk4-hdr = { package = "gdk4", version = "0.9", features = ["v4_16"], optional = true }
-glib-hdr = { package = "glib", version = "0.20", optional = true }
