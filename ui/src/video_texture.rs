@@ -3,6 +3,7 @@
 use glimpse_engine::{MasterClock, TrackList};
 use glib::object::ObjectExt;
 use glib::prelude::Cast;
+use gtk4::prelude::GtkWindowExt;
 use gtk4::prelude::WidgetExtManual;
 use gtk4::prelude::WidgetExt;
 use std::cell::RefCell;
