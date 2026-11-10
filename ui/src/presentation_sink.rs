@@ -184,8 +184,9 @@ fn schedule_frames(
     subtitle_label: gtk4::Label,
     media_clock: Arc<MasterClock>,
     cancelled: Arc<AtomicBool>,
-    mut first_frame_ready: Option<Sender<()>>,
+    first_frame_ready: Option<Sender<()>>,
 ) {
+    let first_frame_ready = Rc::new(RefCell::new(first_frame_ready));
     // The sink reads engine media time but never adjusts it. PipeWire remains
     // authoritative for audio playback; this callback only chooses a frame
     // that is ready for the current GDK presentation opportunity.
@@ -669,7 +670,7 @@ fn schedule_frames(
         let texture_import_us = texture_import_started.elapsed().as_micros() as u64;
         let paintable_started = Instant::now();
         picture.set_paintable(Some(&texture));
-        if let Some(ready) = first_frame_ready.take() {
+        if let Some(ready) = first_frame_ready.borrow_mut().take() {
             let _ = ready.send(());
         }
         let set_paintable_us = paintable_started.elapsed().as_micros() as u64;
