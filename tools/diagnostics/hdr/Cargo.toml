@@ -16,3 +16,4 @@ path = "src/main.rs"
 gtk4 = { version = "0.9", features = ["v4_16"] }
 gdk4 = { version = "0.9", features = ["v4_16"] }
 glib = "0.20"
+gbm = "0.18"
