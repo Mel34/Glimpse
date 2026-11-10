@@ -9,6 +9,14 @@ description = "Glimpse - Modern Linux video player with GTK4 and libadwaita"
 name = "glimpse"
 path = "src/main.rs"
 
+[[bin]]
+name = "glimpse-hdr-probe"
+path = "src/bin/hdr_probe.rs"
+required-features = ["hdr-probe"]
+
+[features]
+hdr-probe = ["gtk4/v4_16"]
+
 [dependencies]
 glimpse-engine = { path = "../engine", features = ["ffmpeg-system", "audio-pipewire"] }
 gtk4 = { version = "0.8", features = ["v4_12"] }
