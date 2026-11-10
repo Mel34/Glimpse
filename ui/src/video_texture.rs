@@ -518,16 +518,28 @@ fn schedule_frames(
                 state.present_first_frame = false;
                 // The decoded frame normally has a single owner here. Transfer
                 // its pixel allocation into GBytes instead of cloning every frame.
-                let pixels = Arc::try_unwrap(frame.rgba_data)
-                    .unwrap_or_else(|shared| shared.as_ref().clone());
-                let bytes = glib::Bytes::from_owned(pixels);
-                let texture = gdk4::MemoryTexture::new(
-                    frame.width as i32,
-                    frame.height as i32,
-                    gdk4::MemoryFormat::R8g8b8a8,
-                    &bytes,
-                    frame.stride,
-                );
+                let texture = if let Some(vaapi_frame) = frame.vaapi_frame.as_ref() {
+                    match crate::vaapi_texture::create_texture(vaapi_frame) {
+                        Ok(texture) => texture,
+                        Err(error) => {
+                            tracing::error!(%error, pts = frame.pts, "Could not import VAAPI frame into GTK");
+                            return glib::ControlFlow::Break;
+                        }
+                    }
+                } else {
+                    // The software fallback remains the existing RGBA8 path.
+                    let pixels = Arc::try_unwrap(frame.rgba_data)
+                        .unwrap_or_else(|shared| shared.as_ref().clone());
+                    let bytes = glib::Bytes::from_owned(pixels);
+                    gdk4::MemoryTexture::new(
+                        frame.width as i32,
+                        frame.height as i32,
+                        gdk4::MemoryFormat::R8g8b8a8,
+                        &bytes,
+                        frame.stride,
+                    )
+                    .upcast()
+                };
                 picture.set_paintable(Some(&texture));
                 state.displayed_frames += 1;
             }

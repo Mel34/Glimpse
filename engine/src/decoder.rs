@@ -48,9 +48,33 @@ mod video_timestamp_tests {
 struct FfmpegDecoderState {
     decoder: ffmpeg_the_third::decoder::Video,
     scaler: Option<ffmpeg_the_third::software::scaling::Context>,
+    vaapi_enabled: bool,
     time_base_num: i32,
     time_base_den: i32,
     frame_duration: f64,
+}
+
+#[cfg(feature = "ffmpeg-system")]
+unsafe extern "C" fn select_vaapi_pixel_format(
+    _context: *mut ffmpeg_the_third::ffi::AVCodecContext,
+    formats: *const ffmpeg_the_third::ffi::AVPixelFormat,
+) -> ffmpeg_the_third::ffi::AVPixelFormat {
+    use ffmpeg_the_third::ffi::AVPixelFormat;
+    if formats.is_null() {
+        return AVPixelFormat::AV_PIX_FMT_NONE;
+    }
+    let mut current = formats;
+    loop {
+        let format = unsafe { *current };
+        if format == AVPixelFormat::AV_PIX_FMT_NONE {
+            break;
+        }
+        if format == AVPixelFormat::AV_PIX_FMT_VAAPI {
+            return format;
+        }
+        current = unsafe { current.add(1) };
+    }
+    AVPixelFormat::AV_PIX_FMT_NONE
 }
 
 pub struct VideoDecoder {
@@ -112,17 +136,61 @@ impl VideoDecoder {
             0.0
         };
 
-        let context = ffmpeg::codec::context::Context::from_parameters(stream.parameters())
+        let use_vaapi = std::env::var("GLIMPSE_VIDEO_DECODER")
+            .is_ok_and(|value| value.eq_ignore_ascii_case("vaapi"));
+        let mut context = ffmpeg::codec::context::Context::from_parameters(stream.parameters())
             .map_err(|error| format!("Could not create video decoder context: {error}"))?;
+
+        if use_vaapi {
+            let render_node = std::env::var("GLIMPSE_DRM_RENDER_NODE").ok();
+            let render_node = render_node
+                .as_deref()
+                .map(std::ffi::CString::new)
+                .transpose()
+                .map_err(|_| "GLIMPSE_DRM_RENDER_NODE contains an interior NUL byte".to_string())?;
+            let device_name = render_node.as_ref().map_or(std::ptr::null(), |value| value.as_ptr());
+            let mut device: *mut ffmpeg::ffi::AVBufferRef = std::ptr::null_mut();
+            let result = unsafe {
+                ffmpeg::ffi::av_hwdevice_ctx_create(
+                    &mut device,
+                    ffmpeg::ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI,
+                    device_name,
+                    std::ptr::null_mut(),
+                    0,
+                )
+            };
+            if result < 0 {
+                return Err(format!("Could not create VAAPI device (FFmpeg error {result})"));
+            }
+
+            let context_ptr = unsafe { context.as_mut_ptr() };
+            let device_ref = unsafe { ffmpeg::ffi::av_buffer_ref(device) };
+            unsafe { ffmpeg::ffi::av_buffer_unref(&mut device) };
+            if device_ref.is_null() {
+                return Err("Could not retain the VAAPI device context".to_string());
+            }
+            unsafe {
+                (*context_ptr).get_format = Some(select_vaapi_pixel_format);
+                (*context_ptr).hw_device_ctx = device_ref;
+            }
+        }
+
         let decoder = context
             .decoder()
             .video()
-            .map_err(|error| format!("Could not open software video decoder: {error}"))?;
+            .map_err(|error| {
+                if use_vaapi {
+                    format!("Could not open VAAPI video decoder: {error}")
+                } else {
+                    format!("Could not open software video decoder: {error}")
+                }
+            })?;
 
         let mut result = Self::new(packet_queue, frame_queue, clock);
         result.backend = Some(FfmpegDecoderState {
             decoder,
             scaler: None,
+            vaapi_enabled: use_vaapi,
             time_base_num: time_base.numerator(),
             time_base_den: time_base.denominator(),
             frame_duration,
@@ -199,6 +267,30 @@ impl VideoDecoder {
                 continue;
             };
 
+            if backend.vaapi_enabled && decoded.format() == ffmpeg::format::Pixel::VAAPI {
+                let width = decoded.width();
+                let height = decoded.height();
+                let pts = timestamp as f64 * backend.time_base_num as f64
+                    / backend.time_base_den as f64;
+                let frame = VideoFrameData {
+                    width,
+                    height,
+                    stride: 0,
+                    rgba_data: Arc::new(Vec::new()),
+                    vaapi_frame: Some(Arc::new(decoded.clone())),
+                    pts,
+                    duration: backend.frame_duration,
+                    serial,
+                };
+                let estimated_bytes = (width as usize)
+                    .saturating_mul(height as usize)
+                    .saturating_mul(3);
+                frame_queue
+                    .push(frame, serial, estimated_bytes)
+                    .map_err(|_| "Decoded frame queue was aborted".to_string())?;
+                continue;
+            }
+
             let needs_scaler = backend.scaler.as_ref().map_or(true, |scaler| {
                 scaler.input().format != decoded.format()
                     || scaler.input().width != decoded.width()
@@ -247,6 +339,7 @@ impl VideoDecoder {
                 height,
                 stride,
                 rgba_data: Arc::new(pixels),
+                vaapi_frame: None,
                 pts,
                 duration: backend.frame_duration,
                 serial,

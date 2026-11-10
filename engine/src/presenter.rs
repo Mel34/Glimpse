@@ -11,6 +11,10 @@ pub struct VideoFrameData {
     pub height: u32,
     pub stride: usize,
     pub rgba_data: Arc<Vec<u8>>,
+    /// Reference-counted VAAPI surface. Presenters import this directly as a
+    /// DRM PRIME DMA-BUF texture instead of downloading it to CPU memory.
+    #[cfg(feature = "ffmpeg-system")]
+    pub vaapi_frame: Option<Arc<ffmpeg_the_third::frame::Video>>,
     pub pts: f64,
     pub duration: f64,
     pub serial: Serial,

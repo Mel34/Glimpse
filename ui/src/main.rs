@@ -6,6 +6,7 @@ mod track_menu;
 mod theme;
 mod window;
 mod video_texture;
+mod vaapi_texture;
 
 use adw::prelude::*;
 use adw::Application;
