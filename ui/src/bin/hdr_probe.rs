@@ -46,15 +46,14 @@ fn build_pq_pattern() -> gdk4_hdr::Texture {
 
     let bytes = glib_hdr::Bytes::from_owned(pixels);
     let pq = ColorState::rec2100_pq();
-
-    MemoryTextureBuilder::new()
-        .set_bytes(Some(&bytes))
-        .set_color_state(&pq)
-        .set_format(MemoryFormat::R16g16b16)
-        .set_width(WIDTH as i32)
-        .set_height(HEIGHT as i32)
-        .set_stride(WIDTH * 6)
-        .build()
+    let builder = MemoryTextureBuilder::new();
+    builder.set_bytes(Some(&bytes));
+    builder.set_color_state(Some(&pq));
+    builder.set_format(MemoryFormat::R16g16b16);
+    builder.set_width(WIDTH as i32);
+    builder.set_height(HEIGHT as i32);
+    builder.set_stride(WIDTH * 6);
+    builder.build()
 }
 
 fn main() -> glib_hdr::ExitCode {
