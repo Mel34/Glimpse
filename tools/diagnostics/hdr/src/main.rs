@@ -18,6 +18,9 @@ const LEVELS_NITS: [f64; 14] = [
     100.0, 203.0, 400.0, 600.0, 1000.0, 2000.0, 4000.0,
 ];
 const DRM_FORMAT_MOD_INVALID: u64 = 0x00ff_ffff_ffff_ffff;
+// GTK 4.24 added GDK_MEMORY_XRGB2101010 as enum value 67. gtk-rs 0.9.6
+// forwards unknown enum values unchanged through this compatibility variant.
+const GDK_MEMORY_XRGB2101010: MemoryFormat = MemoryFormat::__Unknown(67);
 
 fn stage<T, E: Display>(result: Result<T, E>, name: &str) -> Result<T, Box<dyn Error>> {
     result.map_err(|error| io::Error::other(format!("{name}: {error}")).into())
@@ -63,32 +66,15 @@ fn fill_pq_dmabuf_pattern(buffer: &mut [u8], stride: usize) {
     }
 }
 
-/// GDK 4.24's MemoryFormat has no packed XRGB2101010 variant. Use its
-/// supported 16-bit-per-channel RGB format for the reference, retaining the
-/// same PQ code values before the DMA-BUF's 10-bit quantization.
-fn make_cpu_reference() -> Result<gdk4::Texture, Box<dyn Error>> {
-    let stride = WIDTH as usize * 6;
-    let mut pixels = vec![0u8; stride * HEIGHT as usize];
-
-    for y in 0..HEIGHT as usize {
-        let row = &mut pixels[y * stride..(y + 1) * stride];
-        for x in 0..WIDTH as usize {
-            let band = (x * LEVELS_NITS.len() / WIDTH as usize)
-                .min(LEVELS_NITS.len() - 1);
-            let code = pq_encode(LEVELS_NITS[band]);
-            let pixel = &mut row[x * 6..x * 6 + 6];
-            pixel[0..2].copy_from_slice(&code.to_ne_bytes());
-            pixel[2..4].copy_from_slice(&code.to_ne_bytes());
-            pixel[4..6].copy_from_slice(&code.to_ne_bytes());
-        }
-    }
-
+/// Build a system-memory texture using the exact same XRGB2101010 bytes
+/// as the GBM DMA-BUF. GTK 4.24 defines this format as enum value 67.
+fn make_cpu_reference(pixels: Vec<u8>, stride: usize) -> Result<gdk4::Texture, Box<dyn Error>> {
     let bytes = glib::Bytes::from_owned(pixels);
     let builder = MemoryTextureBuilder::new();
     builder.set_width(WIDTH as i32);
     builder.set_height(HEIGHT as i32);
     builder.set_stride(stride);
-    builder.set_format(MemoryFormat::R16g16b16);
+    builder.set_format(GDK_MEMORY_XRGB2101010);
     builder.set_bytes(Some(&bytes));
     builder.set_color_state(Some(&ColorState::rec2100_pq()));
     Ok(builder.build())
@@ -120,11 +106,13 @@ fn build_pq_textures(
         "allocate linear renderable XRGB2101010 GBM buffer",
     )?;
     let stride = bo.stride() as usize;
+    let mut cpu_pixels = vec![0u8; stride * HEIGHT as usize];
+    fill_pq_dmabuf_pattern(&mut cpu_pixels, stride);
     stage(
         bo.map_mut(0, 0, WIDTH, HEIGHT, |mapping| {
             let mapped_stride = mapping.stride() as usize;
             assert_eq!(mapped_stride, stride, "GBM mapped stride differs from BO stride");
-            fill_pq_dmabuf_pattern(mapping.buffer_mut(), mapped_stride);
+            mapping.buffer_mut()[..cpu_pixels.len()].copy_from_slice(&cpu_pixels);
         }),
         "map and write test pattern into GBM buffer",
     )?;
@@ -137,7 +125,7 @@ fn build_pq_textures(
         .into());
     }
 
-    let cpu_texture = make_cpu_reference()?;
+    let cpu_texture = make_cpu_reference(cpu_pixels.clone(), stride)?;
     let modifier = modifier_value(bo.modifier())?;
     let dmabuf = stage(bo.fd(), "export GBM buffer as DMA-BUF fd")?;
     let raw_fd = dmabuf.as_raw_fd();
@@ -203,14 +191,14 @@ fn main() -> glib::ExitCode {
                 let cpu_column = GtkBox::new(Orientation::Vertical, 4);
                 dmabuf_column.append(&Label::new(Some("GBM DMA-BUF texture · XRGB2101010")));
                 dmabuf_column.append(&make_picture(&dmabuf_texture));
-                cpu_column.append(&Label::new(Some("System-memory reference · RGB16")));
+                cpu_column.append(&Label::new(Some("System-memory reference · XRGB2101010 (same bytes)")));
                 cpu_column.append(&make_picture(&cpu_texture));
                 images.append(&dmabuf_column);
                 images.append(&cpu_column);
                 content.append(&images);
 
                 let explanation = Label::new(Some(&format!(
-                    "Both images represent the same PQ luminance levels; the DMA-BUF is quantized to 10 bits and the reference uses 16 bits per channel.
+                    "Both images use byte-identical XRGB2101010 pixel data and Rec. 2100 PQ color state.
                      BT.2020 / ST 2084 PQ · left to right: {} cd/m²
                      {details}
                      If the right image appears and the left is black, the remaining fault is specific to DMA-BUF sampling/import.",
