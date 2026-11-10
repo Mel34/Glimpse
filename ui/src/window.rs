@@ -182,6 +182,10 @@ impl GlimpseWindow {
         subtitle_label.set_visible(false);
         player_overlay.add_overlay(&subtitle_label);
 
+        // Build the bottom controls first so the filename label can live in
+        // the top-left OSD while remaining part of the shared control state.
+        let bottom_controls = create_floating_bottom_bar();
+
         // Top Floating OSD Bar (margins 6px from corner matching standard Libadwaita)
         let top_controls = GtkBox::new(Orientation::Horizontal, 0);
         top_controls.add_css_class("floating-osd-top");
@@ -263,8 +267,7 @@ impl GlimpseWindow {
         top_handle.set_child(Some(&top_controls));
         player_overlay.add_overlay(&top_handle);
 
-        // Bottom Floating OSD Bar (Title, Volume, Settings, Seekbar, Timestamps)
-        let bottom_controls = create_floating_bottom_bar();
+        // Bottom Floating OSD Bar (Volume, Settings, Seekbar, Timestamps)
         // Keep the timeline independent of video-frame presentation so audio-only
         // playback and audio that outlives the video stream still update the controls.
         let timeline_player = Rc::clone(&player);
