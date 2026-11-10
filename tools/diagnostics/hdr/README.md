@@ -15,25 +15,59 @@ bands are absolute PQ luminance values from 0.1 to 4000 cd/m².
 
 ## Run
 
-From the repository root:
+Run from the repository root, in the HDR-enabled Wayland session. GTK 4.24
+provides GDK debug switches for color management and HDR rendering. The
+earlier probe run enabled only offload and DMA-BUF diagnostics, so its lack of
+surface image-description requests did **not** establish that GDK's HDR path
+was inactive or broken.
+
+First test the normal color-managed path:
 
 ```sh
-GDK_DEBUG=offload,dmabuf cargo run --manifest-path tools/diagnostics/hdr/Cargo.toml
+GDK_DEBUG=color-mgmt,offload,dmabuf \
+  cargo run --manifest-path tools/diagnostics/hdr/Cargo.toml
 ```
 
-For Wayland protocol tracing:
+Then close the probe and run again with GTK's HDR-rendering debug override:
 
 ```sh
-GDK_DEBUG=offload,dmabuf WAYLAND_DEBUG=1 \
-  cargo run --manifest-path tools/diagnostics/hdr/Cargo.toml 2>hdr-probe-wayland.log
-grep -Ei 'wp_color|image_description|set_image_description|offload|dmabuf' \
-  hdr-probe-wayland.log
+GDK_DEBUG=hdr,color-mgmt,offload,dmabuf \
+  cargo run --manifest-path tools/diagnostics/hdr/Cargo.toml
 ```
 
-Run this in the HDR-enabled Wayland session, first windowed and then fullscreen.
-Compare the bands with an HDR reference in mpv. The 203 cd/m² patch is the
-reference-white checkpoint; higher patches should remain distinguishable up to
-the display's capabilities.
+The `hdr` switch forces HDR rendering; it is a diagnostic override, not a
+production setting. Compare the visual result of both runs.
+
+## Wayland protocol tracing
+
+Capture each run separately so we can compare the normal and forced-HDR paths:
+
+```sh
+GDK_DEBUG=color-mgmt,offload,dmabuf WAYLAND_DEBUG=1 \
+  cargo run --manifest-path tools/diagnostics/hdr/Cargo.toml \
+  2>hdr-probe-normal.log
+
+GDK_DEBUG=hdr,color-mgmt,offload,dmabuf WAYLAND_DEBUG=1 \
+  cargo run --manifest-path tools/diagnostics/hdr/Cargo.toml \
+  2>hdr-probe-forced-hdr.log
+```
+
+Then extract the relevant protocol and renderer diagnostics:
+
+```sh
+grep -Ei 'wp_color|image_description|set_image_description|offload|dmabuf|HDR|color management' \
+  hdr-probe-normal.log hdr-probe-forced-hdr.log
+```
+
+Look specifically for a surface color-management object, creation of a
+parametric image description, a ready event, and
+`set_image_description` on the probe's surface. Color-manager capability
+queries by Mesa on unrelated connections are not sufficient evidence.
+
+Run windowed first, then fullscreen if the normal-path trace shows successful
+color-description negotiation. Compare the bands with an HDR reference in
+mpv. The 203 cd/m² patch is the reference-white checkpoint; higher patches
+should remain distinguishable up to the display's capabilities.
 
 ## Scope and interpretation
 
