@@ -1,7 +1,7 @@
 //! Audio and embedded subtitle stream selection.
 
 use gtk4::prelude::*;
-use gtk4::{Box as GtkBox, CheckButton, Label, Orientation, Popover};
+use gtk4::{Box as GtkBox, CheckButton, Label, Orientation, Popover, PolicyType, ScrolledWindow};
 use glimpse_engine::{TrackId, TrackInfo, TrackList};
 use crate::interaction::attach_popover_scroll_guard;
 
@@ -63,6 +63,7 @@ where
     container.append(&subtitle_off_btn);
 
     let mut first_subtitle_btn: Option<CheckButton> = Some(subtitle_off_btn);
+    let subtitle_tracks_box = GtkBox::new(Orientation::Vertical, 4);
     for track in ordered_subtitle_tracks(&tracks.subtitle_tracks) {
         let btn = CheckButton::with_label(&track.display_label());
         btn.set_group(first_subtitle_btn.as_ref());
@@ -73,8 +74,15 @@ where
             if button.is_active() { cb(Some(tid)); }
         });
         if first_subtitle_btn.is_none() { first_subtitle_btn = Some(btn.clone()); }
-        container.append(&btn);
+        subtitle_tracks_box.append(&btn);
     }
+
+    let subtitle_scroll = ScrolledWindow::new();
+    subtitle_scroll.set_policy(PolicyType::Never, PolicyType::Automatic);
+    subtitle_scroll.set_max_content_height(280);
+    subtitle_scroll.set_propagate_natural_height(true);
+    subtitle_scroll.set_child(Some(&subtitle_tracks_box));
+    container.append(&subtitle_scroll);
 
     popover.set_child(Some(&container));
     attach_popover_scroll_guard(&popover);
