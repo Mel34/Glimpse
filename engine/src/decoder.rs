@@ -375,11 +375,14 @@ unsafe fn c_string_to_owned(pointer: *const libc::c_char) -> Option<String> {
 
 #[cfg(feature = "ffmpeg-system")]
 fn clean_ass_dialogue(ass: &str) -> String {
-    let dialogue = ass.split_once("Dialogue:")
-        .map(|(_, value)| value)
-        .unwrap_or(ass);
-    let mut fields = dialogue.splitn(10, ',');
-    for _ in 0..9 { let _ = fields.next(); }
+    // FFmpeg's AVSubtitleRect.ass omits the Dialogue: prefix and timestamps,
+    // leaving the nine-field ASS event form. Full Dialogue lines have ten.
+    let (dialogue, fields_to_skip) = match ass.split_once("Dialogue:") {
+        Some((_, value)) => (value, 9),
+        None => (ass, 8),
+    };
+    let mut fields = dialogue.splitn(fields_to_skip + 1, ',');
+    for _ in 0..fields_to_skip { let _ = fields.next(); }
     let text = fields.next().unwrap_or(dialogue);
     let mut output = String::with_capacity(text.len());
     let mut in_override = false;
@@ -389,10 +392,10 @@ fn clean_ass_dialogue(ass: &str) -> String {
             '{' => in_override = true,
             '}' if in_override => in_override = false,
             '\\' if !in_override => match chars.next() {
-                Some('N' | 'n') => output.push('\n'),
+                Some('N' | 'n') => output.push('\\n'),
                 Some('h') => output.push(' '),
-                Some(other) => { output.push('\\'); output.push(other); }
-                None => output.push('\\'),
+                Some(other) => { output.push('\\\\'); output.push(other); }
+                None => output.push('\\\\'),
             },
             _ if !in_override => output.push(ch),
             _ => {}
@@ -400,7 +403,6 @@ fn clean_ass_dialogue(ass: &str) -> String {
     }
     output
 }
-
 
 // -----------------------------------------------------------------------------
 // Audio decoding
