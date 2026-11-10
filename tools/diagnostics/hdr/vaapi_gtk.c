@@ -21,6 +21,7 @@
 #include <libavutil/error.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/hwcontext_drm.h>
+#include <libavutil/pixdesc.h>
 
 typedef struct {
     const char *video_path;
