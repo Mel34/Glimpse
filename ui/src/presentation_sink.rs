@@ -568,7 +568,7 @@ fn schedule_frames(
         };
 
         let texture_import_started = Instant::now();
-        let texture = match frame.vaapi_frame.as_ref() {
+        let texture: gdk4::Texture = match frame.vaapi_frame.as_ref() {
             Some(vaapi_frame) => {
                 #[cfg(feature = "vaapi-hdr")]
                 {
@@ -606,7 +606,7 @@ fn schedule_frames(
                     &bytes,
                     frame.stride,
                 )
-                .upcast()
+                .upcast::<gdk4::Texture>()
             }
         };
         let texture_import_us = texture_import_started.elapsed().as_micros() as u64;
