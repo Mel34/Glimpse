@@ -14,7 +14,7 @@ Glimpse uses its in-process `glimpse-engine` for playback; GTK `MediaFile` is no
 - FFmpeg/libavcodec decodes video in a worker thread. Decoded frames are presented as GTK memory textures and scheduled against the audio master clock.
 - Audio is decoded and sent directly to PipeWire; video-only files use the monotonic playback clock.
 - Seeking restarts the video demux/decode run at the target while the audio engine seeks its master timeline. Paused seeks remain paused.
-- Audio track selection is supported; subtitle playback is not available yet.
+- Audio track selection is supported. Embedded text subtitles (SubRip, WebVTT, and ASS/SSA text) can be enabled from the track menu; subtitles are OFF by default for each playback session. The menu lists system-language tracks first, then English, followed by remaining tracks. Bitmap subtitle formats such as PGS and DVD subtitles are not rendered yet.
 
 ## Rendering roadmap
 
