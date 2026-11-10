@@ -287,20 +287,46 @@ fn schedule_frames(
                 // Never discard the startup frame before GTK has had a chance
                 // to present it, even if the audio clock started first.
                 if !state.present_first_frame && lateness > 0.040 {
-                    let frame_pts = frame.pts;
-                    state.pending = None;
-                    state.dropped_stale_ingest += 1;
-                    if video_debug && (state.dropped_stale_ingest == 1 || state.dropped_stale_ingest % 120 == 0) {
-                        tracing::warn!(
-                            frame_pts,
-                            master_pts,
-                            lateness_ms = lateness * 1000.0,
-                            dropped_stale_ingest = state.dropped_stale_ingest,
-                            queued_frames = ingest_receiver.len(),
-                            "Dropping stale video frame during independent queue drain"
-                        );
+                    // Keep the newest late frame as a recovery fallback. Only
+                    // discard it once a newer decoded frame is available.
+                    match ingest_receiver.try_recv() {
+                        Ok(Ok(frame)) => {
+                            let frame_pts = state.pending.take().map(|pending| pending.pts);
+                            state.dropped_stale_ingest += 1;
+                            if video_debug && (state.dropped_stale_ingest == 1 || state.dropped_stale_ingest % 120 == 0) {
+                                tracing::warn!(
+                                    frame_pts,
+                                    master_pts,
+                                    lateness_ms = lateness * 1000.0,
+                                    dropped_stale_ingest = state.dropped_stale_ingest,
+                                    queued_frames = ingest_receiver.len(),
+                                    "Dropping older stale video frame; retaining newer frame"
+                                );
+                            }
+                            state.frames_received += 1;
+                            state.pending = Some(frame);
+                            continue;
+                        }
+                        Ok(Err(error)) => {
+                            tracing::error!(
+                                %error,
+                                frames_received = state.frames_received,
+                                displayed_frames = state.displayed_frames,
+                                dropped_stale_ingest = state.dropped_stale_ingest,
+                                dropped_late_presentation = state.dropped_late_presentation,
+                                dropped_superseded = state.dropped_superseded,
+                                presentation_failures = state.presentation_failures,
+                                "Engine video decoder failed; stopping frame ingestion"
+                            );
+                            state.stream_finished = true;
+                            break;
+                        }
+                        Err(TryRecvError::Empty) => break,
+                        Err(TryRecvError::Disconnected) => {
+                            state.stream_finished = true;
+                            break;
+                        }
                     }
-                    continue;
                 }
                 break;
             }
@@ -477,6 +503,7 @@ fn schedule_frames(
             state.present_first_frame = false;
         } else if !state.present_first_frame {
             let mut candidate = state.pending.take();
+            let mut latest_late_frame = None;
 
             loop {
                 let frame = if let Some(frame) = candidate.take() {
@@ -511,20 +538,28 @@ fn schedule_frames(
 
                 let lateness = master_pts - frame.pts;
                 if lateness > 0.040 {
-                    state.dropped_late_presentation += 1;
-                    if video_debug && (state.dropped_late_presentation == 1 || state.dropped_late_presentation % 120 == 0) {
-                        tracing::warn!(
-                            frame_pts = frame.pts,
-                            master_pts,
-                            lateness_ms = lateness * 1000.0,
-                            dropped_late_presentation = state.dropped_late_presentation,
-                            "Dropping late video frame during presentation"
-                        );
+                    // Retain the newest late frame as a fallback. If another
+                    // late frame arrives, the older fallback is now obsolete.
+                    if let Some(replaced_late_frame) = latest_late_frame.replace(frame) {
+                        state.dropped_late_presentation += 1;
+                        if video_debug && (state.dropped_late_presentation == 1 || state.dropped_late_presentation % 120 == 0) {
+                            tracing::warn!(
+                                frame_pts = replaced_late_frame.pts,
+                                master_pts,
+                                dropped_late_presentation = state.dropped_late_presentation,
+                                "Dropping older late video frame; retaining newest available frame"
+                            );
+                        }
                     }
                     continue;
                 }
 
                 if frame.pts <= master_pts + presentation_window {
+                    // A normally eligible frame is preferable to any late
+                    // fallback because it is closer to the audio master clock.
+                    if latest_late_frame.take().is_some() {
+                        state.dropped_late_presentation += 1;
+                    }
                     if let Some(replaced_frame) = selected_frame.replace(frame) {
                         state.dropped_superseded += 1;
                         if state.dropped_superseded == 1 || state.dropped_superseded % 120 == 0 {
@@ -544,6 +579,13 @@ fn schedule_frames(
                 }
             }
 
+            // If no normally eligible frame was found, show the newest late
+            // frame rather than leaving the picture frozen on an older image.
+            if selected_frame.is_none() {
+                selected_frame = latest_late_frame.take();
+            } else if latest_late_frame.take().is_some() {
+                state.dropped_late_presentation += 1;
+            }
         }
 
         let Some(frame) = selected_frame else {
