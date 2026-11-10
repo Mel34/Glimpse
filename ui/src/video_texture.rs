@@ -42,7 +42,7 @@ pub fn bind_subtitle_scaling(picture: &gtk4::Picture, subtitle_label: &gtk4::Lab
             .round()
             .clamp(20.0, 48.0) as i32;
         let attributes = gtk4::pango::AttrList::new();
-        attributes.insert(gtk4::pango::AttrSize::new_absolute(
+        attributes.insert(gtk4::pango::AttrSize::new_size_absolute(
             font_size * gtk4::pango::SCALE,
         ));
         label.set_attributes(Some(&attributes));
@@ -50,7 +50,7 @@ pub fn bind_subtitle_scaling(picture: &gtk4::Picture, subtitle_label: &gtk4::Lab
 
     apply(subtitle_label, picture.width());
     let label = subtitle_label.downgrade();
-    picture.connect_width_notify(move |picture| {
+    picture.connect_notify_local(Some("width"), move |picture, _| {
         if let Some(label) = label.upgrade() {
             apply(&label, picture.width());
         }
