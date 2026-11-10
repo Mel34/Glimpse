@@ -55,6 +55,21 @@ fn modifier_value(modifier: Modifier) -> Result<u64, Box<dyn Error>> {
     }
 }
 
+fn fill_pq_pattern(buffer: &mut [u8], stride: usize) {
+    for y in 0..HEIGHT as usize {
+        let row = &mut buffer[y * stride..(y + 1) * stride];
+        for x in 0..WIDTH as usize {
+            let band = (x * LEVELS_NITS.len() / WIDTH as usize)
+                .min(LEVELS_NITS.len() - 1);
+            let code16 = pq_encode(LEVELS_NITS[band]) as u32;
+            let code10 = (code16 * 1023 + 32_767) / 65_535;
+            // DRM_FORMAT_XRGB2101010: X[31:30], R[29:20], G[19:10], B[9:0].
+            let packed = (3u32 << 30) | (code10 << 20) | (code10 << 10) | code10;
+            row[x * 4..x * 4 + 4].copy_from_slice(&packed.to_ne_bytes());
+        }
+    }
+}
+
 fn build_pq_dmabuf_pattern(
     display: &gdk4::Display,
 ) -> Result<(gdk4::Texture, String), Box<dyn Error>> {
@@ -70,40 +85,30 @@ fn build_pq_dmabuf_pattern(
     let gbm = stage(Device::new(drm_file), "create GBM device")?;
 
     // XRGB2101010 preserves 10-bit PQ code values while keeping this first
-    // DMA-BUF probe to one packed plane.
+    // DMA-BUF probe to one packed plane. GBM documents WRITE as not guaranteed
+    // for arbitrary formats/usages, so allocate a renderable linear BO and
+    // use the explicit CPU mapping API instead of gbm_bo_write().
     let format = Format::Xrgb2101010;
-    // The pattern is CPU-written, so request an explicitly linear layout.
-    // WRITE alone can be accepted by the capability query but rejected by
-    // Mesa's allocator when it chooses a tiled layout.
-    let usage = BufferObjectFlags::WRITE | BufferObjectFlags::LINEAR;
+    let usage = BufferObjectFlags::RENDERING | BufferObjectFlags::LINEAR;
     if !gbm.is_format_supported(format, usage) {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            format!("GBM does not support linear XRGB2101010 WRITE on {device_path}"),
+            format!("GBM does not support linear renderable XRGB2101010 on {device_path}"),
         )
         .into());
     }
 
     let mut bo = stage(
         gbm.create_buffer_object::<()>(WIDTH, HEIGHT, format, usage),
-        "allocate linear XRGB2101010 GBM buffer",
+        "allocate linear renderable XRGB2101010 GBM buffer",
     )?;
     let stride = bo.stride() as usize;
-    let mut pixels = vec![0u8; stride * HEIGHT as usize];
-
-    for y in 0..HEIGHT as usize {
-        let row = &mut pixels[y * stride..(y + 1) * stride];
-        for x in 0..WIDTH as usize {
-            let band = (x * LEVELS_NITS.len() / WIDTH as usize)
-                .min(LEVELS_NITS.len() - 1);
-            let code16 = pq_encode(LEVELS_NITS[band]) as u32;
-            let code10 = (code16 * 1023 + 32_767) / 65_535;
-            // DRM_FORMAT_XRGB2101010: X[31:30], R[29:20], G[19:10], B[9:0].
-            let packed = (3u32 << 30) | (code10 << 20) | (code10 << 10) | code10;
-            row[x * 4..x * 4 + 4].copy_from_slice(&packed.to_ne_bytes());
-        }
-    }
-    stage(bo.write(&pixels), "write test pattern into GBM buffer")?;
+    stage(
+        bo.map_mut(0, 0, WIDTH, HEIGHT, |mapping| {
+            fill_pq_pattern(mapping.buffer_mut(), mapping.stride() as usize);
+        }),
+        "map and write test pattern into GBM buffer",
+    )?;
 
     if bo.plane_count() != 1 {
         return Err(io::Error::new(
@@ -131,13 +136,16 @@ fn build_pq_dmabuf_pattern(
 
     // GDK retains the DMA-BUF after build. Keep its exported fd alive until
     // the texture is finalized, rather than closing it when this function exits.
-    let texture = stage(unsafe { builder.build_with_release_func(move || drop(dmabuf)) }, "import DMA-BUF into GDK texture")?;
+    let texture = stage(
+        unsafe { builder.build_with_release_func(move || drop(dmabuf)) },
+        "import DMA-BUF into GDK texture",
+    )?;
 
     let details = format!(
         "GBM DMA-BUF · XRGB2101010 · {}×{} · stride {} · modifier 0x{modifier:016x}",
         WIDTH,
         HEIGHT,
-        bo.stride()
+        stride
     );
     println!("{details}");
     Ok((texture, details))
