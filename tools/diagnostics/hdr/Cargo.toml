@@ -1,0 +1,18 @@
+[package]
+name = "glimpse-hdr-probe"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "LGPL-2.1-or-later"
+description = "Standalone GTK HDR color-pipeline diagnostic for Glimpse"
+
+[workspace]
+
+[[bin]]
+name = "glimpse-hdr-probe"
+path = "src/main.rs"
+
+[dependencies]
+gtk4 = { version = "0.9", features = ["v4_16"] }
+gdk4 = { version = "0.9", features = ["v4_16"] }
+glib = "0.20"
