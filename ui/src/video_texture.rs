@@ -541,11 +541,12 @@ fn schedule_frames(
             let master_pts = clock.get_pts();
             let lateness = master_pts - frame.pts;
             if !state.present_first_frame && lateness > 0.040 {
+                let frame_pts = frame.pts;
                 state.pending = None;
                 state.dropped_frames += 1;
                 if state.dropped_frames == 1 || state.dropped_frames % 120 == 0 {
                     tracing::warn!(
-                        frame_pts = frame.pts,
+                        frame_pts,
                         master_pts,
                         lateness_ms = lateness * 1000.0,
                         dropped_frames = state.dropped_frames,
