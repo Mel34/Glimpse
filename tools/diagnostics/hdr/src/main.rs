@@ -206,7 +206,7 @@ where
 
 fn build_textures(
     display: &gdk4::Display,
-) -> Result<(gdk4::Texture, gdk4::Texture, gdk4::Texture, String), Box<dyn Error>> {
+) -> Result<(gdk4::Texture, gdk4::Texture, gdk4::Texture, gdk4::Texture, String), Box<dyn Error>> {
     let device_path = std::env::var("GLIMPSE_DRM_DEVICE")
         .unwrap_or_else(|_| "/dev/dri/renderD128".to_string());
     let drm_file = stage(
@@ -221,6 +221,12 @@ fn build_textures(
     let pq_reference = make_cpu_reference(pq_pixels, pq_stride)?;
     let pq_texture = import_bo(display, &pq_bo, Some(&ColorState::rec2100_pq()))?;
 
+    // ARGB keeps the same 10-bit RGB channels but supplies explicit opaque alpha.
+    let (argb_bo, argb_pixels, argb_stride) =
+        allocate_pattern::<()>(&gbm, Format::Argb2101010, fill_argb_pq_pattern)?;
+    let argb_readback = verify_bo_contents(&argb_bo, &argb_pixels)?;
+    let argb_texture = import_bo(display, &argb_bo, Some(&ColorState::rec2100_pq()))?;
+
     // An ordinary 8-bit sRGB DMA-BUF is the control for the generic import path.
     let (sdr_bo, sdr_pixels, _) =
         allocate_pattern::<()>(&gbm, Format::Xrgb8888, fill_sdr_control)?;
@@ -228,10 +234,11 @@ fn build_textures(
     let sdr_texture = import_bo(display, &sdr_bo, None)?;
 
     let pq_modifier = modifier_value(pq_bo.modifier())?;
+    let argb_modifier = modifier_value(argb_bo.modifier())?;
     let sdr_modifier = modifier_value(sdr_bo.modifier())?;
     let details = format!(
-        "PQ: XRGB2101010 · stride {} · modifier 0x{pq_modifier:016x}\n{readback}\nSDR control: XRGB8888 · stride {} · modifier 0x{sdr_modifier:016x}\n{sdr_readback}",
-        pq_stride, sdr_bo.stride()
+        "PQ XRGB2101010 · stride {} · modifier 0x{pq_modifier:016x}\n{readback}\nPQ ARGB2101010 · stride {} · modifier 0x{argb_modifier:016x}\n{argb_readback}\nSDR XRGB8888 · stride {} · modifier 0x{sdr_modifier:016x}\n{sdr_readback}",
+        pq_stride, argb_stride, sdr_bo.stride()
     );
     println!("{details}");
     Ok((pq_texture, pq_reference, argb_texture, sdr_texture, details))
