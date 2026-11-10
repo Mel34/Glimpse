@@ -503,6 +503,7 @@ fn schedule_frames(
             state.present_first_frame = false;
         } else if !state.present_first_frame {
             let mut candidate = state.pending.take();
+            let mut latest_late_frame = None;
 
             loop {
                 let frame = if let Some(frame) = candidate.take() {
