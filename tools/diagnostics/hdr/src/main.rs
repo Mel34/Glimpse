@@ -12,6 +12,7 @@ use gtk4::{
     GraphicsOffloadEnabled, Label, Orientation, Picture,
 };
 use std::error::Error;
+use std::fmt::Display;
 use std::fs::OpenOptions;
 use std::io;
 use std::os::fd::AsRawFd;
@@ -23,6 +24,10 @@ const LEVELS_NITS: [f64; 14] = [
     100.0, 203.0, 400.0, 600.0, 1000.0, 2000.0, 4000.0,
 ];
 const DRM_FORMAT_MOD_INVALID: u64 = 0x00ff_ffff_ffff_ffff;
+
+fn stage<T, E: Display>(result: Result<T, E>, name: &str) -> Result<T, Box<dyn Error>> {
+    result.map_err(|error| io::Error::other(format!("{name}: {error}")).into())
+}
 
 /// SMPTE ST 2084 (PQ) OETF: absolute display luminance in cd/m² to [0, 1].
 fn pq_encode(nits: f64) -> u16 {
@@ -55,11 +60,14 @@ fn build_pq_dmabuf_pattern(
 ) -> Result<(gdk4::Texture, String), Box<dyn Error>> {
     let device_path = std::env::var("GLIMPSE_DRM_DEVICE")
         .unwrap_or_else(|_| "/dev/dri/renderD128".to_string());
-    let drm_file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&device_path)?;
-    let gbm = Device::new(drm_file)?;
+    let drm_file = stage(
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&device_path),
+        &format!("open DRM device {device_path}"),
+    )?;
+    let gbm = stage(Device::new(drm_file), "create GBM device")?;
 
     // XRGB2101010 preserves 10-bit PQ code values while keeping this first
     // DMA-BUF probe to one packed plane.
@@ -73,7 +81,10 @@ fn build_pq_dmabuf_pattern(
         .into());
     }
 
-    let mut bo = gbm.create_buffer_object::<()>(WIDTH, HEIGHT, format, usage)?;
+    let mut bo = stage(
+        gbm.create_buffer_object::<()>(WIDTH, HEIGHT, format, usage),
+        "allocate XRGB2101010 GBM buffer",
+    )?;
     let stride = bo.stride() as usize;
     let mut pixels = vec![0u8; stride * HEIGHT as usize];
 
@@ -89,7 +100,7 @@ fn build_pq_dmabuf_pattern(
             row[x * 4..x * 4 + 4].copy_from_slice(&packed.to_ne_bytes());
         }
     }
-    bo.write(&pixels)?;
+    stage(bo.write(&pixels), "write test pattern into GBM buffer")?;
 
     if bo.plane_count() != 1 {
         return Err(io::Error::new(
@@ -100,7 +111,7 @@ fn build_pq_dmabuf_pattern(
     }
 
     let modifier = modifier_value(bo.modifier())?;
-    let dmabuf = bo.fd()?;
+    let dmabuf = stage(bo.fd(), "export GBM buffer as DMA-BUF fd")?;
     let raw_fd = dmabuf.as_raw_fd();
 
     let builder = DmabufTextureBuilder::new();
@@ -117,7 +128,7 @@ fn build_pq_dmabuf_pattern(
 
     // GDK retains the DMA-BUF after build. Keep its exported fd alive until
     // the texture is finalized, rather than closing it when this function exits.
-    let texture = unsafe { builder.build_with_release_func(move || drop(dmabuf))? };
+    let texture = stage(unsafe { builder.build_with_release_func(move || drop(dmabuf)) }, "import DMA-BUF into GDK texture")?;
 
     let details = format!(
         "GBM DMA-BUF · XRGB2101010 · {}×{} · stride {} · modifier 0x{modifier:016x}",
