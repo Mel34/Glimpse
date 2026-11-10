@@ -26,8 +26,12 @@ struct PlaybackRun {
 struct FrameSchedulerState {
     pending: Option<VideoFrameData>,
     present_first_frame: bool,
+    frames_received: u64,
     displayed_frames: u64,
-    dropped_frames: u64,
+    dropped_stale_ingest: u64,
+    dropped_late_presentation: u64,
+    dropped_superseded: u64,
+    presentation_failures: u64,
     tick_count: u64,
     stream_finished: bool,
 }
@@ -430,8 +434,12 @@ fn schedule_frames(
     let state = Rc::new(RefCell::new(FrameSchedulerState {
         pending: None,
         present_first_frame: true,
+        frames_received: 0,
         displayed_frames: 0,
-        dropped_frames: 0,
+        dropped_stale_ingest: 0,
+        dropped_late_presentation: 0,
+        dropped_superseded: 0,
+        presentation_failures: 0,
         tick_count: 0,
         stream_finished: false,
     }));
@@ -474,15 +482,15 @@ fn schedule_frames(
                 if !state.present_first_frame && lateness > 0.040 {
                     let frame_pts = frame.pts;
                     state.pending = None;
-                    state.dropped_frames += 1;
-                    if state.dropped_frames == 1 || state.dropped_frames % 120 == 0 {
+                    state.dropped_stale_ingest += 1;
+                    if state.dropped_stale_ingest == 1 || state.dropped_stale_ingest % 120 == 0 {
                         tracing::warn!(
                             frame_pts,
                             master_pts,
                             lateness_ms = lateness * 1000.0,
-                            dropped_frames = state.dropped_frames,
+                            dropped_stale_ingest = state.dropped_stale_ingest,
                             queued_frames = ingest_receiver.len(),
-                            "Dropping late video frame during independent queue drain"
+                            "Dropping stale video frame during independent queue drain"
                         );
                     }
                     continue;
@@ -491,12 +499,19 @@ fn schedule_frames(
             }
 
             match ingest_receiver.try_recv() {
-                Ok(Ok(frame)) => state.pending = Some(frame),
+                Ok(Ok(frame)) => {
+                    state.frames_received += 1;
+                    state.pending = Some(frame);
+                },
                 Ok(Err(error)) => {
                     tracing::error!(
                         %error,
+                        frames_received = state.frames_received,
                         displayed_frames = state.displayed_frames,
-                        dropped_frames = state.dropped_frames,
+                        dropped_stale_ingest = state.dropped_stale_ingest,
+                        dropped_late_presentation = state.dropped_late_presentation,
+                        dropped_superseded = state.dropped_superseded,
+                        presentation_failures = state.presentation_failures,
                         "Engine video decoder failed; stopping frame ingestion"
                     );
                     state.stream_finished = true;
@@ -573,8 +588,12 @@ fn schedule_frames(
         if state.tick_count % 250 == 0 {
             tracing::info!(
                 ticks = state.tick_count,
+                frames_received = state.frames_received,
                 displayed_frames = state.displayed_frames,
-                dropped_frames = state.dropped_frames,
+                dropped_stale_ingest = state.dropped_stale_ingest,
+                dropped_late_presentation = state.dropped_late_presentation,
+                dropped_superseded = state.dropped_superseded,
+                presentation_failures = state.presentation_failures,
                 pending_pts = state.pending.as_ref().map(|frame| frame.pts),
                 queued_frames = receiver.len(),
                 master_pts,
@@ -599,7 +618,6 @@ fn schedule_frames(
         if selected_frame.is_some() {
             state.present_first_frame = false;
         } else if !state.present_first_frame {
-            let dropped_before = state.dropped_frames;
             let mut candidate = state.pending.take();
 
             loop {
@@ -607,12 +625,19 @@ fn schedule_frames(
                     frame
                 } else {
                     match receiver.try_recv() {
-                        Ok(Ok(frame)) => frame,
+                        Ok(Ok(frame)) => {
+                            state.frames_received += 1;
+                            frame
+                        },
                         Ok(Err(error)) => {
                             tracing::error!(
                                 %error,
+                                frames_received = state.frames_received,
                                 displayed_frames = state.displayed_frames,
-                                dropped_frames = state.dropped_frames,
+                                dropped_stale_ingest = state.dropped_stale_ingest,
+                                dropped_late_presentation = state.dropped_late_presentation,
+                                dropped_superseded = state.dropped_superseded,
+                                presentation_failures = state.presentation_failures,
                                 "Engine video decoder failed during frame selection"
                             );
                             state.stream_finished = true;
@@ -628,13 +653,30 @@ fn schedule_frames(
 
                 let lateness = master_pts - frame.pts;
                 if lateness > 0.040 {
-                    state.dropped_frames += 1;
+                    state.dropped_late_presentation += 1;
+                    if state.dropped_late_presentation == 1 || state.dropped_late_presentation % 120 == 0 {
+                        tracing::warn!(
+                            frame_pts = frame.pts,
+                            master_pts,
+                            lateness_ms = lateness * 1000.0,
+                            dropped_late_presentation = state.dropped_late_presentation,
+                            "Dropping late video frame during presentation"
+                        );
+                    }
                     continue;
                 }
 
                 if frame.pts <= master_pts + presentation_window {
-                    if selected_frame.replace(frame).is_some() {
-                        state.dropped_frames += 1;
+                    if let Some(replaced_frame) = selected_frame.replace(frame) {
+                        state.dropped_superseded += 1;
+                        if state.dropped_superseded == 1 || state.dropped_superseded % 120 == 0 {
+                            tracing::debug!(
+                                replaced_pts = replaced_frame.pts,
+                                master_pts,
+                                dropped_superseded = state.dropped_superseded,
+                                "Replacing an eligible video frame with a newer frame for this refresh"
+                            );
+                        }
                     }
                 } else {
                     // Frames arrive in presentation order. Keep the first
@@ -644,15 +686,6 @@ fn schedule_frames(
                 }
             }
 
-            if state.dropped_frames / 120 != dropped_before / 120 {
-                tracing::debug!(
-                    dropped_frames = state.dropped_frames,
-                    displayed_frames = state.displayed_frames,
-                    queued_frames = receiver.len(),
-                    master_pts,
-                    "Skipped superseded or late video frames during presentation"
-                );
-            }
         }
 
         let Some(frame) = selected_frame else {
@@ -660,8 +693,12 @@ fn schedule_frames(
                 subtitle_label.set_text("");
                 subtitle_label.set_visible(false);
                 tracing::info!(
+                    frames_received = state.frames_received,
                     displayed_frames = state.displayed_frames,
-                    dropped_frames = state.dropped_frames,
+                    dropped_stale_ingest = state.dropped_stale_ingest,
+                    dropped_late_presentation = state.dropped_late_presentation,
+                    dropped_superseded = state.dropped_superseded,
+                    presentation_failures = state.presentation_failures,
                     ticks = state.tick_count,
                     "Engine video stream finished; stopping frame scheduler"
                 );
@@ -677,7 +714,13 @@ fn schedule_frames(
                     match crate::vaapi_texture::create_texture(vaapi_frame) {
                         Ok(texture) => texture,
                         Err(error) => {
-                            tracing::error!(%error, pts = frame.pts, "Could not import VAAPI frame into GTK");
+                            state.presentation_failures += 1;
+                            tracing::error!(
+                                %error,
+                                pts = frame.pts,
+                                presentation_failures = state.presentation_failures,
+                                "Could not import VAAPI frame into GTK"
+                            );
                             return glib::ControlFlow::Break;
                         }
                     }
