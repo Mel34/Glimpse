@@ -55,7 +55,12 @@ fn subtitle_cue_markup(cue: &SubtitleCue) -> String {
     let mut markup = String::new();
     for span in &cue.spans {
         let escaped = glib::markup_escape_text(&span.text);
-        if span.bold { markup.push_str("<b>"); }
+        if span.bold {
+            markup.push_str("<b>");
+        } else {
+            // ASS's default \b0 must override the overlay's bold CSS style.
+            markup.push_str("<span weight=\"normal\">");
+        }
         if span.italic { markup.push_str("<i>"); }
         if span.underline { markup.push_str("<u>"); }
         if span.strikethrough { markup.push_str("<s>"); }
@@ -63,7 +68,11 @@ fn subtitle_cue_markup(cue: &SubtitleCue) -> String {
         if span.strikethrough { markup.push_str("</s>"); }
         if span.underline { markup.push_str("</u>"); }
         if span.italic { markup.push_str("</i>"); }
-        if span.bold { markup.push_str("</b>"); }
+        if span.bold {
+            markup.push_str("</b>");
+        } else {
+            markup.push_str("</span>");
+        }
     }
     markup
 }
@@ -107,7 +116,10 @@ mod subtitle_markup_tests {
                 strikethrough: false,
             }],
         };
-        assert_eq!(subtitle_cue_markup(&cue), "&lt;unsafe &amp; text&gt;");
+        assert_eq!(
+            subtitle_cue_markup(&cue),
+            "<span weight=\"normal\">&lt;unsafe &amp; text&gt;</span>"
+        );
     }
 }
 
