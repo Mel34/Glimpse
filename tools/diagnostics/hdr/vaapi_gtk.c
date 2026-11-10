@@ -364,6 +364,8 @@ static GdkColorState *make_hdr10_yuv_color_state(GError **error)
 
 static int validate_p010_descriptor(
     const AVDRMFrameDescriptor *descriptor,
+    int width,
+    int height,
     uint64_t *modifier_out)
 {
     if (!descriptor || descriptor->nb_objects < 1 ||
@@ -399,9 +401,19 @@ static int validate_p010_descriptor(
 
         const AVDRMObjectDescriptor *object =
             &descriptor->objects[plane->object_index];
+        uint64_t rows = i == 0
+            ? (uint64_t)height
+            : ((uint64_t)height + 1) / 2;
+        uint64_t minimum_pitch = i == 0
+            ? (uint64_t)width * 2
+            : (((uint64_t)width + 1) / 2) * 4;
+        uint64_t end = (uint64_t)plane->offset +
+            (uint64_t)plane->pitch * rows;
         if (object->fd < 0 || object->size == 0 ||
-            (uint64_t)plane->offset >= object->size) {
-            fprintf(stderr, "Invalid P010 DMA-BUF object for plane %d\n", i);
+            (uint64_t)plane->offset >= object->size ||
+            (uint64_t)plane->pitch < minimum_pitch ||
+            end < (uint64_t)plane->offset || end > object->size) {
+            fprintf(stderr, "Invalid P010 DMA-BUF bounds for plane %d\n", i);
             return -1;
         }
 
@@ -464,7 +476,8 @@ static GdkTexture *import_vaapi_p010(
     const AVDRMFrameDescriptor *descriptor =
         (const AVDRMFrameDescriptor *)drm->data[0];
     uint64_t modifier;
-    if (validate_p010_descriptor(descriptor, &modifier) < 0) {
+    if (validate_p010_descriptor(
+            descriptor, decoded->width, decoded->height, &modifier) < 0) {
         g_set_error_literal(error, G_FILE_ERROR, G_FILE_ERROR_INVAL,
                             "VAAPI frame does not expose the supported P010 DRM layout");
         av_frame_free(&drm);
@@ -512,7 +525,7 @@ static GdkTexture *import_vaapi_p010(
     }
 
     *description_out = g_strdup_printf(
-        "VAAPI frame %ux%u · DRM PRIME P010 · limited-range BT.2020 NCL / PQ · "
+        "VAAPI frame %dx%d · DRM PRIME P010 · limited-range BT.2020 NCL / PQ · "
         "frame index %" PRIu64 "\nY stride %td · UV stride %td · modifier 0x%016" PRIx64,
         decoded->width, decoded->height, config.frame_index,
         layers[0]->planes[0].pitch, layers[1]->planes[0].pitch, modifier);
