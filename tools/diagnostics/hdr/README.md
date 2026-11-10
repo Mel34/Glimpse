@@ -9,8 +9,9 @@ The isolation is required because Cargo permits only one crate in a dependency
 graph to link the native `gtk-4` library. The production app and this probe
 therefore have separate dependency graphs and lockfiles.
 
-The probe allocates a 1920×1080, single-plane XRGB2101010 DMA-BUF through GBM,
-fills it with a 10-bit Rec. 2100 PQ grayscale ramp, imports it with
+The probe allocates a 1920×1080, single-plane XRGB2101010 DMA-BUF through GBM
+using a linear renderable allocation, fills it through GBM's CPU mapping API
+with a 10-bit Rec. 2100 PQ grayscale ramp, imports it with
 `GdkDmabufTextureBuilder`, tags the texture with the Rec. 2100 PQ color state,
 and displays it through `GtkGraphicsOffload`.
 
@@ -38,7 +39,7 @@ GDK_DEBUG=color-mgmt,offload,dmabuf \
 ```
 
 The application prints the allocated format, dimensions, stride, and modifier.
-If GBM cannot allocate XRGB2101010 with scanout/write usage, or GTK cannot
+If GBM cannot allocate or CPU-map the linear XRGB2101010 buffer, or GTK cannot
 import the exported DMA-BUF, the window displays the error instead of silently
 falling back to a system-memory texture.
 
@@ -80,7 +81,9 @@ higher patches should remain distinguishable up to the display's capabilities.
 ## Scope and interpretation
 
 The buffer uses 10-bit packed RGB to keep the first DMA-BUF test simple and
-avoid mixing YUV range/matrix/chroma-siting questions into this stage. The
+avoid mixing YUV range/matrix/chroma-siting questions into this stage. It is
+allocated for rendering and CPU-mapped; it does not rely on GBM's optional
+WRITE usage, which is not guaranteed for arbitrary format/usage combinations. The
 next diagnostic step, if this succeeds, is to import a P010 DMA-BUF and
 validate the video-like YUV path. That will be closer to the VAAPI decoder
 output Glimpse intends to present.
