@@ -794,7 +794,7 @@ mod subtitle_text_tests {
 
     #[test]
     fn replaces_ass_hard_spaces() {
-        let ass = r#"0,0:00:00.00,0:00:02.00,Default,,0,0,0,,One\hTwo"#;
+        let ass = r#"0,0,Default,,0,0,0,,One\hTwo"#;
         assert_eq!(clean_ass_dialogue(ass), "One Two");
     }
 }
