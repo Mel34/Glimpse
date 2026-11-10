@@ -180,9 +180,12 @@ fn schedule_frames(
     subtitle_receiver: Receiver<Result<SubtitleCue, String>>,
     picture: gtk4::Picture,
     subtitle_label: gtk4::Label,
-    clock: Arc<MasterClock>,
+    media_clock: Arc<MasterClock>,
     cancelled: Arc<AtomicBool>,
 ) {
+    // The sink reads engine media time but never adjusts it. PipeWire remains
+    // authoritative for audio playback; this callback only chooses a frame
+    // that is ready for the current GDK presentation opportunity.
     let video_debug = std::env::var_os("GLIMPSE_VIDEO_DEBUG").is_some();
     let ingest_video_debug = video_debug;
     let state = Rc::new(RefCell::new(FrameSchedulerState {
@@ -223,7 +226,7 @@ fn schedule_frames(
     // This timer drains stale frames while the window is on another desktop.
     let ingest_state = Rc::clone(&state);
     let ingest_receiver = receiver.clone();
-    let ingest_clock = Arc::clone(&clock);
+    let ingest_clock = Arc::clone(&media_clock);
     let ingest_cancelled = Arc::clone(&cancelled);
     let ingest_picture = picture.downgrade();
     glib::timeout_add_local(Duration::from_millis(5), move || {
@@ -365,7 +368,7 @@ fn schedule_frames(
             16_667
         };
         let presentation_window = refresh_interval_us as f64 / 1_000_000.0;
-        let master_pts = clock.get_pts();
+        let master_pts = media_clock.get_pts();
 
         let mut subtitle_state = subtitle_state.borrow_mut();
         loop {
