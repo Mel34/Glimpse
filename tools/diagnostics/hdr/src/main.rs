@@ -103,17 +103,17 @@ fn build_pq_dmabuf_pattern(
     let dmabuf = bo.fd()?;
     let raw_fd = dmabuf.as_raw_fd();
 
-    let builder = DmabufTextureBuilder::new()
-        .set_display(display)
-        .set_width(WIDTH)
-        .set_height(HEIGHT)
-        .set_fourcc(format as u32)
-        .set_modifier(modifier)
-        .set_n_planes(1)
-        .set_fd(0, raw_fd)
-        .set_offset(0, bo.offset(0))
-        .set_stride(0, bo.stride())
-        .set_color_state(Some(&ColorState::rec2100_pq()));
+    let builder = DmabufTextureBuilder::new();
+    builder.set_display(display);
+    builder.set_width(WIDTH);
+    builder.set_height(HEIGHT);
+    builder.set_fourcc(format as u32);
+    builder.set_modifier(modifier);
+    builder.set_n_planes(1);
+    builder.set_fd(0, raw_fd);
+    builder.set_offset(0, bo.offset(0));
+    builder.set_stride(0, bo.stride());
+    builder.set_color_state(Some(&ColorState::rec2100_pq()));
 
     // GDK retains the DMA-BUF after build. Keep its exported fd alive until
     // the texture is finalized, rather than closing it when this function exits.
