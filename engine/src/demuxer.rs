@@ -7,7 +7,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::Value;
-use tracing::info;
 
 use crate::queue::BoundedQueue;
 use crate::types::{Serial, TrackId, TrackInfo, TrackList, TrackType};
@@ -201,7 +200,9 @@ pub struct MediaProbe {
 
 /// Run the system ffprobe utility and return real container metadata.
 pub fn probe_media(path: &str) -> Result<MediaProbe, String> {
-    info!("Probing media container: {}", path);
+    if std::env::var_os("GLIMPSE_DEBUG").is_some() {
+        tracing::info!("Probing media container: {}", path);
+    }
 
     let output = Command::new("ffprobe")
         .args([
