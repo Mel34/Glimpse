@@ -9,20 +9,21 @@ The isolation is required because Cargo permits only one crate in a dependency
 graph to link the native `gtk-4` library. The production app and this probe
 therefore have separate dependency graphs and lockfiles.
 
-The probe allocates a 1920×1080, single-plane XRGB2101010 DMA-BUF through GBM
-and fills it through GBM's CPU mapping API with a 10-bit Rec. 2100 PQ grayscale
-ramp. It imports that buffer with `GdkDmabufTextureBuilder` and tags it with
-the Rec. 2100 PQ color state.
+The probe allocates a 1920×1080, single-plane XRGB2101010 DMA-BUF through GBM,
+fills it through GBM's CPU mapping API with a 10-bit Rec. 2100 PQ grayscale
+ramp, and imports it with `GdkDmabufTextureBuilder`. It also creates a
+system-memory texture from the exact same XRGB2101010 bytes and tags both
+textures with the Rec. 2100 PQ color state.
 
-A side-by-side system-memory reference uses GDK's supported RGB16 format,
-with the same PQ luminance levels at 16-bit precision. GDK 4.24's
-`MemoryFormat` does not expose packed XRGB2101010, so the reference cannot
-use byte-identical storage; it is a higher-precision reference for the same
-encoded PQ values.
+GTK 4.24 added `GDK_MEMORY_XRGB2101010` as `GdkMemoryFormat` enum value 67.
+gtk-rs 0.9.6 predates the v4_24 feature and does not name this variant, but its
+forward-compatible hidden enum fallback passes unknown numeric values through
+unchanged. The probe uses that fallback to compare the two paths without
+changing the production dependency graph.
 
-This comparison separates DMA-BUF sampling/import problems from PQ
-color-state and rendering problems. It does not yet test FFmpeg decoder
-output, YUV/P010 sampling, HDR mastering metadata, or direct scanout.
+This byte-identical comparison separates DMA-BUF import/sampling from pixel
+packing, PQ encoding, and color-state differences. It does not yet test FFmpeg
+decoder output, YUV/P010 sampling, HDR mastering metadata, or direct scanout.
 
 ## Requirements
 
@@ -62,10 +63,10 @@ grep -Ei 'wp_color_management_surface|wp_image_description|set_image_description
   hdr-dmabuf-normal.log hdr-dmabuf-forced-hdr.log
 ```
 
-Compare the DMA-BUF image on the left with the RGB16 system-memory reference
-on the right. If only the right side appears, the remaining fault is specific
-to DMA-BUF storage/import/sampling. If both appear, compare their luminance
-steps and protocol image descriptions.
+Compare the DMA-BUF image on the left with the byte-identical system-memory
+reference on the right. If the right appears and the left remains black, the
+failure is isolated to DMA-BUF storage/import/sampling. If both appear, the
+packed format and PQ state are accepted by GDK's memory-texture path.
 
 No production decoder, frame scheduler, subtitle, audio, or playback code is
 changed by this probe.
