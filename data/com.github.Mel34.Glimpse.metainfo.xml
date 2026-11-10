@@ -9,7 +9,9 @@
     <p>
       Glimpse is a Linux media player with a GTK4 and libadwaita interface,
       an in-process FFmpeg playback engine, and native PipeWire audio output.
-      Video frames are currently presented through GTK textures.
+      It supports embedded audio-track selection, embedded and external text
+      subtitles, synchronized playback, whole-file and A-B looping, seeking,
+      volume control, and fullscreen playback.
     </p>
   </description>
   <launchable type="desktop-id">com.github.Mel34.Glimpse.desktop</launchable>
@@ -18,6 +20,11 @@
     <binary>glimpse</binary>
   </provides>
   <releases>
+    <release version="0.3.0" date="2026-11-10">
+      <description>
+        <p>Adds embedded and external text subtitle support, whole-file and A-B playback looping, improved seekbar navigation, and more robust seeking at the end of media. Also reduces repetitive FFmpeg metadata warnings.</p>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-11-09">
       <description>
         <p>Introduces the in-process FFmpeg playback engine with native PipeWire audio output, audio-track selection, and improved playback synchronization.</p>

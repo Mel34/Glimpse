@@ -1,6 +1,6 @@
 # Maintainer: Mel34
 pkgname=glimpse
-pkgver=0.2.0
+pkgver=0.3.0
 pkgrel=1
 pkgdesc="Linux media player using GTK4, libadwaita, FFmpeg, and native PipeWire audio"
 arch=('x86_64' 'aarch64')
