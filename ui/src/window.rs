@@ -15,7 +15,7 @@ use glimpse_engine::{Event, Player, PlayerState};
 use crate::controls::{create_floating_bottom_bar, ControlBarWidgets};
 use crate::interaction::{attach_popover_scroll_guard, attach_seekbar_wheel, attach_window_volume_wheel, VideoClickStateMachine};
 use crate::track_menu::create_track_popover;
-use crate::video_texture::VideoPlaybackHandle;
+use crate::video_texture::{bind_subtitle_scaling, VideoPlaybackHandle};
 
 pub struct GlimpseWindow {
     window: ApplicationWindow,
@@ -175,6 +175,7 @@ impl GlimpseWindow {
         // Subtitle overlay label (hidden by default to avoid dark square on video)
         let subtitle_label = Label::new(None);
         subtitle_label.add_css_class("subtitles-overlay");
+        bind_subtitle_scaling(&picture, &subtitle_label);
         subtitle_label.set_valign(Align::End);
         subtitle_label.set_halign(Align::Center);
         subtitle_label.set_margin_bottom(90);
