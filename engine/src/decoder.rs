@@ -359,6 +359,9 @@ impl SubtitleDecoder {
         }
 
         let text = lines.join("\n");
+        // AVSubtitle owns its rectangle array and each rectangle's text/ASS
+        // buffers. The wrapper intentionally does not own those allocations.
+        unsafe { ffmpeg::ffi::avsubtitle_free(decoded.as_mut_ptr()) };
         if text.is_empty() { return Ok(None); }
         Ok(Some(SubtitleCue { start, end: end.max(start), text }))
     }
