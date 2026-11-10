@@ -277,7 +277,7 @@ impl VideoDecoder {
                     height,
                     stride: 0,
                     rgba_data: Arc::new(Vec::new()),
-                    vaapi_frame: Some(Arc::new(decoded.clone())),
+                    vaapi_frame: Some(Arc::new(decoded)),
                     pts,
                     duration: backend.frame_duration,
                     serial,
