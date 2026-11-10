@@ -147,7 +147,7 @@ fn main() -> glib::ExitCode {
         picture.set_hexpand(true);
         picture.set_vexpand(true);
 
-        let (details, status) = match build_pq_dmabuf_pattern(&window.display()) {
+        let (details, status) = match build_pq_dmabuf_pattern(&gtk4::prelude::WidgetExt::display(&window)) {
             Ok((texture, details)) => {
                 picture.set_paintable(Some(&texture));
                 (details, "DMA-BUF texture imported successfully".to_string())
