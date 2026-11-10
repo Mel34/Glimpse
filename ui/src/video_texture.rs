@@ -29,7 +29,6 @@ struct FrameSchedulerState {
     displayed_frames: u64,
     dropped_frames: u64,
     tick_count: u64,
-    refresh_interval_us: i64,
     stream_finished: bool,
 }
 
@@ -434,7 +433,6 @@ fn schedule_frames(
         displayed_frames: 0,
         dropped_frames: 0,
         tick_count: 0,
-        refresh_interval_us: 16_667,
         stream_finished: false,
     }));
     let picture_weak = picture.downgrade();
@@ -570,7 +568,6 @@ fn schedule_frames(
 
         let mut state = state.borrow_mut();
         state.tick_count += 1;
-        state.refresh_interval_us = refresh_interval_us;
         if state.tick_count % 250 == 0 {
             tracing::info!(
                 ticks = state.tick_count,
