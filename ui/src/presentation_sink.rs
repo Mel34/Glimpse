@@ -389,20 +389,20 @@ fn schedule_frames(
                 }
             }
         }
+        // Focus is presentation policy, never playback policy. Continue draining
+        // decoded frames and subtitle cues, but avoid GTK updates, frame selection,
+        // and GPU import while this window is on an inactive workspace.
+        if !should_present_video(window_active) {
+            state.borrow_mut().present_first_frame = false;
+            return glib::ControlFlow::Continue;
+        }
+
         if let Some(cue) = subtitle_state.active.as_ref() {
             subtitle_label.set_markup(&subtitle_cue_markup(cue));
             apply_subtitle_font_size(&subtitle_label, picture.width());
             subtitle_label.set_visible(true);
         } else {
             subtitle_label.set_visible(false);
-        }
-
-        // Focus is presentation policy, never playback policy. Continue draining
-        // decoded frames and subtitle cues, but avoid frame selection and GPU import
-        // while this window is on an inactive workspace.
-        if !should_present_video(window_active) {
-            state.borrow_mut().present_first_frame = false;
-            return glib::ControlFlow::Continue;
         }
 
         let mut state = state.borrow_mut();
