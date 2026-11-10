@@ -221,6 +221,11 @@ impl GlimpseWindow {
         });
         top_controls.append(&fullscreen_btn);
 
+        // Keep the filename in the top-left OSD, away from subtitle lines.
+        let title_label = bottom_controls.title_label.clone();
+        title_label.set_margin_start(12);
+        top_controls.append(&title_label);
+
         let top_spacer = GtkBox::new(Orientation::Horizontal, 0);
         top_spacer.set_hexpand(true);
         top_controls.append(&top_spacer);
