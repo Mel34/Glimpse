@@ -1,23 +1,28 @@
-//! Static BT.2020/PQ test pattern for validating GTK's HDR color-state path.
+//! Static BT.2020/PQ test pattern backed by a GBM DMA-BUF.
 //!
-//! This intentionally uses a 16-bit opaque RGB memory texture. It validates
-//! GDK's PQ color-state handling independently of FFmpeg and the playback
-//! scheduler. It does not yet validate DMA-BUF import or direct-scanout
-//! offloading; those are the next diagnostic step.
+//! This isolates GDK's HDR color-state and DMA-BUF import paths from FFmpeg
+//! and the playback scheduler. The buffer is 10-bit XRGB in a GBM allocation;
+//! it is not a decoded video frame and does not test YUV/P010 import.
 
-use gdk4::{ColorState, MemoryFormat, MemoryTextureBuilder};
+use gdk4::{ColorState, DmabufTextureBuilder};
+use gbm::{BufferObjectFlags, Device, Format, Modifier};
 use gtk4::prelude::*;
 use gtk4::{
     Application, ApplicationWindow, Box as GtkBox, GraphicsOffload,
     GraphicsOffloadEnabled, Label, Orientation, Picture,
 };
+use std::error::Error;
+use std::fs::OpenOptions;
+use std::io;
+use std::os::fd::AsRawFd;
 
-const WIDTH: usize = 1920;
-const HEIGHT: usize = 1080;
+const WIDTH: u32 = 1920;
+const HEIGHT: u32 = 1080;
 const LEVELS_NITS: [f64; 14] = [
     0.1, 1.0, 5.0, 10.0, 25.0, 50.0, 75.0,
     100.0, 203.0, 400.0, 600.0, 1000.0, 2000.0, 4000.0,
 ];
+const DRM_FORMAT_MOD_INVALID: u64 = 0x00ff_ffff_ffff_ffff;
 
 /// SMPTE ST 2084 (PQ) OETF: absolute display luminance in cd/m² to [0, 1].
 fn pq_encode(nits: f64) -> u16 {
@@ -32,28 +37,96 @@ fn pq_encode(nits: f64) -> u16 {
     (encoded * u16::MAX as f64).round() as u16
 }
 
-fn build_pq_pattern() -> gdk4::Texture {
-    let mut pixels = Vec::with_capacity(WIDTH * HEIGHT * 6);
-    for _y in 0..HEIGHT {
-        for x in 0..WIDTH {
-            let band = (x * LEVELS_NITS.len() / WIDTH).min(LEVELS_NITS.len() - 1);
-            let value = pq_encode(LEVELS_NITS[band]);
-            pixels.extend_from_slice(&value.to_ne_bytes());
-            pixels.extend_from_slice(&value.to_ne_bytes());
-            pixels.extend_from_slice(&value.to_ne_bytes());
-        }
+fn modifier_value(modifier: Modifier) -> Result<u64, Box<dyn Error>> {
+    match modifier {
+        Modifier::Linear => Ok(0),
+        Modifier::Invalid => Ok(DRM_FORMAT_MOD_INVALID),
+        Modifier::Unrecognized(value) => Ok(value),
+        other => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("GBM returned an unsupported named modifier: {other:?}"),
+        )
+        .into()),
+    }
+}
+
+fn build_pq_dmabuf_pattern(
+    display: &gdk4::Display,
+) -> Result<(gdk4::Texture, String), Box<dyn Error>> {
+    let device_path = std::env::var("GLIMPSE_DRM_DEVICE")
+        .unwrap_or_else(|_| "/dev/dri/renderD128".to_string());
+    let drm_file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&device_path)?;
+    let gbm = Device::new(drm_file)?;
+
+    // XRGB2101010 preserves 10-bit PQ code values while keeping this first
+    // DMA-BUF probe to one packed plane.
+    let format = Format::Xrgb2101010;
+    let usage = BufferObjectFlags::SCANOUT | BufferObjectFlags::WRITE;
+    if !gbm.is_format_supported(format, usage) {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("GBM does not support XRGB2101010 with SCANOUT|WRITE on {device_path}"),
+        )
+        .into());
     }
 
-    let bytes = glib::Bytes::from_owned(pixels);
-    let pq = ColorState::rec2100_pq();
-    let builder = MemoryTextureBuilder::new();
-    builder.set_bytes(Some(&bytes));
-    builder.set_color_state(Some(&pq));
-    builder.set_format(MemoryFormat::R16g16b16);
-    builder.set_width(WIDTH as i32);
-    builder.set_height(HEIGHT as i32);
-    builder.set_stride(WIDTH * 6);
-    builder.build()
+    let mut bo = gbm.create_buffer_object::<()>(WIDTH, HEIGHT, format, usage)?;
+    let stride = bo.stride() as usize;
+    let mut pixels = vec![0u8; stride * HEIGHT as usize];
+
+    for y in 0..HEIGHT as usize {
+        let row = &mut pixels[y * stride..(y + 1) * stride];
+        for x in 0..WIDTH as usize {
+            let band = (x * LEVELS_NITS.len() / WIDTH as usize)
+                .min(LEVELS_NITS.len() - 1);
+            let code16 = pq_encode(LEVELS_NITS[band]) as u32;
+            let code10 = (code16 * 1023 + 32_767) / 65_535;
+            // DRM_FORMAT_XRGB2101010: X[31:30], R[29:20], G[19:10], B[9:0].
+            let packed = (3u32 << 30) | (code10 << 20) | (code10 << 10) | code10;
+            row[x * 4..x * 4 + 4].copy_from_slice(&packed.to_ne_bytes());
+        }
+    }
+    bo.write(&pixels)?;
+
+    if bo.plane_count() != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("Expected one DMA-BUF plane, GBM allocated {}", bo.plane_count()),
+        )
+        .into());
+    }
+
+    let modifier = modifier_value(bo.modifier())?;
+    let dmabuf = bo.fd()?;
+    let raw_fd = dmabuf.as_raw_fd();
+
+    let builder = DmabufTextureBuilder::new()
+        .set_display(display)
+        .set_width(WIDTH)
+        .set_height(HEIGHT)
+        .set_fourcc(format as u32)
+        .set_modifier(modifier)
+        .set_n_planes(1)
+        .set_fd(0, raw_fd)
+        .set_offset(0, bo.offset(0))
+        .set_stride(0, bo.stride())
+        .set_color_state(Some(&ColorState::rec2100_pq()));
+
+    // GDK retains the DMA-BUF after build. Keep its exported fd alive until
+    // the texture is finalized, rather than closing it when this function exits.
+    let texture = unsafe { builder.build_with_release_func(move || drop(dmabuf))? };
+
+    let details = format!(
+        "GBM DMA-BUF · XRGB2101010 · {}×{} · stride {} · modifier 0x{modifier:016x}",
+        WIDTH,
+        HEIGHT,
+        bo.stride()
+    );
+    println!("{details}");
+    Ok((texture, details))
 }
 
 fn main() -> glib::ExitCode {
@@ -62,13 +135,29 @@ fn main() -> glib::ExitCode {
         .build();
 
     app.connect_activate(|app| {
-        let texture = build_pq_pattern();
+        let window = ApplicationWindow::builder()
+            .application(app)
+            .title("Glimpse — HDR / DMA-BUF probe")
+            .default_width(1200)
+            .default_height(760)
+            .build();
 
         let picture = Picture::new();
-        picture.set_paintable(Some(&texture));
         picture.set_content_fit(gtk4::ContentFit::Contain);
         picture.set_hexpand(true);
         picture.set_vexpand(true);
+
+        let (details, status) = match build_pq_dmabuf_pattern(&window.display()) {
+            Ok((texture, details)) => {
+                picture.set_paintable(Some(&texture));
+                (details, "DMA-BUF texture imported successfully".to_string())
+            }
+            Err(error) => {
+                let message = format!("DMA-BUF probe unavailable: {error}");
+                eprintln!("{message}");
+                (message.clone(), message)
+            }
+        };
 
         let offload = GraphicsOffload::new(Some(&picture));
         offload.set_enabled(GraphicsOffloadEnabled::Enabled);
@@ -81,7 +170,11 @@ fn main() -> glib::ExitCode {
             .collect::<Vec<_>>()
             .join("  ·  ");
         let explanation = Label::new(Some(&format!(
-            "BT.2020 / ST 2084 PQ · left to right: {levels} cd/m²\n             16-bit RGB texture · GTK graphics offload requested\n             This is a color-pipeline probe, not yet a DMA-BUF/direct-scanout test."
+            "{status}\n\
+             BT.2020 / ST 2084 PQ · left to right: {levels} cd/m²\n\
+             {details}\n\
+             10-bit packed RGB DMA-BUF · GTK graphics offload requested\n\
+             This tests RGB DMA-BUF import, not decoder YUV/P010 import."
         )));
         explanation.set_wrap(true);
         explanation.set_selectable(true);
@@ -93,21 +186,8 @@ fn main() -> glib::ExitCode {
         content.set_margin_end(12);
         content.append(&offload);
         content.append(&explanation);
-
-        let window = ApplicationWindow::builder()
-            .application(app)
-            .title("Glimpse — HDR / PQ probe")
-            .default_width(1200)
-            .default_height(760)
-            .child(&content)
-            .build();
+        window.set_child(Some(&content));
         window.present();
-
-        println!(
-            "Created Rec. 2100 PQ texture: {}x{}",
-            texture.width(),
-            texture.height()
-        );
     });
 
     app.run()
@@ -119,9 +199,15 @@ mod tests {
 
     #[test]
     fn pq_reference_codes_are_close_to_st2084_values() {
-        // Reference PQ code values, allowing for 16-bit quantization.
         assert!((pq_encode(100.0) as i32 - 33_297).abs() <= 1);
         assert!((pq_encode(203.0) as i32 - 38_055).abs() <= 1);
         assert_eq!(pq_encode(10_000.0), u16::MAX);
+    }
+
+    #[test]
+    fn ten_bit_quantization_preserves_reference_white() {
+        let code16 = pq_encode(203.0) as u32;
+        let code10 = (code16 * 1023 + 32_767) / 65_535;
+        assert!((code10 as i32 - 594).abs() <= 1);
     }
 }
