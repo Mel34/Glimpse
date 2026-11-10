@@ -696,10 +696,12 @@ impl GlimpseWindow {
         loader_menu_btn.set_popover(Some(&loader_popover));
 
         let player_popover = create_main_menu_popover(
-            &window,            &stack,
+            &window,
+            &stack,
             &player,
             &video_playback,
             &picture,
+            &subtitle_label,
             &bottom_controls,
         );
         crate::controls::track_popover_visibility(&player_popover, &bottom_controls.open_popovers);
