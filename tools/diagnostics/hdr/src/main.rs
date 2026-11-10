@@ -64,6 +64,20 @@ fn fill_pq_pattern(buffer: &mut [u8], stride: usize) {
     }
 }
 
+fn fill_argb_pq_pattern(buffer: &mut [u8], stride: usize) {
+    for y in 0..HEIGHT as usize {
+        let row = &mut buffer[y * stride..(y + 1) * stride];
+        for x in 0..WIDTH as usize {
+            let band = (x * LEVELS_NITS.len() / WIDTH as usize).min(LEVELS_NITS.len() - 1);
+            let code16 = pq_encode(LEVELS_NITS[band]) as u32;
+            let code10 = (code16 * 1023 + 32_767) / 65_535;
+            // DRM_FORMAT_ARGB2101010: A[31:30], R[29:20], G[19:10], B[9:0].
+            let packed = (3u32 << 30) | (code10 << 20) | (code10 << 10) | code10;
+            row[x * 4..x * 4 + 4].copy_from_slice(&packed.to_ne_bytes());
+        }
+    }
+}
+
 fn fill_sdr_control(buffer: &mut [u8], stride: usize) {
     for y in 0..HEIGHT as usize {
         let row = &mut buffer[y * stride..(y + 1) * stride];
@@ -220,7 +234,7 @@ fn build_textures(
         pq_stride, sdr_bo.stride()
     );
     println!("{details}");
-    Ok((pq_texture, pq_reference, sdr_texture, details))
+    Ok((pq_texture, pq_reference, argb_texture, sdr_texture, details))
 }
 
 fn make_picture(texture: &gdk4::Texture) -> Picture {
@@ -252,7 +266,7 @@ fn main() -> glib::ExitCode {
         content.set_margin_end(12);
 
         match build_textures(&gtk4::prelude::WidgetExt::display(&window)) {
-            Ok((pq_dmabuf, pq_cpu, sdr_dmabuf, details)) => {
+            Ok((pq_dmabuf, pq_cpu, argb_dmabuf, sdr_dmabuf, details)) => {
                 let images = GtkBox::new(Orientation::Horizontal, 10);
                 for (label, texture) in [
                     ("PQ DMA-BUF · XRGB2101010", &pq_dmabuf),
@@ -268,7 +282,7 @@ fn main() -> glib::ExitCode {
                 content.append(&images);
 
                 let explanation = Label::new(Some(&format!(
-                    "The first two images contain byte-identical 10-bit PQ data. The third is a separate 8-bit sRGB DMA-BUF control.\n\
+                    "The first two images contain byte-identical XRGB 10-bit PQ data. The third tests the alpha-bearing ARGB 10-bit layout; the fourth is an 8-bit sRGB DMA-BUF control.\n\
                      PQ bands, left to right: {} cd/m²\n{details}",
                     LEVELS_NITS.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(" · ")
                 )));
