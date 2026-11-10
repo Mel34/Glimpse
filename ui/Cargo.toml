@@ -9,7 +9,12 @@ description = "Glimpse - Modern Linux video player with GTK4 and libadwaita"
 name = "glimpse"
 path = "src/main.rs"
 
+[features]
+default = []
+vaapi-hdr = ["dep:ffmpeg-the-third"]
+
 [dependencies]
+ffmpeg-the-third = { version = "6.0.0", optional = true }
 glimpse-engine = { path = "../engine", features = ["ffmpeg-system", "audio-pipewire"] }
 gtk4 = { version = "0.8", features = ["v4_12"] }
 adw = { version = "0.6", package = "libadwaita", features = ["v1_5"] }

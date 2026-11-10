@@ -1,5 +1,8 @@
 fn main() {
     println!("cargo:rerun-if-changed=src/vaapi_texture.c");
+    if std::env::var_os("CARGO_FEATURE_VAAPI_HDR").is_none() {
+        return;
+    }
 
     let gtk = pkg_config::Config::new()
         .atleast_version("4.24")
