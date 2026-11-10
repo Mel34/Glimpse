@@ -273,7 +273,19 @@ impl VideoDecoder {
 pub struct SubtitleCue {
     pub start: f64,
     pub end: f64,
+    /// Plain text retained for diagnostics and non-GTK consumers.
     pub text: String,
+    /// Formatting-preserving spans; renderers decide how to display the styles.
+    pub spans: Vec<SubtitleSpan>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SubtitleSpan {
+    pub text: String,
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub strikethrough: bool,
 }
 
 #[cfg(feature = "ffmpeg-system")]
@@ -340,30 +352,50 @@ impl SubtitleDecoder {
         } else {
             base + raw.start_display_time as f64 / 1000.0 + packet_duration
         };
-        let mut lines = Vec::new();
+        let mut spans = Vec::new();
 
         for index in 0..raw.num_rects as usize {
             let rect = unsafe { *raw.rects.add(index) };
             if rect.is_null() { continue; }
             let rect = unsafe { &*rect };
-            let text = unsafe { c_string_to_owned(rect.text) };
-            let text = match text {
-                Some(text) if !text.trim().is_empty() => Some(text),
-                _ => unsafe { c_string_to_owned(rect.ass) }
-                    .map(|ass| clean_ass_dialogue(&ass)),
+
+            // Prefer the ASS event payload when FFmpeg supplies it: rect.text
+            // may already have had all inline style information stripped.
+            let ass = unsafe { c_string_to_owned(rect.ass) };
+            let rect_spans = match ass.filter(|value| !value.trim().is_empty()) {
+                Some(ass) => parse_ass_dialogue(&ass),
+                None => unsafe { c_string_to_owned(rect.text) }
+                    .filter(|value| !value.trim().is_empty())
+                    .map(|text| vec![SubtitleSpan {
+                        text,
+                        bold: false,
+                        italic: false,
+                        underline: false,
+                        strikethrough: false,
+                    }])
+                    .unwrap_or_default(),
             };
-            if let Some(text) = text {
-                let text = text.trim();
-                if !text.is_empty() { lines.push(text.to_owned()); }
+
+            if rect_spans.iter().any(|span| !span.text.is_empty()) {
+                if !spans.is_empty() {
+                    spans.push(SubtitleSpan {
+                        text: "\n".to_string(),
+                        bold: false,
+                        italic: false,
+                        underline: false,
+                        strikethrough: false,
+                    });
+                }
+                spans.extend(rect_spans);
             }
         }
 
-        let text = lines.join("\n");
+        let text = spans.iter().map(|span| span.text.as_str()).collect::<String>();
         // AVSubtitle owns its rectangle array and each rectangle's text/ASS
         // buffers. The wrapper intentionally does not own those allocations.
         unsafe { ffmpeg::ffi::avsubtitle_free(decoded.as_mut_ptr()) };
-        if text.is_empty() { return Ok(None); }
-        Ok(Some(SubtitleCue { start, end: end.max(start), text }))
+        if text.trim().is_empty() { return Ok(None); }
+        Ok(Some(SubtitleCue { start, end: end.max(start), text, spans }))
     }
 }
 
@@ -374,7 +406,72 @@ unsafe fn c_string_to_owned(pointer: *const libc::c_char) -> Option<String> {
 }
 
 #[cfg(feature = "ffmpeg-system")]
-fn clean_ass_dialogue(ass: &str) -> String {
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct AssTextStyle {
+    bold: bool,
+    italic: bool,
+    underline: bool,
+    strikethrough: bool,
+}
+
+#[cfg(feature = "ffmpeg-system")]
+fn append_ass_text(spans: &mut Vec<SubtitleSpan>, text: &str, style: AssTextStyle) {
+    if text.is_empty() {
+        return;
+    }
+    if let Some(last) = spans.last_mut() {
+        if last.bold == style.bold
+            && last.italic == style.italic
+            && last.underline == style.underline
+            && last.strikethrough == style.strikethrough
+        {
+            last.text.push_str(text);
+            return;
+        }
+    }
+    spans.push(SubtitleSpan {
+        text: text.to_owned(),
+        bold: style.bold,
+        italic: style.italic,
+        underline: style.underline,
+        strikethrough: style.strikethrough,
+    });
+}
+
+#[cfg(feature = "ffmpeg-system")]
+fn apply_ass_override(block: &str, style: &mut AssTextStyle) {
+    for command in block.split('\\').filter(|command| !command.is_empty()) {
+        let mut chars = command.chars();
+        let Some(tag) = chars.next() else { continue };
+        let value = chars.as_str().trim();
+        match tag {
+            'b' => {
+                if let Ok(weight) = value.parse::<i32>() {
+                    style.bold = weight != 0;
+                }
+            }
+            'i' => {
+                if let Ok(enabled) = value.parse::<i32>() {
+                    style.italic = enabled != 0;
+                }
+            }
+            'u' => {
+                if let Ok(enabled) = value.parse::<i32>() {
+                    style.underline = enabled != 0;
+                }
+            }
+            's' => {
+                if let Ok(enabled) = value.parse::<i32>() {
+                    style.strikethrough = enabled != 0;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+#[cfg(feature = "ffmpeg-system")]
+fn parse_ass_dialogue(ass: &str) -> Vec<SubtitleSpan> {
     // FFmpeg's AVSubtitleRect.ass omits the Dialogue: prefix and timestamps,
     // leaving the nine-field ASS event form. Full Dialogue lines have ten.
     let (dialogue, fields_to_skip) = match ass.split_once("Dialogue:") {
@@ -382,26 +479,53 @@ fn clean_ass_dialogue(ass: &str) -> String {
         None => (ass, 8),
     };
     let mut fields = dialogue.splitn(fields_to_skip + 1, ',');
-    for _ in 0..fields_to_skip { let _ = fields.next(); }
+    for _ in 0..fields_to_skip {
+        let _ = fields.next();
+    }
     let text = fields.next().unwrap_or(dialogue);
-    let mut output = String::with_capacity(text.len());
-    let mut in_override = false;
+
+    let mut spans = Vec::new();
+    let mut style = AssTextStyle::default();
     let mut chars = text.chars().peekable();
     while let Some(ch) = chars.next() {
         match ch {
-            '{' => in_override = true,
-            '}' if in_override => in_override = false,
-            '\\' if !in_override => match chars.next() {
-                Some('N' | 'n') => output.push('\n'),
-                Some('h') => output.push(' '),
-                Some(other) => { output.push('\\'); output.push(other); }
-                None => output.push('\\'),
+            '{' => {
+                let mut block = String::new();
+                let mut closed = false;
+                for next in chars.by_ref() {
+                    if next == '}' {
+                        closed = true;
+                        break;
+                    }
+                    block.push(next);
+                }
+                if closed {
+                    apply_ass_override(&block, &mut style);
+                } else {
+                    append_ass_text(&mut spans, "{", style);
+                    append_ass_text(&mut spans, &block, style);
+                }
+            }
+            '\\' => match chars.next() {
+                Some('N' | 'n') => append_ass_text(&mut spans, "\n", style),
+                Some('h') => append_ass_text(&mut spans, "\u{00a0}", style),
+                Some('{') => append_ass_text(&mut spans, "{", style),
+                Some('}') => append_ass_text(&mut spans, "}", style),
+                Some(other) => {
+                    let mut literal = String::from("\\");
+                    literal.push(other);
+                    append_ass_text(&mut spans, &literal, style);
+                }
+                None => append_ass_text(&mut spans, "\\", style),
             },
-            _ if !in_override => output.push(ch),
-            _ => {}
+            _ => {
+                let mut character = String::new();
+                character.push(ch);
+                append_ass_text(&mut spans, &character, style);
+            }
         }
     }
-    output
+    spans
 }
 
 /// Decode a standalone text subtitle file into timestamped cues.
@@ -847,17 +971,64 @@ mod audio_layout_tests {
 
 #[cfg(all(test, feature = "ffmpeg-system"))]
 mod subtitle_text_tests {
-    use super::clean_ass_dialogue;
+    use super::{parse_ass_dialogue, SubtitleSpan};
 
-    #[test]
-    fn extracts_ass_dialogue_and_removes_override_tags() {
-        let ass = r#"Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,{\an8}Hello\Nworld"#;
-        assert_eq!(clean_ass_dialogue(ass), "Hello\nworld");
+    fn span(text: &str, bold: bool, italic: bool, underline: bool, strikethrough: bool) -> SubtitleSpan {
+        SubtitleSpan {
+            text: text.to_string(),
+            bold,
+            italic,
+            underline,
+            strikethrough,
+        }
     }
 
     #[test]
-    fn replaces_ass_hard_spaces() {
+    fn extracts_dialogue_and_preserves_line_breaks() {
+        let ass = r#"Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,Hello\Nworld"#;
+        assert_eq!(parse_ass_dialogue(ass), vec![span("Hello\nworld", false, false, false, false)]);
+    }
+
+    #[test]
+    fn parses_nine_field_ffmpeg_ass_payload() {
         let ass = r#"0,0,Default,,0,0,0,,One\hTwo"#;
-        assert_eq!(clean_ass_dialogue(ass), "One Two");
+        assert_eq!(parse_ass_dialogue(ass), vec![span("One\u{00a0}Two", false, false, false, false)]);
+    }
+
+    #[test]
+    fn parses_individual_inline_style_tags_and_resets() {
+        let ass = r#"0,0,Default,,0,0,0,,normal {\b1}bold{\b0} {\i1}italic{\i0} {\u1}underlined{\u0} {\s1}struck{\s0}done"#;
+        assert_eq!(
+            parse_ass_dialogue(ass),
+            vec![
+                span("normal ", false, false, false, false),
+                span("bold", true, false, false, false),
+                span(" ", false, false, false, false),
+                span("italic", false, true, false, false),
+                span(" ", false, false, false, false),
+                span("underlined", false, false, true, false),
+                span(" ", false, false, false, false),
+                span("struck", false, false, false, true),
+                span("done", false, false, false, false),
+            ]
+        );
+    }
+
+    #[test]
+    fn combines_styles_and_keeps_active_style_across_unknown_tags() {
+        let ass = r#"0,0,Default,,0,0,0,,{\b1\i1}both{\an8} still both{\b0}italic only{\i0}"#;
+        assert_eq!(
+            parse_ass_dialogue(ass),
+            vec![
+                span("both still both", true, true, false, false),
+                span("italic only", false, true, false, false),
+            ]
+        );
+    }
+
+    #[test]
+    fn ignores_unknown_override_commands() {
+        let ass = r#"0,0,Default,,0,0,0,,before{\bord3\fs40}after"#;
+        assert_eq!(parse_ass_dialogue(ass), vec![span("beforeafter", false, false, false, false)]);
     }
 }
