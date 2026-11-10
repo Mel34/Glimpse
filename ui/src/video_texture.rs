@@ -27,6 +27,7 @@ struct FrameSchedulerState {
     present_first_frame: bool,
     displayed_frames: u64,
     dropped_frames: u64,
+    tick_count: u64,
 }
 
 struct SubtitleSchedulerState {
@@ -429,6 +430,7 @@ fn schedule_frames(
         present_first_frame: true,
         displayed_frames: 0,
         dropped_frames: 0,
+        tick_count: 0,
     });
     // A weak reference avoids a Picture -> tick callback -> Picture cycle.
     let picture_weak = picture.downgrade();
@@ -438,16 +440,25 @@ fn schedule_frames(
         active: None,
     });
 
+    tracing::info!(
+        mapped = picture.is_mapped(),
+        visible = picture.is_visible(),
+        "Starting GTK video frame scheduler"
+    );
+
     // GTK tick callbacks are Fn, not FnMut, so keep per-run scheduler state
     // behind RefCell and update the Picture through the callback's weak ref.
     picture.add_tick_callback(move |_, _frame_clock| {
         if cancelled.load(Ordering::Acquire) {
+            tracing::debug!("Video frame scheduler stopped: playback run cancelled");
             return glib::ControlFlow::Break;
         }
         let Some(picture) = picture_weak.upgrade() else {
+            tracing::warn!("Video frame scheduler stopped: picture widget was destroyed");
             return glib::ControlFlow::Break;
         };
         let Some(subtitle_label) = subtitle_weak.upgrade() else {
+            tracing::warn!("Video frame scheduler stopped: subtitle widget was destroyed");
             return glib::ControlFlow::Break;
         };
         let master_pts = clock.get_pts();
@@ -483,12 +494,31 @@ fn schedule_frames(
             subtitle_label.set_visible(false);
         }
         let mut state = state.borrow_mut();
+        state.tick_count += 1;
+        if state.tick_count % 250 == 0 {
+            tracing::info!(
+                ticks = state.tick_count,
+                displayed_frames = state.displayed_frames,
+                dropped_frames = state.dropped_frames,
+                pending_pts = state.pending.as_ref().map(|frame| frame.pts),
+                queued_frames = receiver.len(),
+                master_pts = clock.get_pts(),
+                mapped = picture.is_mapped(),
+                visible = picture.is_visible(),
+                "Video frame scheduler heartbeat"
+            );
+        }
         loop {
             if state.pending.is_none() {
                 match receiver.try_recv() {
                     Ok(Ok(frame)) => state.pending = Some(frame),
                     Ok(Err(error)) => {
-                        tracing::error!(%error, "Engine video decoder failed");
+                        tracing::error!(
+                            %error,
+                            displayed_frames = state.displayed_frames,
+                            dropped_frames = state.dropped_frames,
+                            "Engine video decoder failed; stopping frame scheduler"
+                        );
                         return glib::ControlFlow::Break;
                     }
                     Err(TryRecvError::Empty) => return glib::ControlFlow::Continue,
@@ -498,7 +528,8 @@ fn schedule_frames(
                         tracing::info!(
                             displayed_frames = state.displayed_frames,
                             dropped_frames = state.dropped_frames,
-                            "Engine video stream finished"
+                            ticks = state.tick_count,
+                            "Engine video stream finished; stopping frame scheduler"
                         );
                         return glib::ControlFlow::Break;
                     }
@@ -512,6 +543,16 @@ fn schedule_frames(
             if !state.present_first_frame && lateness > 0.040 {
                 state.pending = None;
                 state.dropped_frames += 1;
+                if state.dropped_frames == 1 || state.dropped_frames % 120 == 0 {
+                    tracing::warn!(
+                        frame_pts = frame.pts,
+                        master_pts,
+                        lateness_ms = lateness * 1000.0,
+                        dropped_frames = state.dropped_frames,
+                        queued_frames = receiver.len(),
+                        "Dropping late video frame"
+                    );
+                }
                 continue;
             }
             if state.present_first_frame || frame.pts <= master_pts + 0.005 {
@@ -557,6 +598,15 @@ fn schedule_frames(
                 };
                 picture.set_paintable(Some(&texture));
                 state.displayed_frames += 1;
+                if state.displayed_frames == 1 {
+                    tracing::info!(
+                        frame_pts = frame.pts,
+                        master_pts,
+                        mapped = picture.is_mapped(),
+                        visible = picture.is_visible(),
+                        "Presented first video frame"
+                    );
+                }
             }
             return glib::ControlFlow::Continue;
         }
