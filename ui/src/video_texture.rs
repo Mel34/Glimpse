@@ -230,13 +230,20 @@ fn decode_continuously(
     };
 
     if let Some(subtitle_path) = external_subtitle_path {
-        for cue in decode_external_subtitle_file(subtitle_path)? {
-            if cancelled.load(Ordering::Acquire) {
-                return Ok(());
+        match decode_external_subtitle_file(subtitle_path) {
+            Ok(cues) => {
+                for cue in cues {
+                    if cancelled.load(Ordering::Acquire) {
+                        return Ok(());
+                    }
+                    if subtitle_sender.send(Ok(cue)).is_err() {
+                        return Ok(());
+                    }
+                }
             }
-            subtitle_sender
-                .send(Ok(cue))
-                .map_err(|_| "Subtitle scheduler was disconnected".to_string())?;
+            Err(error) => {
+                let _ = subtitle_sender.send(Err(error));
+            }
         }
     }
 
@@ -371,7 +378,7 @@ fn schedule_frames(
         loop {
             match subtitle_receiver.try_recv() {
                 Ok(Ok(cue)) => subtitle_state.pending.push_back(cue),
-                Ok(Err(error)) => tracing::warn!(%error, "Embedded subtitle decoder failed"),
+                Ok(Err(error)) => tracing::warn!(%error, "Subtitle decoder failed"),
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => break,
             }

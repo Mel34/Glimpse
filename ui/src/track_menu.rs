@@ -1,4 +1,4 @@
-//! Audio and embedded subtitle stream selection.
+//! Audio, embedded subtitle, and external subtitle selection.
 
 use gtk4::prelude::*;
 use gtk4::{Box as GtkBox, CheckButton, Label, Orientation, Popover, PolicyType, ScrolledWindow};

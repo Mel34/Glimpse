@@ -1025,6 +1025,7 @@ fn trigger_open_file_dialog(
 fn trigger_open_subtitle_dialog(
     window: &ApplicationWindow,
     video_playback: &Rc<RefCell<Option<VideoPlaybackHandle>>>,
+    player: &Rc<RefCell<Option<Player>>>,
     button: &CheckButton,
     off_button: &CheckButton,
 ) {
@@ -1041,6 +1042,7 @@ fn trigger_open_subtitle_dialog(
     dialog.set_default_filter(Some(&filter));
 
     let video = Rc::clone(video_playback);
+    let player = Rc::clone(player);
     let button = button.clone();
     let off_button = off_button.clone();
     dialog.open(Some(window), gio::Cancellable::NONE, move |result| {
@@ -1061,6 +1063,9 @@ fn trigger_open_subtitle_dialog(
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| "subtitle".to_string());
         if let Some(ref mut playback) = *video.borrow_mut() {
+            if let Some(ref p) = *player.borrow() {
+                p.select_subtitle(None);
+            }
             match playback.select_external_subtitle(path) {
                 Ok(()) => button.set_label(&format!("External: {name}")),
                 Err(error) => {
@@ -1238,12 +1243,10 @@ fn load_and_play_file(
                         }
                     },
                     move |button, off_button| {
-                        if let Some(ref p) = *player_external.borrow() {
-                            p.select_subtitle(None);
-                        }
                         trigger_open_subtitle_dialog(
                             &window_external,
                             &video_external,
+                            &player_external,
                             &button,
                             &off_button,
                         );
