@@ -48,8 +48,6 @@ mod video_timestamp_tests {
 struct FfmpegDecoderState {
     decoder: ffmpeg_the_third::decoder::Video,
     scaler: Option<ffmpeg_the_third::software::scaling::Context>,
-    time_base_num: i32,
-    time_base_den: i32,
     frame_duration: f64,
 }
 
@@ -123,8 +121,6 @@ impl VideoDecoder {
         result.backend = Some(FfmpegDecoderState {
             decoder,
             scaler: None,
-            time_base_num: time_base.numerator(),
-            time_base_den: time_base.denominator(),
             frame_duration,
         });
         Ok(result)
@@ -338,7 +334,15 @@ impl SubtitleDecoder {
             packet.pts_secs().unwrap_or(0.0)
         };
         let start = base + raw.start_display_time as f64 / 1000.0;
-        let end = base + raw.end_display_time as f64 / 1000.0;
+        let decoded_end = base + raw.end_display_time as f64 / 1000.0;
+        let packet_duration = if packet.time_base_den != 0 {
+            packet.duration.max(0) as f64 * packet.time_base_num as f64 / packet.time_base_den as f64
+        } else { 0.0 };
+        let end = if decoded_end > base + raw.start_display_time as f64 / 1000.0 {
+            decoded_end
+        } else {
+            base + raw.start_display_time as f64 / 1000.0 + packet_duration
+        };
         let mut lines = Vec::new();
 
         for index in 0..raw.num_rects as usize {
@@ -346,11 +350,10 @@ impl SubtitleDecoder {
             if rect.is_null() { continue; }
             let rect = unsafe { &*rect };
             let text = unsafe { c_string_to_owned(rect.text) };
-            let text = if text.trim().is_empty() {
-                unsafe { c_string_to_owned(rect.ass) }
-                    .map(|ass| clean_ass_dialogue(&ass))
-            } else {
-                text
+            let text = match text {
+                Some(text) if !text.trim().is_empty() => Some(text),
+                _ => unsafe { c_string_to_owned(rect.ass) }
+                    .map(|ass| clean_ass_dialogue(&ass)),
             };
             if let Some(text) = text {
                 let text = text.trim();
