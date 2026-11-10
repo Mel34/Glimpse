@@ -89,8 +89,8 @@ impl GlimpseWindow {
 
         let player: Rc<RefCell<Option<Player>>> = Rc::new(RefCell::new(None));
         let video_playback: Rc<RefCell<Option<VideoPlaybackHandle>>> = Rc::new(RefCell::new(None));
-        let loop_enabled = Rc::new(Cell::new(false));
-        let loop_menu_buttons: Rc<RefCell<Vec<CheckButton>>> = Rc::new(RefCell::new(Vec::new()));
+        let loop_enabled = Rc::clone(&bottom_controls.loop_enabled);
+        let loop_menu_buttons = Rc::clone(&bottom_controls.loop_menu_buttons);
         let ab_loop = Rc::new(Cell::new(AbLoopState::Unset));
         let video_playback_on_focus = Rc::clone(&video_playback);
         window.connect_is_active_notify(move |window| {
@@ -795,8 +795,6 @@ impl GlimpseWindow {
             &picture,
             &subtitle_label,
             &bottom_controls,
-            &loop_enabled,
-            &loop_menu_buttons,
             &ab_loop,
         );
         crate::controls::track_popover_visibility(&loader_popover, &bottom_controls.open_popovers);
@@ -1388,6 +1386,8 @@ fn load_and_play_file(
                             &off_button,
                         );
                     },
+                    &bottom_controls.loop_enabled,
+                    &bottom_controls.loop_menu_buttons,
                 );
                 crate::controls::track_popover_visibility(&popover, &bottom_controls.open_popovers);
                 bottom_controls.settings_button.set_popover(Some(&popover));
@@ -1551,8 +1551,6 @@ fn create_main_menu_popover(
     picture: &Picture,
     subtitle_label: &Label,
     bottom_controls: &ControlBarWidgets,
-    loop_enabled: &Rc<Cell<bool>>,
-    loop_menu_buttons: &Rc<RefCell<Vec<CheckButton>>>,
     ab_loop: &Rc<Cell<AbLoopState>>,
 ) -> gtk4::Popover {
     let popover = gtk4::Popover::new();
@@ -1634,28 +1632,6 @@ fn create_main_menu_popover(
     appearance_sep.set_margin_top(4);
     appearance_sep.set_margin_bottom(4);
     vbox.append(&appearance_sep);
-
-    let loop_row = GtkBox::new(Orientation::Horizontal, 20);
-    let loop_toggle = CheckButton::with_label("Loop");
-    loop_toggle.set_hexpand(true);
-    loop_toggle.set_halign(Align::Start);
-    loop_toggle.set_active(loop_enabled.get());
-    loop_menu_buttons.borrow_mut().push(loop_toggle.clone());
-    let loop_shortcut = Label::new(Some("Shift+L"));
-    loop_shortcut.add_css_class("dim-label");
-    loop_shortcut.set_halign(Align::End);
-    loop_row.append(&loop_toggle);
-    loop_row.append(&loop_shortcut);
-    let loop_enabled_toggle = Rc::clone(loop_enabled);
-    let loop_buttons_toggle = Rc::clone(loop_menu_buttons);
-    loop_toggle.connect_toggled(move |button| {
-        let enabled = button.is_active();
-        loop_enabled_toggle.set(enabled);
-        for menu_button in loop_buttons_toggle.borrow().iter() {
-            menu_button.set_active(enabled);
-        }
-    });
-    vbox.append(&loop_row);
 
     // 1. New Window (Ctrl+N)
     let btn_new_win = Button::new();
