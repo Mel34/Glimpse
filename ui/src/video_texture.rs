@@ -43,6 +43,8 @@ pub struct VideoPlaybackHandle {
 
 impl VideoPlaybackHandle {
     pub fn seek(&mut self, target: Duration) {
+        self.subtitle_label.set_text("");
+        self.subtitle_label.set_visible(false);
         self.stop_run();
         if let Err(error) = self.start_run(target) {
             tracing::error!(%error, "Could not restart video after seek");
@@ -340,7 +342,9 @@ fn schedule_frames(
                     }
                     Err(TryRecvError::Empty) => return glib::ControlFlow::Continue,
                     Err(TryRecvError::Disconnected) => {
-                        tracing::info!(
+                        subtitle_label.set_text("");
+                        subtitle_label.set_visible(false);
+                        tracing::info!
                             displayed_frames = state.displayed_frames,
                             dropped_frames = state.dropped_frames,
                             "Engine video stream finished"
