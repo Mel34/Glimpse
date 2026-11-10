@@ -450,6 +450,8 @@ fn schedule_frames(
     clock: Arc<MasterClock>,
     cancelled: Arc<AtomicBool>,
 ) {
+    let video_debug = std::env::var_os("GLIMPSE_VIDEO_DEBUG").is_some();
+    let ingest_video_debug = video_debug;
     let state = Rc::new(RefCell::new(FrameSchedulerState {
         pending: None,
         present_first_frame: true,
@@ -476,11 +478,13 @@ fn schedule_frames(
         active: None,
     });
 
-    tracing::info!(
-        mapped = picture.is_mapped(),
-        visible = picture.is_visible(),
-        "Starting vblank-aware video presentation scheduler"
-    );
+    if video_debug {
+        tracing::info!(
+            mapped = picture.is_mapped(),
+            visible = picture.is_visible(),
+            "Starting vblank-aware video presentation scheduler"
+        );
+    }
 
     // Keep frame ingestion independent of GDK's visibility-aware frame clock.
     // This timer drains stale frames while the window is on another desktop.
@@ -508,7 +512,7 @@ fn schedule_frames(
             state.max_ingest_interval_us = state.max_ingest_interval_us.max(interval_us);
         }
         state.ingest_tick_count += 1;
-        if state.ingest_tick_count % 200 == 0 {
+        if ingest_video_debug && state.ingest_tick_count % 200 == 0 {
             tracing::info!(
                 ingest_ticks = state.ingest_tick_count,
                 frames_received = state.frames_received,
@@ -682,7 +686,7 @@ fn schedule_frames(
                 "Long gap between GDK frame-clock callbacks"
             );
         }
-        if state.tick_count % 250 == 0 {
+        if video_debug && state.tick_count % 250 == 0 {
             tracing::info!(
                 ticks = state.tick_count,
                 frame_time_us,
@@ -794,16 +798,18 @@ fn schedule_frames(
             if state.stream_finished && state.pending.is_none() {
                 subtitle_label.set_text("");
                 subtitle_label.set_visible(false);
-                tracing::info!(
-                    frames_received = state.frames_received,
+                if video_debug {
+                    tracing::info!(
+                        frames_received = state.frames_received,
                     displayed_frames = state.displayed_frames,
                     dropped_stale_ingest = state.dropped_stale_ingest,
                     dropped_late_presentation = state.dropped_late_presentation,
                     dropped_superseded = state.dropped_superseded,
                     presentation_failures = state.presentation_failures,
                     ticks = state.tick_count,
-                    "Engine video stream finished; stopping frame scheduler"
-                );
+                        "Engine video stream finished; stopping frame scheduler"
+                    );
+                }
                 return glib::ControlFlow::Break;
             }
             return glib::ControlFlow::Continue;
@@ -866,7 +872,7 @@ fn schedule_frames(
             );
         }
         state.displayed_frames += 1;
-        if state.displayed_frames == 1 {
+        if video_debug && state.displayed_frames == 1 {
             tracing::info!(
                 frame_pts = frame.pts,
                 master_pts,
