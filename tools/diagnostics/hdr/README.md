@@ -91,9 +91,11 @@ color metadata are rejected rather than silently mislabeled.
 
 The mapped DRM PRIME frame is retained by the GDK texture's release callback,
 so the decoder surface and its DMA-BUF file descriptors remain alive for the
-entire lifetime of the imported texture. This is a one-frame presentation
-test; it does not establish continuous playback scheduling or asynchronous
-decoder/GPU overlap.
+entire lifetime of the imported texture. The CICP color state carries the
+BT.2020 primaries, PQ transfer, BT.2020 NCL matrix, and limited range; this
+probe does not yet forward HDR10 mastering-display or content-light metadata.
+This is a one-frame presentation test; it does not establish continuous
+playback scheduling or asynchronous decoder/GPU overlap.
 
 Build on Arch Linux:
 
