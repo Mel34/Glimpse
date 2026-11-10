@@ -72,20 +72,21 @@ fn build_pq_dmabuf_pattern(
     // XRGB2101010 preserves 10-bit PQ code values while keeping this first
     // DMA-BUF probe to one packed plane.
     let format = Format::Xrgb2101010;
-    // This buffer is imported by GDK, not submitted directly to KMS. A
-    // render-node allocation needs CPU write access but not scanout usage.
-    let usage = BufferObjectFlags::WRITE;
+    // The pattern is CPU-written, so request an explicitly linear layout.
+    // WRITE alone can be accepted by the capability query but rejected by
+    // Mesa's allocator when it chooses a tiled layout.
+    let usage = BufferObjectFlags::WRITE | BufferObjectFlags::LINEAR;
     if !gbm.is_format_supported(format, usage) {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            format!("GBM does not support XRGB2101010 with WRITE on {device_path}"),
+            format!("GBM does not support linear XRGB2101010 WRITE on {device_path}"),
         )
         .into());
     }
 
     let mut bo = stage(
         gbm.create_buffer_object::<()>(WIDTH, HEIGHT, format, usage),
-        "allocate XRGB2101010 GBM buffer",
+        "allocate linear XRGB2101010 GBM buffer",
     )?;
     let stride = bo.stride() as usize;
     let mut pixels = vec![0u8; stride * HEIGHT as usize];
