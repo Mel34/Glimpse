@@ -13,7 +13,7 @@ name = "glimpse-hdr-probe"
 path = "src/main.rs"
 
 [dependencies]
-gtk4 = { version = "0.9", features = ["v4_16"] }
-gdk4 = { version = "0.9", features = ["v4_16"] }
+gtk4 = { version = "0.9", features = ["v4_24"] }
+gdk4 = { version = "0.9", features = ["v4_24"] }
 glib = "0.20"
 gbm = "0.18"
