@@ -6,6 +6,7 @@ use glib::prelude::Cast;
 use gtk4::prelude::WidgetExtManual;
 use gtk4::prelude::WidgetExt;
 use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -28,6 +29,8 @@ struct FrameSchedulerState {
     displayed_frames: u64,
     dropped_frames: u64,
     tick_count: u64,
+    refresh_interval_us: i64,
+    stream_finished: bool,
 }
 
 struct SubtitleSchedulerState {
@@ -425,14 +428,15 @@ fn schedule_frames(
     clock: Arc<MasterClock>,
     cancelled: Arc<AtomicBool>,
 ) {
-    let state = RefCell::new(FrameSchedulerState {
+    let state = Rc::new(RefCell::new(FrameSchedulerState {
         pending: None,
         present_first_frame: true,
         displayed_frames: 0,
         dropped_frames: 0,
         tick_count: 0,
-    });
-    // A weak reference avoids a Picture -> tick callback -> Picture cycle.
+        refresh_interval_us: 16_667,
+        stream_finished: false,
+    }));
     let picture_weak = picture.downgrade();
     let subtitle_weak = subtitle_label.downgrade();
     let subtitle_state = RefCell::new(SubtitleSchedulerState {
@@ -443,12 +447,75 @@ fn schedule_frames(
     tracing::info!(
         mapped = picture.is_mapped(),
         visible = picture.is_visible(),
-        "Starting GTK video frame scheduler"
+        "Starting vblank-aware video presentation scheduler"
     );
 
-    // GTK tick callbacks are Fn, not FnMut, so keep per-run scheduler state
-    // behind RefCell and update the Picture through the callback's weak ref.
-    picture.add_tick_callback(move |_, _frame_clock| {
+    // Keep frame ingestion independent of GDK's visibility-aware frame clock.
+    // This timer drains stale frames while the window is on another desktop.
+    let ingest_state = Rc::clone(&state);
+    let ingest_receiver = receiver.clone();
+    let ingest_clock = Arc::clone(&clock);
+    let ingest_cancelled = Arc::clone(&cancelled);
+    let ingest_picture = picture.downgrade();
+    glib::timeout_add_local(Duration::from_millis(5), move || {
+        if ingest_cancelled.load(Ordering::Acquire) || ingest_picture.upgrade().is_none() {
+            return glib::ControlFlow::Break;
+        }
+
+        let mut state = ingest_state.borrow_mut();
+        if state.stream_finished {
+            return glib::ControlFlow::Break;
+        }
+
+        loop {
+            if let Some(frame) = state.pending.as_ref() {
+                let master_pts = ingest_clock.get_pts();
+                let lateness = master_pts - frame.pts;
+                if lateness > 0.040 {
+                    let frame_pts = frame.pts;
+                    state.pending = None;
+                    state.dropped_frames += 1;
+                    if state.dropped_frames == 1 || state.dropped_frames % 120 == 0 {
+                        tracing::warn!(
+                            frame_pts,
+                            master_pts,
+                            lateness_ms = lateness * 1000.0,
+                            dropped_frames = state.dropped_frames,
+                            queued_frames = ingest_receiver.len(),
+                            "Dropping late video frame during independent queue drain"
+                        );
+                    }
+                    continue;
+                }
+                break;
+            }
+
+            match ingest_receiver.try_recv() {
+                Ok(Ok(frame)) => state.pending = Some(frame),
+                Ok(Err(error)) => {
+                    tracing::error!(
+                        %error,
+                        displayed_frames = state.displayed_frames,
+                        dropped_frames = state.dropped_frames,
+                        "Engine video decoder failed; stopping frame ingestion"
+                    );
+                    state.stream_finished = true;
+                    return glib::ControlFlow::Break;
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    state.stream_finished = true;
+                    return glib::ControlFlow::Break;
+                }
+            }
+        }
+
+        glib::ControlFlow::Continue
+    });
+
+    // GDK invokes this callback in its frame-update phase, immediately before
+    // GTK paints. Presentation therefore follows the display's refresh cadence.
+    picture.add_tick_callback(move |_, frame_clock| {
         if cancelled.load(Ordering::Acquire) {
             tracing::debug!("Video frame scheduler stopped: playback run cancelled");
             return glib::ControlFlow::Break;
@@ -461,7 +528,16 @@ fn schedule_frames(
             tracing::warn!("Video frame scheduler stopped: subtitle widget was destroyed");
             return glib::ControlFlow::Break;
         };
+
+        let (refresh_interval_us, _) = frame_clock.refresh_info(frame_clock.frame_time());
+        let refresh_interval_us = if refresh_interval_us > 0 {
+            refresh_interval_us
+        } else {
+            16_667
+        };
+        let presentation_window = refresh_interval_us as f64 / 1_000_000.0;
         let master_pts = clock.get_pts();
+
         let mut subtitle_state = subtitle_state.borrow_mut();
         loop {
             match subtitle_receiver.try_recv() {
@@ -486,15 +562,15 @@ fn schedule_frames(
         }
         if let Some(cue) = subtitle_state.active.as_ref() {
             subtitle_label.set_markup(&subtitle_cue_markup(cue));
-            // set_markup() supplies inline style attributes; preserve them while
-            // restoring the width-derived font size (including fullscreen).
             apply_subtitle_font_size(&subtitle_label, picture.width());
             subtitle_label.set_visible(true);
         } else {
             subtitle_label.set_visible(false);
         }
+
         let mut state = state.borrow_mut();
         state.tick_count += 1;
+        state.refresh_interval_us = refresh_interval_us;
         if state.tick_count % 250 == 0 {
             tracing::info!(
                 ticks = state.tick_count,
@@ -502,114 +578,85 @@ fn schedule_frames(
                 dropped_frames = state.dropped_frames,
                 pending_pts = state.pending.as_ref().map(|frame| frame.pts),
                 queued_frames = receiver.len(),
-                master_pts = clock.get_pts(),
+                master_pts,
+                refresh_interval_us,
+                refresh_hz = 1_000_000.0 / refresh_interval_us as f64,
                 mapped = picture.is_mapped(),
                 visible = picture.is_visible(),
-                "Video frame scheduler heartbeat"
+                "Vblank-aware video presentation heartbeat"
             );
         }
-        loop {
-            if state.pending.is_none() {
-                match receiver.try_recv() {
-                    Ok(Ok(frame)) => state.pending = Some(frame),
-                    Ok(Err(error)) => {
-                        tracing::error!(
-                            %error,
-                            displayed_frames = state.displayed_frames,
-                            dropped_frames = state.dropped_frames,
-                            "Engine video decoder failed; stopping frame scheduler"
-                        );
-                        return glib::ControlFlow::Break;
-                    }
-                    Err(TryRecvError::Empty) => return glib::ControlFlow::Continue,
-                    Err(TryRecvError::Disconnected) => {
-                        subtitle_label.set_text("");
-                        subtitle_label.set_visible(false);
-                        tracing::info!(
-                            displayed_frames = state.displayed_frames,
-                            dropped_frames = state.dropped_frames,
-                            ticks = state.tick_count,
-                            "Engine video stream finished; stopping frame scheduler"
-                        );
-                        return glib::ControlFlow::Break;
-                    }
-                }
-            }
-            let Some(frame) = state.pending.as_ref() else {
-                return glib::ControlFlow::Continue;
-            };
-            let master_pts = clock.get_pts();
-            let lateness = master_pts - frame.pts;
-            if !state.present_first_frame && lateness > 0.040 {
-                let frame_pts = frame.pts;
-                state.pending = None;
-                state.dropped_frames += 1;
-                if state.dropped_frames == 1 || state.dropped_frames % 120 == 0 {
-                    tracing::warn!(
-                        frame_pts,
-                        master_pts,
-                        lateness_ms = lateness * 1000.0,
-                        dropped_frames = state.dropped_frames,
-                        queued_frames = receiver.len(),
-                        "Dropping late video frame"
-                    );
-                }
-                continue;
-            }
-            if state.present_first_frame || frame.pts <= master_pts + 0.005 {
-                let frame = state.pending.take().expect("pending frame was checked");
-                state.present_first_frame = false;
-                // The decoded frame normally has a single owner here. Transfer
-                // its pixel allocation into GBytes instead of cloning every frame.
-                let texture = match frame.vaapi_frame.as_ref() {
-                    Some(vaapi_frame) => {
-                        #[cfg(feature = "vaapi-hdr")]
-                        {
-                            match crate::vaapi_texture::create_texture(vaapi_frame) {
-                                Ok(texture) => texture,
-                                Err(error) => {
-                                    tracing::error!(%error, pts = frame.pts, "Could not import VAAPI frame into GTK");
-                                    return glib::ControlFlow::Break;
-                                }
-                            }
-                        }
-                        #[cfg(not(feature = "vaapi-hdr"))]
-                        {
-                            let _ = vaapi_frame;
-                            tracing::error!(
-                                "A VAAPI frame reached the presenter, but Glimpse was built without the vaapi-hdr feature"
-                            );
-                            return glib::ControlFlow::Break;
-                        }
-                    }
-                    None => {
-                        // The software fallback remains the existing RGBA8 path.
-                        let pixels = Arc::try_unwrap(frame.rgba_data)
-                            .unwrap_or_else(|shared| shared.as_ref().clone());
-                        let bytes = glib::Bytes::from_owned(pixels);
-                        gdk4::MemoryTexture::new(
-                            frame.width as i32,
-                            frame.height as i32,
-                            gdk4::MemoryFormat::R8g8b8a8,
-                            &bytes,
-                            frame.stride,
-                        )
-                        .upcast()
-                    }
-                };
-                picture.set_paintable(Some(&texture));
-                state.displayed_frames += 1;
-                if state.displayed_frames == 1 {
-                    tracing::info!(
-                        frame_pts = frame.pts,
-                        master_pts,
-                        mapped = picture.is_mapped(),
-                        visible = picture.is_visible(),
-                        "Presented first video frame"
-                    );
-                }
+
+        let Some(frame) = state.pending.as_ref() else {
+            if state.stream_finished {
+                subtitle_label.set_text("");
+                subtitle_label.set_visible(false);
+                tracing::info!(
+                    displayed_frames = state.displayed_frames,
+                    dropped_frames = state.dropped_frames,
+                    ticks = state.tick_count,
+                    "Engine video stream finished; stopping frame scheduler"
+                );
+                return glib::ControlFlow::Break;
             }
             return glib::ControlFlow::Continue;
+        };
+
+        // The first decoded frame is committed on the first GDK frame-clock
+        // opportunity. Subsequent frames use one display interval of lookahead.
+        if state.present_first_frame || frame.pts <= master_pts + presentation_window {
+            let frame = state.pending.take().expect("pending frame was checked");
+            state.present_first_frame = false;
+            let texture = match frame.vaapi_frame.as_ref() {
+                Some(vaapi_frame) => {
+                    #[cfg(feature = "vaapi-hdr")]
+                    {
+                        match crate::vaapi_texture::create_texture(vaapi_frame) {
+                            Ok(texture) => texture,
+                            Err(error) => {
+                                tracing::error!(%error, pts = frame.pts, "Could not import VAAPI frame into GTK");
+                                return glib::ControlFlow::Break;
+                            }
+                        }
+                    }
+                    #[cfg(not(feature = "vaapi-hdr"))]
+                    {
+                        let _ = vaapi_frame;
+                        tracing::error!(
+                            "A VAAPI frame reached the presenter, but Glimpse was built without the vaapi-hdr feature"
+                        );
+                        return glib::ControlFlow::Break;
+                    }
+                }
+                None => {
+                    let pixels = Arc::try_unwrap(frame.rgba_data)
+                        .unwrap_or_else(|shared| shared.as_ref().clone());
+                    let bytes = glib::Bytes::from_owned(pixels);
+                    gdk4::MemoryTexture::new(
+                        frame.width as i32,
+                        frame.height as i32,
+                        gdk4::MemoryFormat::R8g8b8a8,
+                        &bytes,
+                        frame.stride,
+                    )
+                    .upcast()
+                }
+            };
+            picture.set_paintable(Some(&texture));
+            state.displayed_frames += 1;
+            if state.displayed_frames == 1 {
+                tracing::info!(
+                    frame_pts = frame.pts,
+                    master_pts,
+                    refresh_interval_us,
+                    refresh_hz = 1_000_000.0 / refresh_interval_us as f64,
+                    mapped = picture.is_mapped(),
+                    visible = picture.is_visible(),
+                    "Presented first video frame on GDK frame clock"
+                );
+            }
         }
+
+        glib::ControlFlow::Continue
     });
 }
