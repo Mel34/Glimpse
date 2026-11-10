@@ -334,9 +334,18 @@ impl Player {
     }
 
     pub fn select_subtitle(&self, id: Option<TrackId>) {
-        let mut t = self.tracks.lock();
-        t.active_subtitle = id; // Default is None (OFF)
-        let _ = self.event_sender.send(Event::TracksChanged(t.clone()));
+        let updated_tracks = {
+            let mut tracks = self.tracks.lock();
+            if id.is_some_and(|selected| !tracks.subtitle_tracks.iter().any(|track| track.id == selected)) {
+                return;
+            }
+            if tracks.active_subtitle == id {
+                return;
+            }
+            tracks.active_subtitle = id; // Subtitles remain OFF until explicitly selected.
+            tracks.clone()
+        };
+        let _ = self.event_sender.send(Event::TracksChanged(updated_tracks));
     }
 
     /// Returns the shared audio master clock used to schedule video frames.

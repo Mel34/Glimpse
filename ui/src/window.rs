@@ -15,7 +15,7 @@ use glimpse_engine::{Event, Player, PlayerState};
 use crate::controls::{create_floating_bottom_bar, ControlBarWidgets};
 use crate::interaction::{attach_popover_scroll_guard, attach_seekbar_wheel, attach_window_volume_wheel, VideoClickStateMachine};
 use crate::track_menu::create_track_popover;
-use crate::video_texture::VideoPlaybackHandle;
+use crate::video_texture::{bind_subtitle_scaling, VideoPlaybackHandle};
 
 pub struct GlimpseWindow {
     window: ApplicationWindow,
@@ -23,6 +23,7 @@ pub struct GlimpseWindow {
     video_playback: Rc<RefCell<Option<VideoPlaybackHandle>>>,
     bottom_controls: ControlBarWidgets,
     picture: Picture,
+    subtitle_label: Label,
     #[allow(dead_code)]
     top_controls: GtkBox,
     #[allow(dead_code)]
@@ -174,11 +175,16 @@ impl GlimpseWindow {
         // Subtitle overlay label (hidden by default to avoid dark square on video)
         let subtitle_label = Label::new(None);
         subtitle_label.add_css_class("subtitles-overlay");
+        bind_subtitle_scaling(&picture, &subtitle_label);
         subtitle_label.set_valign(Align::End);
         subtitle_label.set_halign(Align::Center);
         subtitle_label.set_margin_bottom(90);
         subtitle_label.set_visible(false);
         player_overlay.add_overlay(&subtitle_label);
+
+        // Build the bottom controls first so the filename label can live in
+        // the top-left OSD while remaining part of the shared control state.
+        let bottom_controls = create_floating_bottom_bar();
 
         // Top Floating OSD Bar (margins 6px from corner matching standard Libadwaita)
         let top_controls = GtkBox::new(Orientation::Horizontal, 0);
@@ -219,6 +225,11 @@ impl GlimpseWindow {
         });
         top_controls.append(&fullscreen_btn);
 
+        // Keep the filename in the top-left OSD, away from subtitle lines.
+        let title_label = bottom_controls.title_label.clone();
+        title_label.set_margin_start(12);
+        top_controls.append(&title_label);
+
         let top_spacer = GtkBox::new(Orientation::Horizontal, 0);
         top_spacer.set_hexpand(true);
         top_controls.append(&top_spacer);
@@ -256,8 +267,7 @@ impl GlimpseWindow {
         top_handle.set_child(Some(&top_controls));
         player_overlay.add_overlay(&top_handle);
 
-        // Bottom Floating OSD Bar (Title, Volume, Settings, Seekbar, Timestamps)
-        let bottom_controls = create_floating_bottom_bar();
+        // Bottom Floating OSD Bar (Volume, Settings, Seekbar, Timestamps)
         // Keep the timeline independent of video-frame presentation so audio-only
         // playback and audio that outlives the video stream still update the controls.
         let timeline_player = Rc::clone(&player);
@@ -637,6 +647,7 @@ impl GlimpseWindow {
         let player_for_drop = Rc::clone(&player);
         let video_for_drop = Rc::clone(&video_playback);
         let picture_for_drop = picture.clone();
+        let subtitle_for_drop = subtitle_label.clone();
         let bottom_for_drop = bottom_controls.clone();
 
         drop_target.connect_drop(move |_, val, _, _| {
@@ -650,6 +661,7 @@ impl GlimpseWindow {
                     &player_for_drop,
                     &video_for_drop,
                     &picture_for_drop,
+                    &subtitle_for_drop,
                     &bottom_for_drop,
                 );
                 return true;
@@ -664,6 +676,7 @@ impl GlimpseWindow {
         let player_for_dialog = Rc::clone(&player);
         let video_for_dialog = Rc::clone(&video_playback);
         let picture_for_dialog = picture.clone();
+        let subtitle_for_dialog = subtitle_label.clone();
         let bottom_for_dialog = bottom_controls.clone();
 
         open_btn.connect_clicked(move |_| {
@@ -673,6 +686,7 @@ impl GlimpseWindow {
                 &player_for_dialog,
                 &video_for_dialog,
                 &picture_for_dialog,
+                &subtitle_for_dialog,
                 &bottom_for_dialog,
             );
         });
@@ -684,16 +698,19 @@ impl GlimpseWindow {
             &player,
             &video_playback,
             &picture,
+            &subtitle_label,
             &bottom_controls,
         );
         crate::controls::track_popover_visibility(&loader_popover, &bottom_controls.open_popovers);
         loader_menu_btn.set_popover(Some(&loader_popover));
 
         let player_popover = create_main_menu_popover(
-            &window,            &stack,
+            &window,
+            &stack,
             &player,
             &video_playback,
             &picture,
+            &subtitle_label,
             &bottom_controls,
         );
         crate::controls::track_popover_visibility(&player_popover, &bottom_controls.open_popovers);
@@ -706,6 +723,7 @@ impl GlimpseWindow {
         let player_act = Rc::clone(&player);
         let video_act = Rc::clone(&video_playback);
         let pic_act = picture.clone();
+        let sub_act = subtitle_label.clone();
         let btm_act = bottom_controls.clone();
         action_open.connect_activate(move |_, _| {
             trigger_open_file_dialog(
@@ -714,6 +732,7 @@ impl GlimpseWindow {
                 &player_act,
                 &video_act,
                 &pic_act,
+                &sub_act,
                 &btm_act,
             );
         });
@@ -786,6 +805,7 @@ impl GlimpseWindow {
         let p_open_k = Rc::clone(&player);
         let video_open_k = Rc::clone(&video_playback);
         let pic_open_k = picture.clone();
+        let sub_open_k = subtitle_label.clone();
         let btm_open_k = bottom_controls.clone();
         let top_keys = top_controls.clone();
         let bottom_keys = bottom_controls.container.clone();
@@ -821,6 +841,7 @@ impl GlimpseWindow {
                         &p_open_k,
                         &video_open_k,
                         &pic_open_k,
+                        &sub_open_k,
                         &btm_open_k,
                     );
                     glib::Propagation::Stop
@@ -928,6 +949,7 @@ impl GlimpseWindow {
             video_playback,
             bottom_controls,
             picture,
+            subtitle_label,
             top_controls,
             overlay: player_overlay,
             stack,
@@ -944,6 +966,7 @@ impl GlimpseWindow {
             &self.player,
             &self.video_playback,
             &self.picture,
+            &self.subtitle_label,
             &self.bottom_controls,
         );
     }
@@ -960,6 +983,7 @@ fn trigger_open_file_dialog(
     player: &Rc<RefCell<Option<Player>>>,
     video_playback: &Rc<RefCell<Option<VideoPlaybackHandle>>>,
     picture: &Picture,
+    subtitle_label: &Label,
     bottom_controls: &ControlBarWidgets,
 ) {
     let file_dialog = FileDialog::builder()
@@ -977,6 +1001,7 @@ fn trigger_open_file_dialog(
     let stack_cb = stack.clone();
     let player_cb = Rc::clone(player);    let video_cb = Rc::clone(video_playback);
     let pic_cb = picture.clone();
+    let sub_cb = subtitle_label.clone();
     let bottom_cb = bottom_controls.clone();
 
     file_dialog.open(Some(window), gio::Cancellable::NONE, move |result| {
@@ -989,8 +1014,67 @@ fn trigger_open_file_dialog(
                 &player_cb,
                 &video_cb,
                 &pic_cb,
+                &sub_cb,
                 &bottom_cb,
             );
+        }
+    });
+}
+
+/// Open an external text subtitle file and attach it to the current playback.
+fn trigger_open_subtitle_dialog(
+    window: &ApplicationWindow,
+    video_playback: &Rc<RefCell<Option<VideoPlaybackHandle>>>,
+    player: &Rc<RefCell<Option<Player>>>,
+    button: &CheckButton,
+    off_button: &CheckButton,
+) {
+    let dialog = FileDialog::builder()
+        .title("Open External Subtitle")
+        .accept_label("Open")
+        .modal(true)
+        .build();
+    let filter = FileFilter::new();
+    filter.set_name(Some("Subtitle Files"));
+    for pattern in ["*.srt", "*.ass", "*.ssa", "*.vtt"] {
+        filter.add_pattern(pattern);
+    }
+    dialog.set_default_filter(Some(&filter));
+
+    let video = Rc::clone(video_playback);
+    let player = Rc::clone(player);
+    let button = button.clone();
+    let off_button = off_button.clone();
+    dialog.open(Some(window), gio::Cancellable::NONE, move |result| {
+        let Ok(file) = result else {
+            off_button.set_active(true);
+            return;
+        };
+        let uri = file.uri();
+        let path = match media_source_from_uri(uri.as_str()) {
+            Ok(path) => path,
+            Err(error) => {
+                tracing::error!(%error, "Could not open external subtitle path");
+                off_button.set_active(true);
+                return;
+            }
+        };
+        let name = file.basename()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "subtitle".to_string());
+        if let Some(ref mut playback) = *video.borrow_mut() {
+            if let Some(ref p) = *player.borrow() {
+                p.select_subtitle(None);
+            }
+            match playback.select_external_subtitle(path) {
+                Ok(()) => button.set_label(Some(&format!("External: {name}"))),
+                Err(error) => {
+                    tracing::error!(%error, "Could not load external subtitle");
+                    off_button.set_active(true);
+                }
+            }
+        } else {
+            off_button.set_active(true);
         }
     });
 }
@@ -1033,6 +1117,7 @@ fn load_and_play_file(
     player: &Rc<RefCell<Option<Player>>>,
     video_playback: &Rc<RefCell<Option<VideoPlaybackHandle>>>,
     picture: &Picture,
+    subtitle_label: &Label,
     bottom_controls: &ControlBarWidgets,
 ) {
     let file_name = gio::File::for_uri(path)
@@ -1096,6 +1181,7 @@ fn load_and_play_file(
                     &source,
                     tracks.clone(),
                     picture,
+                    subtitle_label,
                     current_p.master_clock(),
                 );
 
@@ -1122,6 +1208,11 @@ fn load_and_play_file(
                 let volume_slider = bottom_controls.volume_slider.clone();
                 let volume_percent_label = bottom_controls.volume_percent_label.clone();
 
+                let p_subtitle = Rc::clone(player);
+                let video_subtitle = Rc::clone(video_playback);
+                let window_external = window.clone();
+                let video_external = Rc::clone(video_playback);
+                let player_external = Rc::clone(player);
                 let popover = create_track_popover(
                     &tracks,
                     move |aid| {
@@ -1142,6 +1233,23 @@ fn load_and_play_file(
                                 !audio_selected || volume <= 0.001,
                             );
                         }
+                    },
+                    move |subtitle_id| {
+                        if let Some(ref p) = *p_subtitle.borrow() {
+                            p.select_subtitle(subtitle_id);
+                        }
+                        if let Some(ref mut video) = *video_subtitle.borrow_mut() {
+                            video.select_subtitle(subtitle_id);
+                        }
+                    },
+                    move |button, off_button| {
+                        trigger_open_subtitle_dialog(
+                            &window_external,
+                            &video_external,
+                            &player_external,
+                            &button,
+                            &off_button,
+                        );
                     },
                 );
                 crate::controls::track_popover_visibility(&popover, &bottom_controls.open_popovers);
@@ -1302,6 +1410,7 @@ fn create_main_menu_popover(
     player: &Rc<RefCell<Option<Player>>>,
     video_playback: &Rc<RefCell<Option<VideoPlaybackHandle>>>,
     picture: &Picture,
+    subtitle_label: &Label,
     bottom_controls: &ControlBarWidgets,
 ) -> gtk4::Popover {
     let popover = gtk4::Popover::new();
@@ -1433,10 +1542,11 @@ fn create_main_menu_popover(
     let p_op = Rc::clone(player);
     let video_op = Rc::clone(video_playback);
     let pic_op = picture.clone();
+    let sub_op = subtitle_label.clone();
     let btm_op = bottom_controls.clone();
     btn_open.connect_clicked(move |_| {
         pop_close2.popdown();
-        trigger_open_file_dialog(&win_op, &stack_op, &p_op, &video_op, &pic_op, &btm_op);
+        trigger_open_file_dialog(&win_op, &stack_op, &p_op, &video_op, &pic_op, &sub_op, &btm_op);
     });
     vbox.append(&btn_open);
 

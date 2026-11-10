@@ -1,11 +1,7 @@
 //! Bottom playback control bar matching Showtime's floating OSD layout.
 //!
-//! Layout structure:
-//! ┌──────────────────────────────────────────────────────────────┐
-//! │  Title Label                           [Volume Icon] [Gear]  │
-//! │  ━━━━━━━━━━━━━━━━━━━●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │  (Seekbar)
-//! │  0:00                                                  1:10  │  (Timestamps)
-//! └──────────────────────────────────────────────────────────────┘
+//! The media filename lives in the top-left OSD row; this bar contains
+//! volume/track controls, the seekbar, and timestamps.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -39,15 +35,15 @@ pub fn create_floating_bottom_bar() -> ControlBarWidgets {
     container.set_margin_bottom(20);
     container.set_valign(gtk4::Align::End);
 
-    // Row 1: Title on left, Volume and Settings on right
+    // Keep volume and track controls grouped at the right edge.
     let top_row = GtkBox::new(Orientation::Horizontal, 12);
-    top_row.set_hexpand(true);
+    top_row.set_halign(gtk4::Align::End);
 
     let title_label = Label::new(Some("No media loaded"));
     title_label.set_halign(gtk4::Align::Start);
-    title_label.set_hexpand(true);
+    title_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+    title_label.set_max_width_chars(64);
     title_label.add_css_class("video-title");
-    top_row.append(&title_label);
 
     let last_nonzero_volume = Rc::new(Cell::new(1.0));
 
