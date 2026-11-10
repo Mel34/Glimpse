@@ -395,15 +395,15 @@ fn schedule_frames(
         };
         let presentation_window = refresh_interval_us as f64 / 1_000_000.0;
         let master_pts = media_clock.get_pts();
-        // GDK reports its predicted presentation timestamp in the same
-        // monotonic domain as frame_time. Map that lead onto media time using
-        // the current audio-master PTS; never alter the master clock itself.
-        let predicted_lead_us = presentation_time_us.saturating_sub(frame_time_us);
-        let predicted_lead_secs = if predicted_lead_us > 0 {
-            predicted_lead_us as f64 / 1_000_000.0
+        // GDK's predicted presentation timestamp and GLib's monotonic clock
+        // share a time domain. Map the remaining monotonic lead onto the
+        // current audio-master PTS; never alter the master clock itself.
+        let predicted_lead_us = presentation_time_us.saturating_sub(glib::monotonic_time());
+        let predicted_lead_secs = if presentation_time_us > 0 {
+            predicted_lead_us.max(0) as f64 / 1_000_000.0
         } else {
             // Some backends cannot provide a prediction. Retain the previous
-            // one-refresh fallback rather than scheduling against a past time.
+            // one-refresh fallback when no prediction is available at all.
             presentation_window
         };
         let presentation_deadline_pts = master_pts + predicted_lead_secs;
