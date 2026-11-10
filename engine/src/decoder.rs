@@ -266,6 +266,140 @@ impl VideoDecoder {
 
 
 // -----------------------------------------------------------------------------
+// Subtitle decoding
+// -----------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SubtitleCue {
+    pub start: f64,
+    pub end: f64,
+    pub text: String,
+}
+
+#[cfg(feature = "ffmpeg-system")]
+pub struct SubtitleDecoder {
+    decoder: ffmpeg_the_third::codec::decoder::Subtitle,
+    stream_index: usize,
+    time_base_num: i32,
+    time_base_den: i32,
+}
+
+#[cfg(feature = "ffmpeg-system")]
+impl SubtitleDecoder {
+    pub fn open_ffmpeg(path: &str, stream_index: usize) -> Result<Self, String> {
+        use ffmpeg_the_third as ffmpeg;
+
+        ffmpeg::init().map_err(|error| format!("Could not initialise FFmpeg: {error}"))?;
+        let input = ffmpeg::format::input(path)
+            .map_err(|error| format!("Could not open subtitle stream: {error}"))?;
+        let stream = input.streams().find(|stream| stream.index() == stream_index)
+            .ok_or_else(|| format!("Subtitle stream {stream_index} was not found"))?;
+        let time_base = stream.time_base();
+        if time_base.denominator() == 0 {
+            return Err("Subtitle stream has an invalid time base".to_string());
+        }
+        let context = ffmpeg::codec::context::Context::from_parameters(stream.parameters())
+            .map_err(|error| format!("Could not create subtitle decoder context: {error}"))?;
+        let decoder = context.decoder().subtitle()
+            .map_err(|error| format!("Could not open subtitle decoder: {error}"))?;
+        Ok(Self {
+            decoder,
+            stream_index,
+            time_base_num: time_base.numerator(),
+            time_base_den: time_base.denominator(),
+        })
+    }
+
+    /// Decode one packet using FFmpeg 9's subtitle-specific synchronous API.
+    /// Text is copied before avsubtitle_free releases FFmpeg's rectangle data.
+    pub fn decode_packet(&mut self, packet: &DemuxPacket) -> Result<Option<SubtitleCue>, String> {
+        use ffmpeg_the_third as ffmpeg;
+
+        if packet.stream_index != self.stream_index {
+            return Ok(None);
+        }
+        let mut compressed = ffmpeg::Packet::copy(&packet.data);
+        compressed.set_pts(packet.pts);
+        compressed.set_dts(packet.dts);
+        compressed.set_duration(packet.duration);
+        compressed.set_stream(packet.stream_index);
+
+        let mut decoded = ffmpeg::Subtitle::new();
+        let got_subtitle = self.decoder.decode(&compressed, &mut decoded)
+            .map_err(|error| format!("Subtitle decoding failed: {error}"))?;
+        if !got_subtitle {
+            return Ok(None);
+        }
+
+        let raw = unsafe { &*decoded.as_ptr() };
+        let base = if raw.pts != ffmpeg::ffi::AV_NOPTS_VALUE {
+            raw.pts as f64 / ffmpeg::ffi::AV_TIME_BASE as f64
+        } else {
+            packet.pts_secs().unwrap_or(0.0)
+        };
+        let start = base + raw.start_display_time as f64 / 1000.0;
+        let end = base + raw.end_display_time as f64 / 1000.0;
+        let mut lines = Vec::new();
+
+        for index in 0..raw.num_rects as usize {
+            let rect = unsafe { *raw.rects.add(index) };
+            if rect.is_null() { continue; }
+            let rect = unsafe { &*rect };
+            let text = unsafe { c_string_to_owned(rect.text) };
+            let text = if text.trim().is_empty() {
+                unsafe { c_string_to_owned(rect.ass) }
+                    .map(|ass| clean_ass_dialogue(&ass))
+            } else {
+                text
+            };
+            if let Some(text) = text {
+                let text = text.trim();
+                if !text.is_empty() { lines.push(text.to_owned()); }
+            }
+        }
+
+        let text = lines.join("\n");
+        if text.is_empty() { return Ok(None); }
+        Ok(Some(SubtitleCue { start, end: end.max(start), text }))
+    }
+}
+
+#[cfg(feature = "ffmpeg-system")]
+unsafe fn c_string_to_owned(pointer: *const libc::c_char) -> Option<String> {
+    if pointer.is_null() { return None; }
+    Some(std::ffi::CStr::from_ptr(pointer).to_string_lossy().into_owned())
+}
+
+#[cfg(feature = "ffmpeg-system")]
+fn clean_ass_dialogue(ass: &str) -> String {
+    let dialogue = ass.split_once("Dialogue:")
+        .map(|(_, value)| value)
+        .unwrap_or(ass);
+    let mut fields = dialogue.splitn(10, ',');
+    for _ in 0..9 { let _ = fields.next(); }
+    let text = fields.next().unwrap_or(dialogue);
+    let mut output = String::with_capacity(text.len());
+    let mut in_override = false;
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '{' => in_override = true,
+            '}' if in_override => in_override = false,
+            '\\\\' if !in_override => match chars.next() {
+                Some('N' | 'n') => output.push('\n'),
+                Some('h') => output.push(' '),
+                Some(other) => { output.push('\\\\'); output.push(other); }
+                None => output.push('\\\\'),
+            },
+            _ if !in_override => output.push(ch),
+            _ => {}
+        }
+    }
+    output
+}
+
+
+// -----------------------------------------------------------------------------
 // Audio decoding
 // -----------------------------------------------------------------------------
 
