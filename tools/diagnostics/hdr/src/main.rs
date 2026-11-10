@@ -278,6 +278,7 @@ fn main() -> glib::ExitCode {
                 for (label, texture) in [
                     ("PQ DMA-BUF · XRGB2101010", &pq_dmabuf),
                     ("PQ system memory · same bytes", &pq_cpu),
+                    ("PQ DMA-BUF · ARGB2101010", &argb_dmabuf),
                     ("SDR DMA-BUF control · XRGB8888", &sdr_dmabuf),
                 ] {
                     let column = GtkBox::new(Orientation::Vertical, 4);
