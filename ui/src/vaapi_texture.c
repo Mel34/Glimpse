@@ -119,7 +119,10 @@ GdkTexture *glimpse_vaapi_texture_from_frame(
     if (result < 0) {
         char message[AV_ERROR_MAX_STRING_SIZE];
         av_strerror(result, message, sizeof(message));
-        set_error_message(error_message, message);
+        char detailed[AV_ERROR_MAX_STRING_SIZE + 64];
+        snprintf(detailed, sizeof(detailed),
+                 "Mapping VAAPI surface to DRM PRIME failed: %s", message);
+        set_error_message(error_message, detailed);
         av_frame_free(&drm);
         return NULL;
     }
@@ -167,8 +170,10 @@ GdkTexture *glimpse_vaapi_texture_from_frame(
         builder, release_drm_frame, drm, &error);
     g_object_unref(builder);
     if (!texture) {
-        set_error_message(error_message,
-            error ? error->message : "GDK rejected the P010 DMA-BUF texture");
+        char detailed[512];
+        snprintf(detailed, sizeof(detailed), "GDK P010 DMA-BUF import failed: %s",
+                 error ? error->message : "unknown GDK error");
+        set_error_message(error_message, detailed);
         g_clear_error(&error);
         av_frame_free(&drm);
         return NULL;
