@@ -469,7 +469,9 @@ fn schedule_frames(
             if let Some(frame) = state.pending.as_ref() {
                 let master_pts = ingest_clock.get_pts();
                 let lateness = master_pts - frame.pts;
-                if lateness > 0.040 {
+                // Never discard the startup frame before GTK has had a chance
+                // to present it, even if the audio clock started first.
+                if !state.present_first_frame && lateness > 0.040 {
                     let frame_pts = frame.pts;
                     state.pending = None;
                     state.dropped_frames += 1;
@@ -584,8 +586,81 @@ fn schedule_frames(
             );
         }
 
-        let Some(frame) = state.pending.as_ref() else {
-            if state.stream_finished {
+        // Preserve the first decoded frame for the first GDK presentation.
+        // Once playback is running, inspect every queued frame on each display
+        // tick: present the newest frame inside this refresh window and retain
+        // the earliest frame that belongs to a later refresh.
+        let mut selected_frame = if state.present_first_frame {
+            state.pending.take()
+        } else {
+            None
+        };
+
+        if selected_frame.is_some() {
+            state.present_first_frame = false;
+        } else if !state.present_first_frame {
+            let mut candidates = Vec::with_capacity(receiver.len() + 1);
+            if let Some(frame) = state.pending.take() {
+                candidates.push(frame);
+            }
+
+            loop {
+                match receiver.try_recv() {
+                    Ok(Ok(frame)) => candidates.push(frame),
+                    Ok(Err(error)) => {
+                        tracing::error!(
+                            %error,
+                            displayed_frames = state.displayed_frames,
+                            dropped_frames = state.dropped_frames,
+                            "Engine video decoder failed during frame selection"
+                        );
+                        state.stream_finished = true;
+                        break;
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        state.stream_finished = true;
+                        break;
+                    }
+                }
+            }
+
+            let mut earliest_future: Option<VideoFrameData> = None;
+            for frame in candidates {
+                let lateness = master_pts - frame.pts;
+                if lateness > 0.040 {
+                    state.dropped_frames += 1;
+                } else if frame.pts <= master_pts + presentation_window {
+                    if let Some(previous) = selected_frame.replace(frame) {
+                        let _ = previous;
+                        state.dropped_frames += 1;
+                    }
+                } else if earliest_future
+                    .as_ref()
+                    .is_none_or(|pending| frame.pts < pending.pts)
+                {
+                    if earliest_future.replace(frame).is_some() {
+                        state.dropped_frames += 1;
+                    }
+                } else {
+                    state.dropped_frames += 1;
+                }
+            }
+            state.pending = earliest_future;
+
+            if state.dropped_frames > 0 && state.dropped_frames % 120 == 0 {
+                tracing::debug!(
+                    dropped_frames = state.dropped_frames,
+                    displayed_frames = state.displayed_frames,
+                    queued_frames = receiver.len(),
+                    master_pts,
+                    "Skipped superseded or late video frames during presentation"
+                );
+            }
+        }
+
+        let Some(frame) = selected_frame else {
+            if state.stream_finished && state.pending.is_none() {
                 subtitle_label.set_text("");
                 subtitle_label.set_visible(false);
                 tracing::info!(
@@ -599,12 +674,7 @@ fn schedule_frames(
             return glib::ControlFlow::Continue;
         };
 
-        // The first decoded frame is committed on the first GDK frame-clock
-        // opportunity. Subsequent frames use one display interval of lookahead.
-        if state.present_first_frame || frame.pts <= master_pts + presentation_window {
-            let frame = state.pending.take().expect("pending frame was checked");
-            state.present_first_frame = false;
-            let texture = match frame.vaapi_frame.as_ref() {
+        let texture = match frame.vaapi_frame.as_ref() {
                 Some(vaapi_frame) => {
                     #[cfg(feature = "vaapi-hdr")]
                     {
@@ -639,19 +709,18 @@ fn schedule_frames(
                     .upcast()
                 }
             };
-            picture.set_paintable(Some(&texture));
-            state.displayed_frames += 1;
-            if state.displayed_frames == 1 {
-                tracing::info!(
-                    frame_pts = frame.pts,
-                    master_pts,
-                    refresh_interval_us,
-                    refresh_hz = 1_000_000.0 / refresh_interval_us as f64,
-                    mapped = picture.is_mapped(),
-                    visible = picture.is_visible(),
-                    "Presented first video frame on GDK frame clock"
-                );
-            }
+        picture.set_paintable(Some(&texture));
+        state.displayed_frames += 1;
+        if state.displayed_frames == 1 {
+            tracing::info!(
+                frame_pts = frame.pts,
+                master_pts,
+                refresh_interval_us,
+                refresh_hz = 1_000_000.0 / refresh_interval_us as f64,
+                mapped = picture.is_mapped(),
+                visible = picture.is_visible(),
+                "Presented first video frame on GDK frame clock"
+            );
         }
 
         glib::ControlFlow::Continue
