@@ -215,7 +215,16 @@ fn decode_continuously(
         while let Some(tagged) = queues.subtitle.pop_timeout(Duration::ZERO) {
             if tagged.serial != serial { continue; }
             if let Some(decoder) = subtitle_decoder.as_mut() {
-                if let Some(cue) = decoder.decode_packet(&tagged.item)? {
+                let cue = match decoder.decode_packet(&tagged.item) {
+                    Ok(cue) => cue,
+                    Err(error) => {
+                        queues.abort();
+                        frame_queue.abort();
+                        let _ = demux_worker.join();
+                        return Err(error);
+                    }
+                };
+                if let Some(cue) = cue {
                     let mut message = Ok(cue);
                     loop {
                         if cancelled.load(Ordering::Acquire) { break; }
