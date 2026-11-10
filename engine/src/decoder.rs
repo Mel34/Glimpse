@@ -48,6 +48,8 @@ mod video_timestamp_tests {
 struct FfmpegDecoderState {
     decoder: ffmpeg_the_third::decoder::Video,
     scaler: Option<ffmpeg_the_third::software::scaling::Context>,
+    time_base_num: i32,
+    time_base_den: i32,
     frame_duration: f64,
 }
 
@@ -121,6 +123,8 @@ impl VideoDecoder {
         result.backend = Some(FfmpegDecoderState {
             decoder,
             scaler: None,
+            time_base_num: time_base.numerator(),
+            time_base_den: time_base.denominator(),
             frame_duration,
         });
         Ok(result)
@@ -276,8 +280,6 @@ pub struct SubtitleCue {
 pub struct SubtitleDecoder {
     decoder: ffmpeg_the_third::codec::decoder::Subtitle,
     stream_index: usize,
-    time_base_num: i32,
-    time_base_den: i32,
 }
 
 #[cfg(feature = "ffmpeg-system")]
@@ -298,12 +300,7 @@ impl SubtitleDecoder {
             .map_err(|error| format!("Could not create subtitle decoder context: {error}"))?;
         let decoder = context.decoder().subtitle()
             .map_err(|error| format!("Could not open subtitle decoder: {error}"))?;
-        Ok(Self {
-            decoder,
-            stream_index,
-            time_base_num: time_base.numerator(),
-            time_base_den: time_base.denominator(),
-        })
+        Ok(Self { decoder, stream_index })
     }
 
     /// Decode one packet using FFmpeg 9's subtitle-specific synchronous API.
