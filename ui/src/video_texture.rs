@@ -55,6 +55,7 @@ pub struct VideoPlaybackHandle {
     subtitle_label: gtk4::Label,
     external_subtitle_path: Option<String>,
     clock: Arc<MasterClock>,
+    window_active: bool,
     run: Option<PlaybackRun>,
 }
 
@@ -63,8 +64,10 @@ impl VideoPlaybackHandle {
         self.subtitle_label.set_text("");
         self.subtitle_label.set_visible(false);
         self.stop_run();
-        if let Err(error) = self.start_run(target) {
-            tracing::error!(%error, "Could not restart video after seek");
+        if self.window_active {
+            if let Err(error) = self.start_run(target) {
+                tracing::error!(%error, "Could not restart video after seek");
+            }
         }
     }
 
@@ -74,9 +77,11 @@ impl VideoPlaybackHandle {
         self.subtitle_label.set_text("");
         self.subtitle_label.set_visible(false);
         self.stop_run();
-        let position = Duration::from_secs_f64(self.clock.get_pts().max(0.0));
-        if let Err(error) = self.start_run(position) {
-            tracing::error!(%error, "Could not restart video after subtitle selection");
+        if self.window_active {
+            let position = Duration::from_secs_f64(self.clock.get_pts().max(0.0));
+            if let Err(error) = self.start_run(position) {
+                tracing::error!(%error, "Could not restart video after subtitle selection");
+            }
         }
     }
 
@@ -86,8 +91,29 @@ impl VideoPlaybackHandle {
         self.subtitle_label.set_text("");
         self.subtitle_label.set_visible(false);
         self.stop_run();
-        let position = Duration::from_secs_f64(self.clock.get_pts().max(0.0));
-        self.start_run(position)
+        if self.window_active {
+            let position = Duration::from_secs_f64(self.clock.get_pts().max(0.0));
+            self.start_run(position)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Stop producing video frames while the window is hidden on another
+    /// workspace. Restart from the live media clock when it becomes active.
+    pub fn set_window_active(&mut self, active: bool) {
+        if self.window_active == active {
+            return;
+        }
+        self.window_active = active;
+        if !active {
+            self.stop_run();
+        } else if self.run.is_none() {
+            let position = Duration::from_secs_f64(self.clock.get_pts().max(0.0));
+            if let Err(error) = self.start_run(position) {
+                tracing::error!(%error, "Could not resume video after window activation");
+            }
+        }
     }
 
     pub fn stop(&mut self) {
@@ -107,6 +133,9 @@ impl VideoPlaybackHandle {
     }
 
     fn start_run(&mut self, start_position: Duration) -> Result<(), String> {
+        if !self.window_active {
+            return Ok(());
+        }
         let video_stream_index = self.tracks.video_tracks.first()
             .map(|track| track.id.0)
             .ok_or_else(|| "The media has no video stream".to_string())?;
@@ -150,6 +179,7 @@ pub fn present_continuous_frames(
     picture: &gtk4::Picture,
     subtitle_label: &gtk4::Label,
     clock: Arc<MasterClock>,
+    window_active: bool,
 ) -> Option<VideoPlaybackHandle> {
     if tracks.video_tracks.is_empty() {
         tracing::warn!("Engine video path skipped: no video stream");
@@ -157,7 +187,7 @@ pub fn present_continuous_frames(
     }
     let mut handle = VideoPlaybackHandle {
         path: path.to_owned(), tracks, picture: picture.clone(), subtitle_label: subtitle_label.clone(),
-        external_subtitle_path: None, clock, run: None,
+        external_subtitle_path: None, clock, window_active, run: None,
     };
     if let Err(error) = handle.start_run(Duration::ZERO) {
         tracing::error!(%error, "Could not start engine video playback");
