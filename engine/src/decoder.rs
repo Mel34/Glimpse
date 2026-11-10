@@ -368,7 +368,8 @@ impl SubtitleDecoder {
                     .filter(|value| !value.trim().is_empty())
                     .map(|text| vec![SubtitleSpan {
                         text,
-                        bold: false,
+                        // Preserve Glimpse's existing bold SRT/plain-text appearance.
+                        bold: true,
                         italic: false,
                         underline: false,
                         strikethrough: false,
