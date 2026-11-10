@@ -778,3 +778,21 @@ mod audio_layout_tests {
         assert_eq!(normalized, input);
     }
 }
+
+
+#[cfg(all(test, feature = "ffmpeg-system"))]
+mod subtitle_text_tests {
+    use super::clean_ass_dialogue;
+
+    #[test]
+    fn extracts_ass_dialogue_and_removes_override_tags() {
+        let ass = r#"Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,{\\an8}Hello\\Nworld"#;
+        assert_eq!(clean_ass_dialogue(ass), "Hello\nworld");
+    }
+
+    #[test]
+    fn replaces_ass_hard_spaces() {
+        let ass = r#"0,0,Default,,0,0,0,,One\\hTwo"#;
+        assert_eq!(clean_ass_dialogue(ass), "One Two");
+    }
+}
