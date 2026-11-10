@@ -388,11 +388,11 @@ fn clean_ass_dialogue(ass: &str) -> String {
         match ch {
             '{' => in_override = true,
             '}' if in_override => in_override = false,
-            '\\\\' if !in_override => match chars.next() {
+            '\\' if !in_override => match chars.next() {
                 Some('N' | 'n') => output.push('\n'),
                 Some('h') => output.push(' '),
-                Some(other) => { output.push('\\\\'); output.push(other); }
-                None => output.push('\\\\'),
+                Some(other) => { output.push('\\'); output.push(other); }
+                None => output.push('\\'),
             },
             _ if !in_override => output.push(ch),
             _ => {}
