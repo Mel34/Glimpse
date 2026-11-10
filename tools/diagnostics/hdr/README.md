@@ -17,7 +17,9 @@ The window has three columns:
    Rec. 2100 PQ.
 2. **PQ system memory** — a GDK memory texture made from the exact same
    XRGB2101010 bytes and the same PQ color state.
-3. **SDR DMA-BUF control** — a separate GBM-allocated XRGB8888 buffer using
+3. **PQ ARGB DMA-BUF** — the same 10-bit PQ ramp in ARGB2101010, with
+   explicit opaque alpha rather than unused X/padding bits.
+4. **SDR DMA-BUF control** — a separate GBM-allocated XRGB8888 buffer using
    GDK's default sRGB color state.
 
 The first two columns isolate the DMA-BUF path from pixel packing, PQ
@@ -52,10 +54,12 @@ From the repository root:
 GDK_DEBUG=color-mgmt,dmabuf cargo run --manifest-path tools/diagnostics/hdr/Cargo.toml
 ```
 
-If the PQ memory image appears but PQ DMA-BUF is black, the problem is in the
-10-bit DMA-BUF path. If the 8-bit SDR DMA-BUF control also appears black, the
-problem is more general: GBM DMA-BUF export/import or GDK sampling. If SDR
-works but PQ DMA-BUF does not, focus on XR30/XRGB2101010 format handling.
+If the PQ memory image and SDR DMA-BUF appear but XRGB2101010 remains black,
+the failure is specific to the packed 10-bit opaque format or its import path.
+The ARGB2101010 column distinguishes an XRGB padding/opaque-format issue from
+a broader 10-bit import issue: if ARGB works while XRGB is black, focus on
+XR30 handling; if both 10-bit formats are black while SDR works, focus on
+GDK/Mesa's 10-bit DMA-BUF import or sampling support.
 
 ## Wayland protocol tracing
 
