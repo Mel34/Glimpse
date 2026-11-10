@@ -1021,6 +1021,59 @@ fn trigger_open_file_dialog(
     });
 }
 
+/// Open an external text subtitle file and attach it to the current playback.
+fn trigger_open_subtitle_dialog(
+    window: &ApplicationWindow,
+    video_playback: &Rc<RefCell<Option<VideoPlaybackHandle>>>,
+    button: &CheckButton,
+    off_button: &CheckButton,
+) {
+    let dialog = FileDialog::builder()
+        .title("Open External Subtitle")
+        .accept_label("Open")
+        .modal(true)
+        .build();
+    let filter = FileFilter::new();
+    filter.set_name(Some("Subtitle Files"));
+    for pattern in ["*.srt", "*.ass", "*.ssa", "*.vtt"] {
+        filter.add_pattern(pattern);
+    }
+    dialog.set_default_filter(Some(&filter));
+
+    let video = Rc::clone(video_playback);
+    let button = button.clone();
+    let off_button = off_button.clone();
+    dialog.open(Some(window), gio::Cancellable::NONE, move |result| {
+        let Ok(file) = result else {
+            off_button.set_active(true);
+            return;
+        };
+        let uri = file.uri();
+        let path = match media_source_from_uri(uri.as_str()) {
+            Ok(path) => path,
+            Err(error) => {
+                tracing::error!(%error, "Could not open external subtitle path");
+                off_button.set_active(true);
+                return;
+            }
+        };
+        let name = file.basename()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "subtitle".to_string());
+        if let Some(ref mut playback) = *video.borrow_mut() {
+            match playback.select_external_subtitle(path) {
+                Ok(()) => button.set_label(&format!("External: {name}")),
+                Err(error) => {
+                    tracing::error!(%error, "Could not load external subtitle");
+                    off_button.set_active(true);
+                }
+            }
+        } else {
+            off_button.set_active(true);
+        }
+    });
+}
+
 /// Keep the engine event stream alive and surface asynchronous playback failures.
 fn watch_player_events(receiver: crossbeam_channel::Receiver<Event>, window: ApplicationWindow) {
     let window = window.downgrade();
@@ -1152,6 +1205,9 @@ fn load_and_play_file(
 
                 let p_subtitle = Rc::clone(player);
                 let video_subtitle = Rc::clone(video_playback);
+                let window_external = window.clone();
+                let video_external = Rc::clone(video_playback);
+                let player_external = Rc::clone(player);
                 let popover = create_track_popover(
                     &tracks,
                     move |aid| {
@@ -1180,6 +1236,17 @@ fn load_and_play_file(
                         if let Some(ref mut video) = *video_subtitle.borrow_mut() {
                             video.select_subtitle(subtitle_id);
                         }
+                    },
+                    move |button, off_button| {
+                        if let Some(ref p) = *player_external.borrow() {
+                            p.select_subtitle(None);
+                        }
+                        trigger_open_subtitle_dialog(
+                            &window_external,
+                            &video_external,
+                            &button,
+                            &off_button,
+                        );
                     },
                 );
                 crate::controls::track_popover_visibility(&popover, &bottom_controls.open_popovers);

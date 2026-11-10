@@ -404,6 +404,67 @@ fn clean_ass_dialogue(ass: &str) -> String {
     output
 }
 
+/// Decode a standalone text subtitle file into timestamped cues.
+///
+/// The file is demuxed independently from the media container. Only the first
+/// subtitle stream is used; bitmap-only tracks naturally produce no text cues.
+#[cfg(feature = "ffmpeg-system")]
+pub fn decode_external_subtitle_file(path: &str) -> Result<Vec<SubtitleCue>, String> {
+    use ffmpeg_the_third as ffmpeg;
+
+    ffmpeg::init().map_err(|error| format!("Could not initialise FFmpeg: {error}"))?;
+    let mut input = ffmpeg::format::input(path)
+        .map_err(|error| format!("Could not open external subtitle file: {error}"))?;
+
+    let (stream_index, time_base_num, time_base_den, decoder) = {
+        let stream = input
+            .streams()
+            .best(ffmpeg::media::Type::Subtitle)
+            .ok_or_else(|| "The selected file contains no subtitle stream".to_string())?;
+        let time_base = stream.time_base();
+        if time_base.denominator() == 0 {
+            return Err("The external subtitle stream has an invalid time base".to_string());
+        }
+        let context = ffmpeg::codec::context::Context::from_parameters(stream.parameters())
+            .map_err(|error| format!("Could not create external subtitle decoder context: {error}"))?;
+        let decoder = context
+            .decoder()
+            .subtitle()
+            .map_err(|error| format!("Could not open external subtitle decoder: {error}"))?;
+        (stream.index(), time_base.numerator(), time_base.denominator(), decoder)
+    };
+
+    let mut subtitle_decoder = SubtitleDecoder { decoder, stream_index };
+    let mut cues = Vec::new();
+    for (stream, packet) in input.packets() {
+        if stream.index() != stream_index {
+            continue;
+        }
+        let subtitle_packet = DemuxPacket {
+            stream_index,
+            data: packet.data().unwrap_or_default().to_vec(),
+            pts: packet.pts(),
+            dts: packet.dts(),
+            duration: packet.duration(),
+            time_base_num,
+            time_base_den,
+            is_keyframe: packet.is_key(),
+        };
+        if let Some(cue) = subtitle_decoder.decode_packet(&subtitle_packet)? {
+            cues.push(cue);
+        }
+    }
+
+    cues.sort_by(|left, right| left.start.total_cmp(&right.start));
+    if cues.is_empty() {
+        return Err(
+            "No readable text subtitles were found. Bitmap subtitles are not supported yet."
+                .to_string(),
+        );
+    }
+    Ok(cues)
+}
+
 // -----------------------------------------------------------------------------
 // Audio decoding
 // -----------------------------------------------------------------------------

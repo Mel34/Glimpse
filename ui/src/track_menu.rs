@@ -5,14 +5,16 @@ use gtk4::{Box as GtkBox, CheckButton, Label, Orientation, Popover, PolicyType, 
 use glimpse_engine::{TrackId, TrackInfo, TrackList};
 use crate::interaction::attach_popover_scroll_guard;
 
-pub fn create_track_popover<FAudio, FSubtitle>(
+pub fn create_track_popover<FAudio, FSubtitle, FExternal>(
     tracks: &TrackList,
     on_audio_selected: FAudio,
     on_subtitle_selected: FSubtitle,
+    on_external_selected: FExternal,
 ) -> Popover
 where
     FAudio: Fn(Option<TrackId>) + 'static + Clone,
     FSubtitle: Fn(Option<TrackId>) + 'static + Clone,
+    FExternal: Fn(CheckButton, CheckButton) + 'static + Clone,
 {
     let popover = Popover::new();
     popover.add_css_class("menu-popover");
@@ -56,11 +58,27 @@ where
 
     let subtitle_off_btn = CheckButton::with_label("Off");
     subtitle_off_btn.set_active(tracks.active_subtitle.is_none());
+    let external_button = CheckButton::with_label("Load External Subtitle…");
+    external_button.set_group(Some(&subtitle_off_btn));
+
     let cb_subtitle_off = on_subtitle_selected.clone();
+    let external_off_button = external_button.clone();
     subtitle_off_btn.connect_toggled(move |button| {
-        if button.is_active() { cb_subtitle_off(None); }
+        if button.is_active() {
+            external_off_button.set_label("Load External Subtitle…");
+            cb_subtitle_off(None);
+        }
     });
     container.append(&subtitle_off_btn);
+
+    let cb_external = on_external_selected.clone();
+    let off_button_for_external = subtitle_off_btn.clone();
+    external_button.connect_toggled(move |button| {
+        if button.is_active() {
+            cb_external(button.clone(), off_button_for_external.clone());
+        }
+    });
+    container.append(&external_button);
 
     let mut first_subtitle_btn: Option<CheckButton> = Some(subtitle_off_btn);
     let subtitle_tracks_box = GtkBox::new(Orientation::Vertical, 4);
@@ -69,9 +87,13 @@ where
         btn.set_group(first_subtitle_btn.as_ref());
         if tracks.active_subtitle == Some(track.id) { btn.set_active(true); }
         let cb = on_subtitle_selected.clone();
+        let external_button_for_track = external_button.clone();
         let tid = track.id;
         btn.connect_toggled(move |button| {
-            if button.is_active() { cb(Some(tid)); }
+            if button.is_active() {
+                external_button_for_track.set_label("Load External Subtitle…");
+                cb(Some(tid));
+            }
         });
         if first_subtitle_btn.is_none() { first_subtitle_btn = Some(btn.clone()); }
         subtitle_tracks_box.append(&btn);

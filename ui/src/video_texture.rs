@@ -11,7 +11,7 @@ use std::time::Duration;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender, TryRecvError};
-use glimpse_engine::decoder::{SubtitleCue, SubtitleDecoder, VideoDecoder, VideoFrameQueue};
+use glimpse_engine::decoder::{decode_external_subtitle_file, SubtitleCue, SubtitleDecoder, VideoDecoder, VideoFrameQueue};
 use glimpse_engine::demuxer::{demux_file_from, PacketQueues};
 use glimpse_engine::{Serial, VideoFrameData};
 
@@ -62,6 +62,7 @@ pub struct VideoPlaybackHandle {
     tracks: TrackList,
     picture: gtk4::Picture,
     subtitle_label: gtk4::Label,
+    external_subtitle_path: Option<String>,
     clock: Arc<MasterClock>,
     run: Option<PlaybackRun>,
 }
@@ -78,6 +79,7 @@ impl VideoPlaybackHandle {
 
     pub fn select_subtitle(&mut self, id: Option<glimpse_engine::TrackId>) {
         self.tracks.active_subtitle = id;
+        self.external_subtitle_path = None;
         self.subtitle_label.set_text("");
         self.subtitle_label.set_visible(false);
         self.stop_run();
@@ -85,6 +87,16 @@ impl VideoPlaybackHandle {
         if let Err(error) = self.start_run(position) {
             tracing::error!(%error, "Could not restart video after subtitle selection");
         }
+    }
+
+    pub fn select_external_subtitle(&mut self, path: String) -> Result<(), String> {
+        self.tracks.active_subtitle = None;
+        self.external_subtitle_path = Some(path);
+        self.subtitle_label.set_text("");
+        self.subtitle_label.set_visible(false);
+        self.stop_run();
+        let position = Duration::from_secs_f64(self.clock.get_pts().max(0.0));
+        self.start_run(position)
     }
 
     pub fn stop(&mut self) {
@@ -114,6 +126,7 @@ impl VideoPlaybackHandle {
         let worker = spawn_decoder_worker(
             self.path.clone(),
             self.tracks.clone(),
+            self.external_subtitle_path.clone(),
             video_stream_index,
             queues.clone(),
             Arc::clone(&cancelled),
@@ -152,8 +165,8 @@ pub fn present_continuous_frames(
         return None;
     }
     let mut handle = VideoPlaybackHandle {
-        path: path.to_owned(), tracks, picture: picture.clone(), subtitle_label: subtitle_label.clone(), clock,
-        run: None,
+        path: path.to_owned(), tracks, picture: picture.clone(), subtitle_label: subtitle_label.clone(),
+        external_subtitle_path: None, clock, run: None,
     };
     if let Err(error) = handle.start_run(Duration::ZERO) {
         tracing::error!(%error, "Could not start engine video playback");
@@ -165,6 +178,7 @@ pub fn present_continuous_frames(
 fn spawn_decoder_worker(
     path: String,
     tracks: TrackList,
+    external_subtitle_path: Option<String>,
     video_stream_index: usize,
     queues: PacketQueues,
     cancelled: Arc<AtomicBool>,
@@ -176,7 +190,7 @@ fn spawn_decoder_worker(
         .name("glimpse-video-decode".to_string())
         .spawn(move || {
             if let Err(error) = decode_continuously(
-                &path, &tracks, video_stream_index, &queues, &cancelled, &sender, &subtitle_sender, start_position,
+                &path, &tracks, external_subtitle_path.as_deref(), video_stream_index, &queues, &cancelled, &sender, &subtitle_sender, start_position,
             ) {
                 if !cancelled.load(Ordering::Acquire) {
                     let _ = sender.try_send(Err(error));
@@ -189,6 +203,7 @@ fn spawn_decoder_worker(
 fn decode_continuously(
     path: &str,
     tracks: &TrackList,
+    external_subtitle_path: Option<&str>,
     video_stream_index: usize,
     queues: &PacketQueues,
     cancelled: &AtomicBool,
@@ -206,9 +221,24 @@ fn decode_continuously(
         Arc::new(MasterClock::new()),
     )?;
 
-    let mut subtitle_decoder = tracks.active_subtitle
-        .map(|track| SubtitleDecoder::open_ffmpeg(path, track.0))
-        .transpose()?;
+    let mut subtitle_decoder = if external_subtitle_path.is_none() {
+        tracks.active_subtitle
+            .map(|track| SubtitleDecoder::open_ffmpeg(path, track.0))
+            .transpose()?
+    } else {
+        None
+    };
+
+    if let Some(subtitle_path) = external_subtitle_path {
+        for cue in decode_external_subtitle_file(subtitle_path)? {
+            if cancelled.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            subtitle_sender
+                .send(Ok(cue))
+                .map_err(|_| "Subtitle scheduler was disconnected".to_string())?;
+        }
+    }
 
     let worker_path = path.to_owned();
     let worker_tracks = tracks.clone();
