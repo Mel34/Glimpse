@@ -5,9 +5,9 @@
 //! scheduler. It does not yet validate DMA-BUF import or direct-scanout
 //! offloading; those are the next diagnostic step.
 
-use gdk4::{ColorState, MemoryFormat, MemoryTextureBuilder};
-use gtk4::prelude::*;
-use gtk4::{
+use gdk4_hdr::{ColorState, MemoryFormat, MemoryTextureBuilder};
+use gtk4_hdr::prelude::*;
+use gtk4_hdr::{
     Application, ApplicationWindow, Box as GtkBox, GraphicsOffload,
     GraphicsOffloadEnabled, Label, Orientation, Picture,
 };
@@ -32,7 +32,7 @@ fn pq_encode(nits: f64) -> u16 {
     (encoded * u16::MAX as f64).round() as u16
 }
 
-fn build_pq_pattern() -> gdk4::Texture {
+fn build_pq_pattern() -> gdk4_hdr::Texture {
     let mut pixels = Vec::with_capacity(WIDTH * HEIGHT * 6);
     for _y in 0..HEIGHT {
         for x in 0..WIDTH {
@@ -44,7 +44,7 @@ fn build_pq_pattern() -> gdk4::Texture {
         }
     }
 
-    let bytes = glib::Bytes::from_owned(pixels);
+    let bytes = glib_hdr::Bytes::from_owned(pixels);
     let pq = ColorState::rec2100_pq();
 
     MemoryTextureBuilder::new()
@@ -57,7 +57,7 @@ fn build_pq_pattern() -> gdk4::Texture {
         .build()
 }
 
-fn main() -> glib::ExitCode {
+fn main() -> glib_hdr::ExitCode {
     let app = Application::builder()
         .application_id("com.github.Mel34.Glimpse.HDRProbe")
         .build();
@@ -67,7 +67,7 @@ fn main() -> glib::ExitCode {
 
         let picture = Picture::new();
         picture.set_paintable(Some(&texture));
-        picture.set_content_fit(gtk4::ContentFit::Contain);
+        picture.set_content_fit(gtk4_hdr::ContentFit::Contain);
         picture.set_hexpand(true);
         picture.set_vexpand(true);
 
