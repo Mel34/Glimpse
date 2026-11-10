@@ -6,7 +6,7 @@
 //! for audio playback); GDK's frame clock controls presentation cadence only.
 
 use crate::video_texture::apply_subtitle_font_size;
-use crossbeam_channel::{Receiver, TryRecvError};
+use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use glimpse_engine::decoder::SubtitleCue;
 use glimpse_engine::{MasterClock, VideoFrameData};
 use glib::object::ObjectExt;
