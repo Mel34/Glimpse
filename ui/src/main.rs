@@ -5,6 +5,7 @@ mod interaction;
 mod track_menu;
 mod theme;
 mod window;
+mod presentation_sink;
 mod video_texture;
 #[cfg(feature = "vaapi-hdr")]
 mod vaapi_texture;
