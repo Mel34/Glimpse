@@ -72,7 +72,7 @@ fn seekbar_wheel_target(
     let bounded_current = current.min(duration);
     let step = Duration::from_secs(5);
 
-    let target = if dy < 0.0 {
+    let target = if dy > 0.0 {
         bounded_current.saturating_add(step).min(duration)
     } else {
         bounded_current.saturating_sub(step)
@@ -87,27 +87,27 @@ mod seekbar_wheel_tests {
     use std::time::Duration;
 
     #[test]
-    fn upward_scroll_clamps_to_duration_and_stops_at_end() {
+    fn downward_scroll_advances_and_stops_at_end() {
         let duration = Duration::from_secs(120);
         assert_eq!(
-            seekbar_wheel_target(Duration::from_secs(118), duration, -1.0),
+            seekbar_wheel_target(Duration::from_secs(118), duration, 1.0),
             Some(duration)
         );
         assert_eq!(
-            seekbar_wheel_target(duration, duration, -1.0),
+            seekbar_wheel_target(duration, duration, 1.0),
             None
         );
     }
 
     #[test]
-    fn downward_scroll_clamps_to_zero_and_stops_at_start() {
+    fn upward_scroll_rewinds_and_stops_at_start() {
         let duration = Duration::from_secs(120);
         assert_eq!(
-            seekbar_wheel_target(Duration::from_secs(3), duration, 1.0),
+            seekbar_wheel_target(Duration::from_secs(3), duration, -1.0),
             Some(Duration::ZERO)
         );
         assert_eq!(
-            seekbar_wheel_target(Duration::ZERO, duration, 1.0),
+            seekbar_wheel_target(Duration::ZERO, duration, -1.0),
             None
         );
     }
@@ -116,11 +116,11 @@ mod seekbar_wheel_tests {
     fn out_of_range_position_is_corrected_once() {
         let duration = Duration::from_secs(120);
         assert_eq!(
-            seekbar_wheel_target(Duration::from_secs(125), duration, -1.0),
+            seekbar_wheel_target(Duration::from_secs(125), duration, 1.0),
             Some(duration)
         );
         assert_eq!(
-            seekbar_wheel_target(duration, duration, -1.0),
+            seekbar_wheel_target(duration, duration, 1.0),
             None
         );
     }
