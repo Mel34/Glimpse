@@ -105,7 +105,8 @@ fn build_pq_dmabuf_pattern(
     let stride = bo.stride() as usize;
     stage(
         bo.map_mut(0, 0, WIDTH, HEIGHT, |mapping| {
-            fill_pq_pattern(mapping.buffer_mut(), mapping.stride() as usize);
+            let mapped_stride = mapping.stride() as usize;
+            fill_pq_pattern(mapping.buffer_mut(), mapped_stride);
         }),
         "map and write test pattern into GBM buffer",
     )?;
