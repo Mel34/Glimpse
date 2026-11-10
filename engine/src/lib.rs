@@ -436,6 +436,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn seeking_past_duration_ends_playback_without_restarting_audio() {
+        let (player, events) = test_player(Some(Duration::from_secs(120)));
+
+        player.play();
+        player.seek(Duration::from_secs(125));
+
+        assert_eq!(player.state(), PlayerState::Ended);
+        assert_eq!(player.position(), Duration::from_secs(120));
+        assert!(events.try_iter().any(|event| event == Event::EndOfStream));
+    }
+
     fn test_player(duration: Option<Duration>) -> (Player, Receiver<Event>) {
         let (event_sender, event_receiver) = bounded(16);
         let tracks = TrackList::default();
