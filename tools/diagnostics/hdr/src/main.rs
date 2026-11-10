@@ -72,11 +72,13 @@ fn build_pq_dmabuf_pattern(
     // XRGB2101010 preserves 10-bit PQ code values while keeping this first
     // DMA-BUF probe to one packed plane.
     let format = Format::Xrgb2101010;
-    let usage = BufferObjectFlags::SCANOUT | BufferObjectFlags::WRITE;
+    // This buffer is imported by GDK, not submitted directly to KMS. A
+    // render-node allocation needs CPU write access but not scanout usage.
+    let usage = BufferObjectFlags::WRITE;
     if !gbm.is_format_supported(format, usage) {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            format!("GBM does not support XRGB2101010 with SCANOUT|WRITE on {device_path}"),
+            format!("GBM does not support XRGB2101010 with WRITE on {device_path}"),
         )
         .into());
     }
