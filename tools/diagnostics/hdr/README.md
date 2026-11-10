@@ -2,6 +2,10 @@
 
 This probe is deliberately separate from Glimpse's production playback path.
 
+It uses the GTK 4.16-era Rust bindings (gtk4/gdk4 0.9) only for this optional
+diagnostic binary. The production application remains on its existing GTK 4.12
+binding baseline (gtk4/gdk4 0.8).
+
 It creates an opaque, 16-bit RGB test pattern tagged with the GDK Rec. 2100
 PQ color state and places it in a `GtkGraphicsOffload` widget. The bands are
 absolute PQ luminance values from 0.1 to 4000 cd/m².
@@ -42,6 +46,4 @@ must be checked. The next step, if this path is viable, is an opaque DMA-BUF
 test texture so `GtkGraphicsOffload` can exercise the actual video path.
 
 No production decoder, frame scheduler, subtitle, audio, or playback code is
-changed by this probe. GTK 4.16 APIs are enabled only when the `hdr-probe`
-Cargo feature is selected, so the normal application retains its GTK 4.12
-minimum API baseline.
+changed by this probe.
