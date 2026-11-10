@@ -338,8 +338,9 @@ impl GlimpseWindow {
             if !timeline_dragging.get() {
                 if let Some(current_player) = timeline_player.borrow().as_ref() {
                     let media_position = current_player.position();
-                    if let Some(ready) = timeline_loop_resume.borrow().as_ref() {
-                        match ready.try_recv() {
+                    let readiness = timeline_loop_resume.borrow().as_ref().map(|ready| ready.try_recv());
+                    if let Some(readiness) = readiness {
+                        match readiness {
                             Ok(()) | Err(crossbeam_channel::TryRecvError::Disconnected) => {
                                 timeline_loop_resume.borrow_mut().take();
                                 current_player.play();
