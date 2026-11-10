@@ -9,21 +9,30 @@ The isolation is required because Cargo permits only one crate in a dependency
 graph to link the native `gtk-4` library. The production app and this probe
 therefore have separate dependency graphs and lockfiles.
 
-The probe allocates a 1920×1080, single-plane XRGB2101010 DMA-BUF through GBM,
-fills it through GBM's CPU mapping API with a 10-bit Rec. 2100 PQ grayscale
-ramp, and imports it with `GdkDmabufTextureBuilder`. It also creates a
-system-memory texture from the exact same XRGB2101010 bytes and tags both
-textures with the Rec. 2100 PQ color state.
+## What it displays
+
+The window has three columns:
+
+1. **PQ DMA-BUF** — a GBM-allocated, linear XRGB2101010 buffer tagged with
+   Rec. 2100 PQ.
+2. **PQ system memory** — a GDK memory texture made from the exact same
+   XRGB2101010 bytes and the same PQ color state.
+3. **SDR DMA-BUF control** — a separate GBM-allocated XRGB8888 buffer using
+   GDK's default sRGB color state.
+
+The first two columns isolate the DMA-BUF path from pixel packing, PQ
+encoding, and color-state differences. The third checks whether GDK can
+import and sample a conventional 8-bit RGB DMA-BUF at all.
 
 GTK 4.24 added `GDK_MEMORY_XRGB2101010` as `GdkMemoryFormat` enum value 67.
 gtk-rs 0.9.6 predates the v4_24 feature and does not name this variant, but its
 forward-compatible hidden enum fallback passes unknown numeric values through
-unchanged. The probe uses that fallback to compare the two paths without
-changing the production dependency graph.
+unchanged. The probe uses that fallback only for the system-memory comparison.
 
-This byte-identical comparison separates DMA-BUF import/sampling from pixel
-packing, PQ encoding, and color-state differences. It does not yet test FFmpeg
-decoder output, YUV/P010 sampling, HDR mastering metadata, or direct scanout.
+Before importing either DMA-BUF, the probe maps it again for CPU readback and
+prints the byte count, mismatch count against the source pattern, FNV-1a
+checksum, and first pixel. This verifies that the GBM mapping contains the
+bytes we intended to write.
 
 ## Requirements
 
@@ -43,10 +52,10 @@ From the repository root:
 GDK_DEBUG=color-mgmt,dmabuf cargo run --manifest-path tools/diagnostics/hdr/Cargo.toml
 ```
 
-The application prints the allocated format, dimensions, stride, and
-modifier. If GBM cannot allocate or CPU-map the linear XRGB2101010 buffer, or
-GTK cannot import the exported DMA-BUF, the window displays the error instead
-of silently falling back.
+If the PQ memory image appears but PQ DMA-BUF is black, the problem is in the
+10-bit DMA-BUF path. If the 8-bit SDR DMA-BUF control also appears black, the
+problem is more general: GBM DMA-BUF export/import or GDK sampling. If SDR
+works but PQ DMA-BUF does not, focus on XR30/XRGB2101010 format handling.
 
 ## Wayland protocol tracing
 
@@ -62,11 +71,6 @@ GDK_DEBUG=hdr,color-mgmt,dmabuf WAYLAND_DEBUG=1 \
 grep -Ei 'wp_color_management_surface|wp_image_description|set_image_description|dmabuf|HDR' \
   hdr-dmabuf-normal.log hdr-dmabuf-forced-hdr.log
 ```
-
-Compare the DMA-BUF image on the left with the byte-identical system-memory
-reference on the right. If the right appears and the left remains black, the
-failure is isolated to DMA-BUF storage/import/sampling. If both appear, the
-packed format and PQ state are accepted by GDK's memory-texture path.
 
 No production decoder, frame scheduler, subtitle, audio, or playback code is
 changed by this probe.
