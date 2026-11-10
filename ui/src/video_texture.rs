@@ -33,6 +33,30 @@ struct SubtitleSchedulerState {
     active: Option<SubtitleCue>,
 }
 
+/// Keep subtitle text proportional to the available video display width.
+/// 28 logical pixels is the reference size at a 1280px-wide display; clamp
+/// the result so very small windows and ultrawide displays remain readable.
+pub fn bind_subtitle_scaling(picture: &gtk4::Picture, subtitle_label: &gtk4::Label) {
+    fn apply(label: &gtk4::Label, display_width: i32) {
+        let font_size = ((display_width.max(1) as f64 / 1280.0) * 28.0)
+            .round()
+            .clamp(20.0, 48.0) as i32;
+        let attributes = gtk4::pango::AttrList::new();
+        attributes.insert(gtk4::pango::AttrSize::new_absolute(
+            font_size * gtk4::pango::SCALE,
+        ));
+        label.set_attributes(Some(&attributes));
+    }
+
+    apply(subtitle_label, picture.width());
+    let label = subtitle_label.downgrade();
+    picture.connect_width_notify(move |picture| {
+        if let Some(label) = label.upgrade() {
+            apply(&label, picture.width());
+        }
+    });
+}
+
 pub struct VideoPlaybackHandle {
     path: String,
     tracks: TrackList,
