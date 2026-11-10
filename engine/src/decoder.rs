@@ -436,7 +436,9 @@ pub fn decode_external_subtitle_file(path: &str) -> Result<Vec<SubtitleCue>, Str
 
     let mut subtitle_decoder = SubtitleDecoder { decoder, stream_index };
     let mut cues = Vec::new();
-    for (stream, packet) in input.packets() {
+    for packet_result in input.packets() {
+        let (stream, packet) = packet_result
+            .map_err(|error| format!("Could not read external subtitle packet: {error}"))?;
         if stream.index() != stream_index {
             continue;
         }
