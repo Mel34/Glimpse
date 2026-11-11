@@ -11,6 +11,9 @@ use serde_json::Value;
 use crate::queue::BoundedQueue;
 use crate::types::{Serial, TrackId, TrackInfo, TrackList, TrackType};
 
+#[cfg(feature = "ffmpeg-system")]
+const MAX_FORWARD_SEEK_DISTANCE: Duration = Duration::from_secs(1);
+
 #[derive(Clone, Debug)]
 pub struct DemuxPacket {
     pub stream_index: usize,
@@ -107,8 +110,9 @@ pub fn demux_file(
     demux_file_from(path, tracks, queues, serial, Duration::ZERO)
 }
 
-/// Demuxes from the closest seek point at or before the requested media time.
-/// Decoder-side timestamp trimming is responsible for discarding pre-target audio.
+/// Demuxes from a nearby forward video keyframe when one exists within the
+/// fast-seek window, otherwise from the preceding keyframe. Audio and subtitle
+/// packets are aligned to the selected video keyframe.
 #[cfg(feature = "ffmpeg-system")]
 pub fn demux_file_from(
     path: &str,
@@ -150,11 +154,12 @@ pub fn demux_file_from(
             } else {
                 relative_timestamp.saturating_add(start_time)
             };
-            let one_second_ticks = (time_base.denominator() as f64
+            let forward_window_ticks = (MAX_FORWARD_SEEK_DISTANCE.as_secs_f64()
+                * time_base.denominator() as f64
                 / time_base.numerator() as f64)
                 .ceil()
                 .clamp(1.0, i64::MAX as f64) as i64;
-            let forward_limit = target_timestamp.saturating_add(one_second_ticks);
+            let forward_limit = target_timestamp.saturating_add(forward_window_ticks);
             let stream_index = i32::try_from(stream_index)
                 .map_err(|_| "Video stream index exceeds FFmpeg's limit".to_string())?;
 
@@ -169,7 +174,7 @@ pub fn demux_file_from(
             if forward_result >= 0 {
                 forward_seek_selected = true;
             } else {
-                // No keyframe within one second: retain accurate backward
+                // No keyframe within the fast-seek window: retain accurate backward
                 // recovery rather than jumping a long distance forward.
                 let backward_result = unsafe {
                     ffmpeg::ffi::avformat_seek_file(
@@ -193,7 +198,7 @@ pub fn demux_file_from(
         tracing::info!(
             target_secs = start_position.as_secs_f64(),
             forward_keyframe_preferred = forward_seek_selected,
-            max_forward_distance_secs = 1.0,
+            max_forward_distance_secs = MAX_FORWARD_SEEK_DISTANCE.as_secs_f64(),
             seek_us = seek_started_at.elapsed().as_micros() as u64,
             elapsed_us = demux_started_at.elapsed().as_micros() as u64,
             "Video demux seek completed"
