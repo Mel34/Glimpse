@@ -319,7 +319,9 @@ impl GlimpseWindow {
         speed_hold.set_propagation_phase(gtk4::PropagationPhase::Capture);
         let speed_press_player = Rc::clone(&speed_player);
         let speed_press_controls = speed_controls.clone();
-        speed_hold.connect_pressed(move |_, _, _, _| {
+        speed_hold.connect_pressed(move |gesture, _, _, _| {
+            // Own the pointer sequence so GtkButton cannot cancel our release handler.
+            gesture.set_state(gtk4::EventSequenceState::Claimed);
             begin_speed_boost(&speed_press_player, &speed_press_controls);
         });
         let speed_release_player = Rc::clone(&speed_player);
