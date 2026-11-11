@@ -10,6 +10,7 @@ use crossbeam_channel::{bounded, Receiver, Sender, TryRecvError, TrySendError};
 use std::thread::{self, JoinHandle};
 use glimpse_engine::decoder::SubtitleCue;
 use glimpse_engine::{MasterClock, VideoFrameData};
+use glib::object::ObjectExt;
 use glib::prelude::Cast;
 use gtk4::prelude::WidgetExtManual;
 use gtk4::prelude::WidgetExt;
