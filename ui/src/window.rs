@@ -461,9 +461,9 @@ impl GlimpseWindow {
 
         // On press: if double-click (n_press >= 2), toggle fullscreen immediately and cancel any timer
         click_gesture.connect_pressed(move |_gesture, n_press, x, y| {
-            tracing::info!(n_press, x, y, "Video surface gesture pressed");
+            tracing::debug!(n_press, x, y, "Video surface gesture pressed");
             if n_press >= 2 {
-                tracing::info!("Double-click detected; toggling fullscreen");
+                tracing::debug!("Double-click detected; toggling fullscreen");
                 click_state_press.borrow_mut().cancel();
                 if win_click.is_fullscreen() {
                     win_click.unfullscreen();
@@ -477,9 +477,9 @@ impl GlimpseWindow {
         let click_state_rel = Rc::clone(&click_state);
         let win_rel = window.clone();
         click_gesture.connect_released(move |_gesture, n_press, x, y| {
-            tracing::info!(n_press, x, y, "Video surface gesture released");
+            tracing::debug!(n_press, x, y, "Video surface gesture released");
             if n_press == 1 {
-                tracing::info!("Single video-surface click accepted; scheduling play/pause toggle");
+                tracing::debug!("Single video-surface click accepted; scheduling play/pause toggle");
                 let p_action = Rc::clone(&p_toggle);
                 let v_action = Rc::clone(&v_toggle);
                 let w_fs = win_rel.clone();
@@ -488,7 +488,7 @@ impl GlimpseWindow {
                     move || {
                         if let Some(ref p) = *p_action.borrow() {
                             let was_playing = p.state() == PlayerState::Playing;
-                            tracing::info!(was_playing, "Video-surface play/pause timer fired");
+                            tracing::debug!(was_playing, "Video-surface play/pause timer fired");
                             if was_playing { p.pause(); }
                             else {
                                 if p.state() == PlayerState::Ended {
@@ -497,7 +497,7 @@ impl GlimpseWindow {
                                 p.play();
                             }
                         } else {
-                            tracing::info!("Video-surface play/pause timer fired without an active player");
+                            tracing::debug!("Video-surface play/pause timer fired without an active player");
                         }
                     },
                     move || {
@@ -515,7 +515,7 @@ impl GlimpseWindow {
         // double-click interval expires). The release handler has already accepted
         // the click, so this signal must not cancel its pending play/pause action.
         click_gesture.connect_stopped(move |_| {
-            tracing::info!("Video surface click gesture stopped by GTK");
+            tracing::debug!("Video surface click gesture stopped by GTK");
         });
 
         picture.add_controller(click_gesture);
