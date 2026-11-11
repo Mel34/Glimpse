@@ -30,6 +30,15 @@ impl DemuxPacket {
         }
         self.pts.map(|p| (p as f64 * self.time_base_num as f64) / self.time_base_den as f64)
     }
+
+    fn timestamp_secs(&self) -> Option<f64> {
+        if self.time_base_den == 0 {
+            return None;
+        }
+        self.pts.or(self.dts).map(|timestamp| {
+            timestamp as f64 * self.time_base_num as f64 / self.time_base_den as f64
+        })
+    }
 }
 
 pub enum DemuxerCommand {
@@ -117,25 +126,74 @@ pub fn demux_file_from(
     let mut input = ffmpeg::format::input(path)
         .map_err(|error| format!("Could not open media with libavformat: {error}"))?;
     tracing::info!(open_us = open_started_at.elapsed().as_micros() as u64, "Video demux input opened");
+    let video_stream_index = tracks.video_tracks.first().map(|track| track.id.0);
+    let mut forward_seek_selected = false;
     if !start_position.is_zero() {
-        let timestamp = i64::try_from(start_position.as_micros()).unwrap_or(i64::MAX);
         let seek_started_at = Instant::now();
-        // Prefer a backward-bounded seek so decoding can trim from the
-        // preceding keyframe. Some demuxers reject that constrained interval
-        // even when they support ordinary timestamp seeking, so retry with
-        // FFmpeg's unconstrained seek range.
-        if let Err(backward_error) = input.seek(timestamp, ..timestamp) {
-            input.seek(timestamp, ..).map_err(|fallback_error| {
-                format!(
-                    "Could not seek media to {:.3}s (backward seek: {}; fallback seek: {})",
-                    start_position.as_secs_f64(),
-                    backward_error,
-                    fallback_error,
+        if let Some(stream_index) = video_stream_index {
+            let (time_base, start_time) = input
+                .streams()
+                .find(|stream| stream.index() == stream_index)
+                .map(|stream| (stream.time_base(), stream.start_time()))
+                .ok_or_else(|| format!("Video stream {stream_index} was not found while seeking"))?;
+            if time_base.numerator() <= 0 || time_base.denominator() <= 0 {
+                return Err(format!("Video stream {stream_index} has an invalid time base"));
+            }
+
+            let relative_timestamp = (start_position.as_secs_f64()
+                * time_base.denominator() as f64
+                / time_base.numerator() as f64)
+                .round()
+                .clamp(i64::MIN as f64, i64::MAX as f64) as i64;
+            let target_timestamp = if start_time == ffmpeg::ffi::AV_NOPTS_VALUE {
+                relative_timestamp
+            } else {
+                relative_timestamp.saturating_add(start_time)
+            };
+            let one_second_ticks = (time_base.denominator() as f64
+                / time_base.numerator() as f64)
+                .ceil()
+                .clamp(1.0, i64::MAX as f64) as i64;
+            let forward_limit = target_timestamp.saturating_add(one_second_ticks);
+            let stream_index = i32::try_from(stream_index)
+                .map_err(|_| "Video stream index exceeds FFmpeg's limit".to_string())?;
+
+            // Match mpv's fast-seek policy: prefer a later video keyframe.
+            // Keep the forward window bounded to avoid surprising jumps.
+            let context = unsafe { input.as_mut_ptr() };
+            let forward_result = unsafe {
+                ffmpeg::ffi::avformat_seek_file(
+                    context, stream_index, target_timestamp, target_timestamp, forward_limit, 0,
                 )
+            };
+            if forward_result >= 0 {
+                forward_seek_selected = true;
+            } else {
+                // No keyframe within one second: retain accurate backward
+                // recovery rather than jumping a long distance forward.
+                let backward_result = unsafe {
+                    ffmpeg::ffi::avformat_seek_file(
+                        context, stream_index, i64::MIN, target_timestamp, target_timestamp, 0,
+                    )
+                };
+                if backward_result < 0 {
+                    return Err(format!(
+                        "Could not seek video stream {stream_index} to {:.3}s (forward seek error {}; backward seek error {})",
+                        start_position.as_secs_f64(), forward_result, backward_result,
+                    ));
+                }
+            }
+        } else {
+            let timestamp = i64::try_from(start_position.as_micros()).unwrap_or(i64::MAX);
+            input.seek(timestamp, ..timestamp).map_err(|error| {
+                format!("Could not seek audio-only media to {:.3}s: {}", start_position.as_secs_f64(), error)
             })?;
         }
+
         tracing::info!(
             target_secs = start_position.as_secs_f64(),
+            forward_keyframe_preferred = forward_seek_selected,
+            max_forward_distance_secs = 1.0,
             seek_us = seek_started_at.elapsed().as_micros() as u64,
             elapsed_us = demux_started_at.elapsed().as_micros() as u64,
             "Video demux seek completed"
@@ -155,6 +213,9 @@ pub fn demux_file_from(
 
     let mut stats = DemuxStats::default();
     let mut first_video_packet = true;
+    let mut seek_anchor_pts = None;
+    let mut pending_packets: Vec<(DemuxPacket, TrackType, usize)> = Vec::new();
+    let needs_video_anchor = !start_position.is_zero() && video_stream_index.is_some();
 
     for packet_result in input.packets() {
         let (stream, packet) = packet_result
@@ -169,49 +230,84 @@ pub fn demux_file_from(
         let data = packet.data().unwrap_or_default().to_vec();
         let byte_size = data.len();
         let demux_packet = DemuxPacket {
-            stream_index,
-            data,
-            pts: packet.pts(),
-            dts: packet.dts(),
-            duration: packet.duration(),
-            time_base_num: time_base.numerator(),
-            time_base_den: time_base.denominator(),
-            is_keyframe: packet.is_key(),
+            stream_index, data, pts: packet.pts(), dts: packet.dts(),
+            duration: packet.duration(), time_base_num: time_base.numerator(),
+            time_base_den: time_base.denominator(), is_keyframe: packet.is_key(),
         };
 
-        let queue = match stream_type {
-            TrackType::Video => {
-                stats.video_packets += 1;
-                if first_video_packet {
-                    first_video_packet = false;
-                    tracing::info!(
-                        target_secs = start_position.as_secs_f64(),
-                        packet_pts_secs = demux_packet.pts_secs(),
-                        keyframe = demux_packet.is_keyframe,
-                        packet_bytes = byte_size,
-                        elapsed_us = demux_started_at.elapsed().as_micros() as u64,
-                        "Demux produced first video packet"
-                    );
+        if needs_video_anchor && seek_anchor_pts.is_none() {
+            if stream_type == TrackType::Video && demux_packet.is_keyframe {
+                let anchor_pts = demux_packet.timestamp_secs().unwrap_or(start_position.as_secs_f64());
+                seek_anchor_pts = Some(anchor_pts);
+                tracing::info!(
+                    target_secs = start_position.as_secs_f64(),
+                    selected_keyframe_secs = anchor_pts,
+                    forward = anchor_pts > start_position.as_secs_f64() + 0.000_001,
+                    "Demux selected common video seek point"
+                );
+
+                for (pending, pending_type, pending_bytes) in pending_packets.drain(..) {
+                    let keep = pending_type != TrackType::Video
+                        && pending.timestamp_secs().is_some_and(|pts| pts + 0.000_001 >= anchor_pts);
+                    if keep {
+                        enqueue_demux_packet(pending, pending_type, pending_bytes, serial, queues, &mut stats)?;
+                    }
                 }
-                &queues.video
+            } else {
+                pending_packets.push((demux_packet, stream_type, byte_size));
+                continue;
             }
-            TrackType::Audio => {
-                stats.audio_packets += 1;
-                &queues.audio
-            }
-            TrackType::Subtitle => {
-                stats.subtitle_packets += 1;
-                &queues.subtitle
-            }
-        };
+        }
 
-        queue.push(demux_packet, serial, byte_size).map_err(|_| {
-            format!("Packet queue for stream {stream_index} was aborted")
-        })?;
-        stats.bytes_read = stats.bytes_read.saturating_add(byte_size as u64);
+        if let Some(anchor_pts) = seek_anchor_pts {
+            if demux_packet.timestamp_secs().is_some_and(|pts| pts + 0.000_001 < anchor_pts) {
+                continue;
+            }
+        }
+
+        if stream_type == TrackType::Video && first_video_packet {
+            first_video_packet = false;
+            tracing::info!(
+                target_secs = start_position.as_secs_f64(),
+                packet_pts_secs = demux_packet.pts_secs(),
+                keyframe = demux_packet.is_keyframe,
+                packet_bytes = byte_size,
+                elapsed_us = demux_started_at.elapsed().as_micros() as u64,
+                "Demux produced first video packet"
+            );
+        }
+
+        enqueue_demux_packet(demux_packet, stream_type, byte_size, serial, queues, &mut stats)?;
+    }
+
+    // If no keyframe was exposed after seeking, preserve the packets and let
+    // decoder-side timestamp trimming handle the recovery.
+    for (packet, stream_type, byte_size) in pending_packets {
+        enqueue_demux_packet(packet, stream_type, byte_size, serial, queues, &mut stats)?;
     }
 
     Ok(stats)
+}
+
+#[cfg(feature = "ffmpeg-system")]
+fn enqueue_demux_packet(
+    packet: DemuxPacket,
+    stream_type: TrackType,
+    byte_size: usize,
+    serial: Serial,
+    queues: &PacketQueues,
+    stats: &mut DemuxStats,
+) -> Result<(), String> {
+    let stream_index = packet.stream_index;
+    let queue = match stream_type {
+        TrackType::Video => { stats.video_packets += 1; &queues.video }
+        TrackType::Audio => { stats.audio_packets += 1; &queues.audio }
+        TrackType::Subtitle => { stats.subtitle_packets += 1; &queues.subtitle }
+    };
+    queue.push(packet, serial, byte_size)
+        .map_err(|_| format!("Packet queue for stream {stream_index} was aborted"))?;
+    stats.bytes_read = stats.bytes_read.saturating_add(byte_size as u64);
+    Ok(())
 }
 
 /// Metadata discovered from the actual media container.
