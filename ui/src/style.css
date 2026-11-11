@@ -359,3 +359,12 @@ scale.volume-scale slider {
     background-color: var(--dark-bg);
 }
 
+
+
+/* Independent circular rotation controls in the playback popover. */
+button.rotate-menu-button {
+    min-width: 30px;
+    min-height: 30px;
+    padding: 0;
+    border-radius: 9999px;
+}
