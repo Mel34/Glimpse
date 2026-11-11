@@ -7,8 +7,9 @@ use gdk4::DragAction;
 use gio::SimpleAction;
 use gtk4::{
     Align, Box as GtkBox, Button, CheckButton, DropTarget, EventControllerKey, EventControllerMotion,
-    FileDialog, FileFilter, GestureClick, Image, Label, MenuButton,
-    Orientation, Overlay, Separator, Settings, Stack, StackTransitionType, WindowHandle,
+    EventControllerScroll, EventControllerScrollFlags, FileDialog, FileFilter, GestureClick,
+    Image, Label, MenuButton, Orientation, Overlay, Separator, Settings, Stack,
+    StackTransitionType, WindowHandle,
 };
 
 use glimpse_engine::{Event, Player, PlayerState};
@@ -25,6 +26,57 @@ enum AdaptiveScrubState {
     Idle,
     Dragging { original_speed: f32, was_playing: bool },
     CatchingUp { target: Duration, original_speed: f32 },
+}
+
+
+fn set_persistent_playback_speed(
+    player: &Rc<RefCell<Option<Player>>>,
+    controls: &ControlBarWidgets,
+    speed: f32,
+) {
+    if controls.speed_button_held.get() {
+        return;
+    }
+    let speed = if speed.is_finite() { speed.clamp(0.5, 2.0) } else { 1.0 };
+    controls.playback_speed.set(speed);
+    controls.speed_button.set_label(&crate::controls::format_speed_label(speed));
+    if let Some(active_player) = player.borrow().as_ref() {
+        active_player.set_playback_speed(speed);
+    }
+}
+
+fn begin_speed_boost(player: &Rc<RefCell<Option<Player>>>, controls: &ControlBarWidgets) {
+    if !controls.speed_button.is_sensitive() || controls.speed_button_held.replace(true) {
+        return;
+    }
+    controls.open_popovers.set(controls.open_popovers.get() + 1);
+    controls.speed_button.set_label("2.0×");
+    if let Some(active_player) = player.borrow().as_ref() {
+        active_player.set_playback_speed(2.0);
+    }
+}
+
+fn end_speed_boost(player: &Rc<RefCell<Option<Player>>>, controls: &ControlBarWidgets) {
+    if !controls.speed_button_held.replace(false) {
+        return;
+    }
+    controls.open_popovers.set(controls.open_popovers.get().saturating_sub(1));
+    let speed = controls.playback_speed.get();
+    controls.speed_button.set_label(&crate::controls::format_speed_label(speed));
+    if let Some(active_player) = player.borrow().as_ref() {
+        active_player.set_playback_speed(speed);
+    }
+}
+
+fn reset_playback_speed(player: &Rc<RefCell<Option<Player>>>, controls: &ControlBarWidgets) {
+    if controls.speed_button_held.replace(false) {
+        controls.open_popovers.set(controls.open_popovers.get().saturating_sub(1));
+    }
+    controls.playback_speed.set(1.0);
+    controls.speed_button.set_label("1.0×");
+    if let Some(active_player) = player.borrow().as_ref() {
+        active_player.set_playback_speed(1.0);
+    }
 }
 
 fn cancel_adaptive_scrub(
@@ -259,6 +311,42 @@ impl GlimpseWindow {
         // Build the bottom controls first so the filename label can live in
         // the top-left OSD while remaining part of the shared control state.
         let bottom_controls = create_floating_bottom_bar();
+        let speed_player = Rc::clone(&player);
+        let speed_controls = bottom_controls.clone();
+        let speed_hold = GestureClick::new();
+        speed_hold.set_button(1);
+        // Capture release before GtkButton's internal gesture can consume it.
+        speed_hold.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        let speed_press_player = Rc::clone(&speed_player);
+        let speed_press_controls = speed_controls.clone();
+        speed_hold.connect_pressed(move |gesture, _, _, _| {
+            // Own the pointer sequence so GtkButton cannot cancel our release handler.
+            gesture.set_state(gtk4::EventSequenceState::Claimed);
+            begin_speed_boost(&speed_press_player, &speed_press_controls);
+        });
+        let speed_release_player = Rc::clone(&speed_player);
+        let speed_release_controls = speed_controls.clone();
+        speed_hold.connect_released(move |_, _, _, _| {
+            end_speed_boost(&speed_release_player, &speed_release_controls);
+        });
+        bottom_controls.speed_button.add_controller(speed_hold);
+
+        let speed_wheel = EventControllerScroll::new(EventControllerScrollFlags::VERTICAL);
+        let speed_wheel_player = Rc::clone(&speed_player);
+        let speed_wheel_controls = speed_controls.clone();
+        speed_wheel.connect_scroll(move |_, _, dy| {
+            if speed_wheel_controls.speed_button_held.get() {
+                return glib::Propagation::Stop;
+            }
+            let speed = crate::controls::adjust_playback_speed(
+                speed_wheel_controls.playback_speed.get(),
+                dy,
+            );
+            set_persistent_playback_speed(&speed_wheel_player, &speed_wheel_controls, speed);
+            glib::Propagation::Stop
+        });
+        bottom_controls.speed_button.add_controller(speed_wheel);
+
         let loop_enabled = Rc::clone(&bottom_controls.loop_enabled);
         let loop_menu_buttons = Rc::clone(&bottom_controls.loop_menu_buttons);
 
@@ -372,6 +460,7 @@ impl GlimpseWindow {
         let timeline_loop_enabled = Rc::clone(&loop_enabled);
         let timeline_ab_loop = Rc::clone(&ab_loop);
         let timeline_scrub_state = Rc::clone(&adaptive_scrub_state);
+        let timeline_speed_held = Rc::clone(&bottom_controls.speed_button_held);
         let loop_resume: Rc<RefCell<Option<crossbeam_channel::Receiver<()>>>> = Rc::new(RefCell::new(None));
         let timeline_loop_resume = Rc::clone(&loop_resume);
         let timeline_seekbar = bottom_controls.seekbar.clone();
@@ -389,7 +478,9 @@ impl GlimpseWindow {
                 if timeline_dragging.get() {
                     if let AdaptiveScrubState::Dragging { original_speed, was_playing } = timeline_scrub_state.get() {
                         if !timeline_drag_moved.get() {
-                            current_player.set_playback_speed(original_speed);
+                            if !timeline_speed_held.get() {
+                                current_player.set_playback_speed(original_speed);
+                            }
                             return glib::ControlFlow::Continue;
                         }
                         let position = current_player.position();
@@ -398,12 +489,16 @@ impl GlimpseWindow {
                             && current_player.state() == PlayerState::Playing
                             && target.saturating_sub(position) > SCRUB_TARGET_TOLERANCE
                         {
-                            current_player.set_scrub_speed(adaptive_scrub_speed(
-                                target.saturating_sub(position).as_secs_f64(),
-                                original_speed,
-                            ));
+                            if !timeline_speed_held.get() {
+                                current_player.set_scrub_speed(adaptive_scrub_speed(
+                                    target.saturating_sub(position).as_secs_f64(),
+                                    original_speed,
+                                ));
+                            }
                         } else {
-                            current_player.set_playback_speed(original_speed);
+                            if !timeline_speed_held.get() {
+                                current_player.set_playback_speed(original_speed);
+                            }
                         }
                     }
                 } else {
@@ -414,19 +509,25 @@ impl GlimpseWindow {
                             // the target. Restore it before seek() starts a replacement
                             // audio session; otherwise it can briefly prebuffer and render at
                             // the adaptive scrub rate.
-                            current_player.set_playback_speed(original_speed);
+                            if !timeline_speed_held.get() {
+                                current_player.set_playback_speed(original_speed);
+                            }
                             current_player.seek(target);
                             if let Some(video) = timeline_video.borrow_mut().as_mut() {
                                 video.seek(target);
                             }
                             timeline_scrub_state.set(AdaptiveScrubState::Idle);
                         } else if current_player.state() == PlayerState::Playing {
-                            current_player.set_scrub_speed(adaptive_scrub_speed(
-                                target.saturating_sub(position).as_secs_f64(),
-                                original_speed,
-                            ));
+                            if !timeline_speed_held.get() {
+                                current_player.set_scrub_speed(adaptive_scrub_speed(
+                                    target.saturating_sub(position).as_secs_f64(),
+                                    original_speed,
+                                ));
+                            }
                         } else {
-                            current_player.set_playback_speed(original_speed);
+                            if !timeline_speed_held.get() {
+                                current_player.set_playback_speed(original_speed);
+                            }
                             timeline_scrub_state.set(AdaptiveScrubState::Idle);
                         }
                     }
@@ -563,6 +664,7 @@ impl GlimpseWindow {
         let marker_press = bottom_controls.seekbar_marker.clone();
         let scrub_click_interrupted = Rc::new(Cell::new(false));
         let scrub_click_interrupted_press = Rc::clone(&scrub_click_interrupted);
+        let speed_controls_press = bottom_controls.clone();
 
         // A click during adaptive scrub returns to normal playback in place.
         // Keep both streams running; the shared media clock already provides sync.
@@ -591,6 +693,10 @@ impl GlimpseWindow {
                         scrub_click_interrupted_press.set(true);
                     }
                 }
+            }
+
+            if n_press >= 1 {
+                reset_playback_speed(&p_toggle_press, &speed_controls_press);
             }
 
             if n_press >= 2 {
@@ -706,6 +812,7 @@ impl GlimpseWindow {
         let p_seekbar_release = Rc::clone(&player);
         let v_seekbar_release = Rc::clone(&video_playback);
         let scrub_state_for_events = Rc::clone(&adaptive_scrub_state);
+        let speed_held_for_events = Rc::clone(&bottom_controls.speed_button_held);
         seekbar_events.connect_event(move |_, event| {
             match event.event_type() {
                 gdk4::EventType::ButtonPress => {
@@ -714,7 +821,9 @@ impl GlimpseWindow {
                     {
                         if let Some(p) = p_seekbar_release.borrow().as_ref() {
                             if let AdaptiveScrubState::CatchingUp { original_speed, .. } = scrub_state_for_events.get() {
-                                p.set_playback_speed(original_speed);
+                                if !speed_held_for_events.get() {
+                                    p.set_playback_speed(original_speed);
+                                }
                             }
                             scrub_state_for_events.set(AdaptiveScrubState::Dragging {
                                 original_speed: p.playback_speed(),
@@ -760,14 +869,18 @@ impl GlimpseWindow {
                                         target,
                                         original_speed,
                                     });
-                                    p.set_scrub_speed(adaptive_scrub_speed(
-                                        distance,
-                                        original_speed,
-                                    ));
+                                    if !speed_held_for_events.get() {
+                                        p.set_scrub_speed(adaptive_scrub_speed(
+                                            distance,
+                                            original_speed,
+                                        ));
+                                    }
                                 }
                                 AdaptiveScrubState::Dragging { original_speed, .. } => {
                                     scrub_state_for_events.set(AdaptiveScrubState::Idle);
-                                    p.set_playback_speed(original_speed);
+                                    if !speed_held_for_events.get() {
+                                        p.set_playback_speed(original_speed);
+                                    }
                                     p.seek(target);
                                     if let Some(video) = v_seekbar_release.borrow_mut().as_mut() {
                                         video.seek(target);
@@ -899,6 +1012,21 @@ impl GlimpseWindow {
             pointer_leave.set(None);
         });
         player_overlay.add_controller(motion);
+
+        let speed_hover = EventControllerMotion::new();
+        let speed_hover_controls = bottom_controls.clone();
+        speed_hover.connect_enter(move |_, _, _| {
+            speed_hover_controls.open_popovers.set(
+                speed_hover_controls.open_popovers.get() + 1,
+            );
+        });
+        let speed_leave_controls = bottom_controls.clone();
+        speed_hover.connect_leave(move |_| {
+            speed_leave_controls.open_popovers.set(
+                speed_leave_controls.open_popovers.get().saturating_sub(1),
+            );
+        });
+        bottom_controls.speed_button.add_controller(speed_hover);
 
         let top_fullscreen = top_controls.clone();
         let bottom_fullscreen = bottom_controls.container.clone();
@@ -1083,6 +1211,7 @@ impl GlimpseWindow {
         let marker_position_space = Rc::clone(&bottom_controls.seekbar_marker_position);
         let marker_space = bottom_controls.seekbar_marker.clone();
         let resume_from_scrub_space = Rc::clone(&resume_from_scrub);
+        let speed_controls_space = bottom_controls.clone();
         space_controller.connect_key_pressed(move |_, keyval, _, _| {
             if keyval != gdk4::Key::space {
                 return glib::Propagation::Proceed;
@@ -1096,6 +1225,7 @@ impl GlimpseWindow {
                         &marker_space,
                     );
                     resume_from_scrub_space.set(cancelled_scrub);
+                    reset_playback_speed(&p_space, &speed_controls_space);
                     p.pause();
                 } else {
                     if resume_from_scrub_space.replace(false) {
@@ -1138,6 +1268,7 @@ impl GlimpseWindow {
         let timer_keys = Rc::clone(&hide_timer);
         let popovers_keys = Rc::clone(&bottom_controls.open_popovers);
         let last_volume_keys = Rc::clone(&bottom_controls.last_nonzero_volume);
+        let speed_controls_keys = bottom_controls.clone();
 
         key_controller.connect_key_pressed(move |_, keyval, _keycode, modifier| {
             match keyval {
@@ -1171,8 +1302,8 @@ impl GlimpseWindow {
                 | gdk4::Key::braceleft
                 | gdk4::Key::braceright
                 | gdk4::Key::BackSpace => {
-                    if let Some(ref p) = *p_keys.borrow() {
-                        let current = p.playback_speed();
+                    if !speed_controls_keys.speed_button_held.get() {
+                        let current = speed_controls_keys.playback_speed.get();
                         let speed = match keyval {
                             gdk4::Key::bracketleft => current - 0.1,
                             gdk4::Key::bracketright => current + 0.1,
@@ -1181,7 +1312,7 @@ impl GlimpseWindow {
                             gdk4::Key::BackSpace => 1.0,
                             _ => current,
                         }.clamp(0.5, 2.0);
-                        p.set_playback_speed(speed);
+                        set_persistent_playback_speed(&p_keys, &speed_controls_keys, speed);
                         reveal_and_schedule_controls(
                             &top_keys,
                             &bottom_keys,
@@ -1537,6 +1668,7 @@ fn load_and_play_file(
         .unwrap_or_else(|| path.to_owned());
     bottom_controls.screenshot_button.set_sensitive(false);
     bottom_controls.screenshot_button.set_tooltip_text(Some("Take Screenshot"));
+    bottom_controls.speed_button.set_sensitive(false);
     picture.set_paintable(None);
 
     let source = match media_source_from_uri(path) {
@@ -1557,6 +1689,7 @@ fn load_and_play_file(
         }
     }
     adaptive_scrub_state.set(AdaptiveScrubState::Idle);
+    reset_playback_speed(player, bottom_controls);
     ab_loop.set(AbLoopState::Unset);
     window.set_title(Some(&format!("Glimpse - {}", file_name)));
     bottom_controls.title_label.set_text(&file_name);
@@ -1585,6 +1718,7 @@ fn load_and_play_file(
             watch_player_events(event_rx, window.clone());
             p.play();
             *player.borrow_mut() = Some(p);
+            bottom_controls.speed_button.set_sensitive(true);
 
             // The engine owns duration metadata for the loaded media.
             if let Some(duration) = duration {
@@ -1643,9 +1777,9 @@ fn load_and_play_file(
                 let video_external = Rc::clone(video_playback);
                 let player_external = Rc::clone(player);
                 let player_speed = Rc::clone(player);
-                let player_speed_get = Rc::clone(player);
-                let initial_speed = player.borrow().as_ref()
-                    .map_or(1.0, |active_player| active_player.playback_speed() as f64);
+                let speed_controls_menu = bottom_controls.clone();
+                let speed_value_get = Rc::clone(&bottom_controls.playback_speed);
+                let initial_speed = bottom_controls.playback_speed.get() as f64;
                 let popover = create_track_popover(
                     &tracks,
                     move |aid| {
@@ -1685,12 +1819,13 @@ fn load_and_play_file(
                         );
                     },
                     initial_speed,
-                    move || player_speed_get.borrow().as_ref()
-                        .map_or(1.0, |active_player| active_player.playback_speed() as f64),
+                    move || speed_value_get.get() as f64,
                     move |speed| {
-                        if let Some(ref active_player) = *player_speed.borrow() {
-                            active_player.set_playback_speed(speed as f32);
-                        }
+                        set_persistent_playback_speed(
+                            &player_speed,
+                            &speed_controls_menu,
+                            speed as f32,
+                        );
                     },
                     {
                         let picture = picture.clone();
