@@ -457,6 +457,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn scrub_mute_is_independent_of_the_saved_volume_and_audio_selection() {
+        let (player, _events) = test_player(Some(Duration::from_secs(120)));
+        player.audio_enabled.store(true, Ordering::Release);
+        assert_eq!(player.effective_audio_volume(), 1.0);
+
+        player.set_scrub_muted(true);
+        assert_eq!(player.effective_audio_volume(), 0.0);
+        assert_eq!(player.volume(), 1.0);
+
+        player.set_volume(0.6);
+        assert_eq!(player.effective_audio_volume(), 0.0);
+        assert_eq!(player.volume(), 0.6);
+
+        player.set_scrub_muted(false);
+        assert_eq!(player.effective_audio_volume(), 0.6);
+    }
+
+    #[test]
     fn player_playback_speed_is_clamped_and_persisted_in_the_clock() {
         let (player, _events) = test_player(Some(Duration::from_secs(120)));
 
@@ -519,6 +537,7 @@ mod tests {
                 tracks: Arc::new(Mutex::new(tracks)),
                 volume: Arc::new(Mutex::new(1.0)),
                 audio_enabled: AtomicBool::new(false),
+                scrub_muted: AtomicBool::new(false),
                 current_serial: Arc::new(Mutex::new(Serial(0))),
                 event_sender,
                 #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
