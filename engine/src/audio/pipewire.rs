@@ -114,7 +114,8 @@ impl PipeWireAudioSink {
     }
 
     pub fn new_with_speed(speed: Arc<AtomicU32>) -> Result<Self, String> {
-        let (producer, consumer) = RingBuffer::new(PCM_RING_CAPACITY_FRAMES);
+        let (producer, consumer) =
+            RingBuffer::<[f32; AUDIO_OUTPUT_CHANNELS]>::new(PCM_RING_CAPACITY_FRAMES);
         let shared = Arc::new(SharedState::new(speed));
         let worker_shared = Arc::clone(&shared);
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
