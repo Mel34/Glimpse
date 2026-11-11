@@ -894,6 +894,32 @@ impl GlimpseWindow {
 
         key_controller.connect_key_pressed(move |_, keyval, _keycode, modifier| {
             match keyval {
+                // mpv-style playback speed controls.
+                gdk4::Key::bracketleft
+                | gdk4::Key::bracketright
+                | gdk4::Key::braceleft
+                | gdk4::Key::braceright
+                | gdk4::Key::BackSpace => {
+                    if let Some(ref p) = *p_keys.borrow() {
+                        let current = p.playback_speed();
+                        let speed = match keyval {
+                            gdk4::Key::bracketleft => current - 0.1,
+                            gdk4::Key::bracketright => current + 0.1,
+                            gdk4::Key::braceleft => current / 2.0,
+                            gdk4::Key::braceright => current * 2.0,
+                            gdk4::Key::BackSpace => 1.0,
+                            _ => current,
+                        }.clamp(0.5, 2.0);
+                        p.set_playback_speed(speed);
+                        reveal_and_schedule_controls(
+                            &top_keys,
+                            &bottom_keys,
+                            &timer_keys,
+                            &popovers_keys,
+                        );
+                    }
+                    glib::Propagation::Stop
+                }
                 // Shift+L toggles whole-file looping; lowercase l cycles A-B loop points.
                 gdk4::Key::l | gdk4::Key::L => {
                     reveal_and_schedule_controls(&top_keys, &bottom_keys, &timer_keys, &popovers_keys);
@@ -1329,6 +1355,7 @@ fn load_and_play_file(
                 let video_external = Rc::clone(video_playback);
                 let player_external = Rc::clone(player);
                 let player_speed = Rc::clone(player);
+                let player_speed_get = Rc::clone(player);
                 let initial_speed = player.borrow().as_ref()
                     .map_or(1.0, |active_player| active_player.playback_speed() as f64);
                 let popover = create_track_popover(
@@ -1370,6 +1397,8 @@ fn load_and_play_file(
                         );
                     },
                     initial_speed,
+                    move || player_speed_get.borrow().as_ref()
+                        .map_or(1.0, |active_player| active_player.playback_speed() as f64),
                     move |speed| {
                         if let Some(ref active_player) = *player_speed.borrow() {
                             active_player.set_playback_speed(speed as f32);
@@ -1481,7 +1510,7 @@ fn show_shortcuts_dialog(parent: &ApplicationWindow) {
         .transient_for(parent)
         .modal(true)
         .default_width(380)
-        .default_height(340)
+        .default_height(420)
         .build();
 
     dialog.add_css_class("glimpse-window");
@@ -1498,6 +1527,9 @@ fn show_shortcuts_dialog(parent: &ApplicationWindow) {
 
     let shortcuts = [
         ("Space", "Play / Pause video"),
+        ("[ / ]", "Decrease / increase speed by 0.1×"),
+        ("{ / }", "Halve / double playback speed"),
+        ("Backspace", "Reset playback speed to 1×"),
         ("F", "Toggle Fullscreen"),
         ("Escape", "Leave Fullscreen"),
         ("Ctrl + O", "Open file"),
