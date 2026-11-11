@@ -15,6 +15,9 @@ pub struct ControlBarWidgets {
     pub container: GtkBox,
     pub title_label: Label,
     pub volume_button: MenuButton,
+    pub speed_button: Button,
+    pub playback_speed: Rc<Cell<f32>>,
+    pub speed_button_held: Rc<Cell<bool>>,
     pub volume_icon: Image,
     pub volume_slider: Scale,
     pub volume_percent_label: Label,
@@ -64,6 +67,14 @@ pub fn create_floating_bottom_bar() -> ControlBarWidgets {
     volume_button.set_size_request(32, 32);
     volume_button.set_tooltip_text(Some("Volume: 100%"));
 
+    let speed_button = Button::with_label("1.0×");
+    speed_button.add_css_class("osd-speed-button");
+    speed_button.set_size_request(56, 32);
+    speed_button.set_can_focus(false);
+    speed_button.set_tooltip_text(Some("Playback speed: hold for 2.0×, scroll to adjust"));
+    let playback_speed = Rc::new(Cell::new(1.0f32));
+    let speed_button_held = Rc::new(Cell::new(false));
+
     // Volume Popover containing vertical slider and percentage
     let volume_popover = gtk4::Popover::new();
     volume_popover.add_css_class("menu-popover");
@@ -94,6 +105,7 @@ pub fn create_floating_bottom_bar() -> ControlBarWidgets {
     attach_popover_scroll_guard(&volume_popover);
     volume_button.set_popover(Some(&volume_popover));
     top_row.append(&volume_button);
+    top_row.append(&speed_button);
 
     let screenshot_button = Button::new();
     let screenshot_icon = Image::from_icon_name("camera-photo-symbolic");
@@ -175,6 +187,9 @@ pub fn create_floating_bottom_bar() -> ControlBarWidgets {
         container,
         title_label,
         volume_button,
+        speed_button,
+        playback_speed,
+        speed_button_held,
         volume_icon,
         volume_slider,
         volume_percent_label,
@@ -193,6 +208,22 @@ pub fn create_floating_bottom_bar() -> ControlBarWidgets {
     }
 }
 
+
+
+/// Move the persistent playback speed by one tenth for a vertical wheel step.
+pub fn adjust_playback_speed(current: f32, dy: f64) -> f32 {
+    let current = if current.is_finite() {
+        current.clamp(0.5, 2.0)
+    } else {
+        1.0
+    };
+    let step = if dy < 0.0 { 1.0 } else { -1.0 };
+    ((current * 10.0).round() + step).clamp(5.0, 20.0) / 10.0
+}
+
+pub fn format_speed_label(speed: f32) -> String {
+    format!("{speed:.1}×")
+}
 
 /// Track visible playback popovers so the OSD does not auto-hide behind an open menu.
 pub fn track_popover_visibility(popover: &gtk4::Popover, open_popovers: &Rc<Cell<usize>>) {
@@ -232,6 +263,19 @@ pub fn toggle_mute_volume(current_volume: f64, last_nonzero_volume: &Cell<f64>) 
 mod volume_tests {
     use super::{remember_nonzero_volume, toggle_mute_volume};
     use std::cell::Cell;
+
+    #[test]
+    fn playback_speed_wheel_adjusts_in_tenths_and_clamps_to_supported_range() {
+        assert_eq!(adjust_playback_speed(1.0, -1.0), 1.1);
+        assert_eq!(adjust_playback_speed(1.0, 1.0), 0.9);
+        assert_eq!(adjust_playback_speed(2.0, -1.0), 2.0);
+        assert_eq!(adjust_playback_speed(0.5, 1.0), 0.5);
+    }
+
+    #[test]
+    fn playback_speed_wheel_recovers_from_non_finite_values() {
+        assert_eq!(adjust_playback_speed(f32::NAN, -1.0), 1.1);
+    }
 
     #[test]
     fn mute_remembers_current_volume_and_returns_zero() {
