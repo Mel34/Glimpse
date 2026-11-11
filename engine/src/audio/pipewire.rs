@@ -513,6 +513,24 @@ mod tests {
     }
 
     #[test]
+    fn applies_volume_amplification_above_unity() {
+        let (mut producer, mut consumer) = RingBuffer::new(8);
+        let shared = shared_state();
+        shared.volume.store(1.5f32.to_bits(), Ordering::Relaxed);
+        producer.push(0.75).unwrap();
+        producer.push(-0.5).unwrap();
+
+        let mut output = [0xff; 8];
+        let (written, underflow, _) =
+            render_pcm(&mut consumer, &shared, &mut output, 1);
+
+        assert_eq!(written, 8);
+        assert_eq!(underflow, 0);
+        assert!((f32::from_le_bytes(output[0..4].try_into().unwrap()) - 1.125).abs() < f32::EPSILON);
+        assert_eq!(f32::from_le_bytes(output[4..8].try_into().unwrap()), -0.75);
+    }
+
+    #[test]
     fn eof_empty_ring_is_counted_separately_from_active_starvation() {
         let (mut producer, mut consumer) = RingBuffer::new(8);
         let shared = shared_state();
