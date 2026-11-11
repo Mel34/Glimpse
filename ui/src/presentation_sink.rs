@@ -216,6 +216,31 @@ fn forward_frames(
         };
 
         let mut message = message;
+
+        // During scrub recovery, discard late frames before they enter the
+        // presentation queue. Otherwise a full queue can keep feeding stale
+        // frames back into the scheduler faster than it can drain them.
+        if let Ok(frame) = &message {
+            let master_pts = media_clock.get_pts();
+            if should_drop_stale_frame(
+                frame.pts,
+                master_pts,
+                drop_stale_until_current.load(Ordering::Acquire),
+            ) {
+                dropped_stale += 1;
+                if video_debug && (dropped_stale == 1 || dropped_stale % 120 == 0) {
+                    tracing::warn!(
+                        frame_pts = frame.pts,
+                        master_pts,
+                        lateness_ms = (master_pts - frame.pts) * 1000.0,
+                        dropped_stale,
+                        "Ingestion worker discarded late decoded video frame"
+                    );
+                }
+                continue;
+            }
+        }
+
         loop {
             if cancelled.load(Ordering::Acquire) {
                 return;
