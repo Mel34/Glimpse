@@ -140,12 +140,31 @@ button.osd-speed-button {
     font-variant-numeric: tabular-nums;
 }
 
+button.osd-speed-button label {
+    color: @window_fg_color;
+    text-shadow: 1px 0 1px @window_bg_color,
+                 -1px 0 1px @window_bg_color,
+                 0 1px 1px @window_bg_color,
+                 0 -1px 1px @window_bg_color,
+                 1px 1px 1px @window_bg_color,
+                 -1px -1px 1px @window_bg_color,
+                 1px -1px 1px @window_bg_color,
+                 -1px 1px 1px @window_bg_color;
+}
+
 button.osd-speed-button:hover {
     background-color: alpha(@window_fg_color, 0.16);
+    color: @window_fg_color;
+}
+
+button.osd-speed-button:hover label,
+button.osd-speed-button:active label {
+    color: @window_fg_color;
 }
 
 button.osd-speed-button:active {
     background-color: alpha(@window_fg_color, 0.24);
+    color: @window_fg_color;
 }
 
 button.osd-speed-button:disabled {
