@@ -60,6 +60,17 @@ struct SubtitleSchedulerState {
     active: Option<SubtitleCue>,
 }
 
+/// Keeps GDK's update phase running while video playback is active.
+/// The tick callback owns this guard so the updating request is balanced
+/// automatically when the callback is removed.
+struct FrameClockUpdateGuard(gdk4::FrameClock);
+
+impl Drop for FrameClockUpdateGuard {
+    fn drop(&mut self) {
+        self.0.end_updating();
+    }
+}
+
 fn subtitle_cue_markup(cue: &SubtitleCue) -> String {
     let mut markup = String::new();
     for span in &cue.spans {
@@ -336,6 +347,18 @@ fn schedule_frames(
     }));
     let picture_weak = picture.downgrade();
     let subtitle_weak = subtitle_label.downgrade();
+    let frame_clock_update_guard = if std::env::var_os("GLIMPSE_FORCE_FRAME_CLOCK_UPDATES").is_some() {
+        picture.frame_clock().map(|frame_clock| {
+            frame_clock.begin_updating();
+            tracing::info!(
+                mapped = picture.is_mapped(),
+                "Experimental mode: keeping GDK frame-clock updates active"
+            );
+            FrameClockUpdateGuard(frame_clock)
+        })
+    } else {
+        None
+    };
     let subtitle_state = RefCell::new(SubtitleSchedulerState {
         pending: std::collections::VecDeque::new(),
         active: None,
@@ -493,6 +516,8 @@ fn schedule_frames(
     // GDK invokes this callback in its frame-update phase, immediately before
     // GTK paints. Presentation therefore follows the display's refresh cadence.
     picture.add_tick_callback(move |_, frame_clock| {
+        // Keep the guard alive for the lifetime of this tick callback.
+        let _keep_frame_clock_updating = &frame_clock_update_guard;
         if cancelled.load(Ordering::Acquire) {
             tracing::debug!("Video frame scheduler stopped: playback run cancelled");
             return glib::ControlFlow::Break;
