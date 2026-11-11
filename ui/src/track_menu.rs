@@ -200,12 +200,16 @@ where
         subtitle_tracks_box.append(&btn);
     }
 
-    let subtitle_scroll = ScrolledWindow::new();
-    subtitle_scroll.set_policy(PolicyType::Never, PolicyType::Automatic);
-    subtitle_scroll.set_max_content_height(280);
-    subtitle_scroll.set_propagate_natural_height(true);
-    subtitle_scroll.set_child(Some(&subtitle_tracks_box));
-    container.append(&subtitle_scroll);
+    // An empty embedded-track list needs no scrolling viewport. Keep the
+    // Off and external-subtitle actions available for files without subtitles.
+    if !tracks.subtitle_tracks.is_empty() {
+        let subtitle_scroll = ScrolledWindow::new();
+        subtitle_scroll.set_policy(PolicyType::Never, PolicyType::Automatic);
+        subtitle_scroll.set_max_content_height(280);
+        subtitle_scroll.set_propagate_natural_height(true);
+        subtitle_scroll.set_child(Some(&subtitle_tracks_box));
+        container.append(&subtitle_scroll);
+    }
 
     popover.set_child(Some(&container));
     attach_popover_scroll_guard(&popover);
