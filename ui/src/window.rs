@@ -315,6 +315,8 @@ impl GlimpseWindow {
         let speed_controls = bottom_controls.clone();
         let speed_hold = GestureClick::new();
         speed_hold.set_button(1);
+        // Capture release before GtkButton's internal gesture can consume it.
+        speed_hold.set_propagation_phase(gtk4::PropagationPhase::Capture);
         let speed_press_player = Rc::clone(&speed_player);
         let speed_press_controls = speed_controls.clone();
         speed_hold.connect_pressed(move |_, _, _, _| {
