@@ -395,8 +395,11 @@ impl GlimpseWindow {
                     if let AdaptiveScrubState::CatchingUp { target, original_speed } = timeline_scrub_state.get() {
                         let position = current_player.position();
                         if target.saturating_sub(position) <= SCRUB_TARGET_TOLERANCE {
-                            current_player.seek(target);
+                            // Restore the requested rate before seek() starts a replacement
+                            // audio session; otherwise it can briefly prebuffer and render at
+                            // the adaptive scrub rate.
                             current_player.set_playback_speed(original_speed);
+                            current_player.seek(target);
                             if let Some(video) = timeline_video.borrow_mut().as_mut() {
                                 video.seek(target);
                             }
