@@ -289,7 +289,7 @@ fn run_file_control(
         return Err("The selected audio stream produced no PCM samples".to_string());
     }
 
-    let sink = match PipeWireAudioSink::new(Arc::clone(&control.speed)) {
+    let sink = match PipeWireAudioSink::new_with_speed(Arc::clone(&control.speed)) {
         Ok(sink) => Arc::new(sink),
         Err(error) => {
             abort_demux(&queues, &mut demux_worker);
