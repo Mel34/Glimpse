@@ -102,6 +102,7 @@ impl GlimpseWindow {
         let video_playback: Rc<RefCell<Option<VideoPlaybackHandle>>> = Rc::new(RefCell::new(None));
         let ab_loop = Rc::new(Cell::new(AbLoopState::Unset));
         let adaptive_scrub_state = Rc::new(Cell::new(AdaptiveScrubState::Idle));
+        let seekbar_drag_moved = Rc::new(Cell::new(false));
         let video_playback_on_focus = Rc::clone(&video_playback);
         window.connect_is_active_notify(move |window| {
             if let Some(video) = video_playback_on_focus.borrow_mut().as_mut() {
@@ -354,6 +355,7 @@ impl GlimpseWindow {
         let timeline_seekbar = bottom_controls.seekbar.clone();
         let timeline_elapsed = bottom_controls.elapsed_label.clone();
         let timeline_dragging = Rc::clone(&bottom_controls.seekbar_dragging);
+        let timeline_drag_moved = Rc::clone(&seekbar_drag_moved);
         let timeline_window = window.downgrade();
         glib::timeout_add_local(Duration::from_millis(50), move || {
             let Some(_window) = timeline_window.upgrade() else {
@@ -362,6 +364,11 @@ impl GlimpseWindow {
             if let Some(current_player) = timeline_player.borrow().as_ref() {
                 if timeline_dragging.get() {
                     if let AdaptiveScrubState::Dragging { original_speed, was_playing } = timeline_scrub_state.get() {
+                        if !timeline_drag_moved.get() {
+                            current_player.set_playback_speed(original_speed);
+                            current_player.set_scrub_muted(false);
+                            return glib::ControlFlow::Continue;
+                        }
                         let position = current_player.position();
                         let target = Duration::from_secs_f64(timeline_seekbar.value().max(0.0));
                         if was_playing
@@ -596,7 +603,6 @@ impl GlimpseWindow {
         let seekbar_events = gtk4::EventControllerLegacy::new();
         seekbar_events.set_propagation_phase(gtk4::PropagationPhase::Capture);
         let seekbar_drag_state = Rc::clone(&bottom_controls.seekbar_dragging);
-        let seekbar_drag_moved = Rc::new(Cell::new(false));
         let seekbar_motion_dragging = Rc::clone(&bottom_controls.seekbar_dragging);
         let seekbar_motion_moved = Rc::clone(&seekbar_drag_moved);
         let seekbar_motion = EventControllerMotion::new();
