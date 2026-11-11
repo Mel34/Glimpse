@@ -65,6 +65,7 @@ struct FfmpegDecoderState {
     time_base_den: i32,
     frame_duration: f64,
     seek_diagnostics: Option<SeekDecodeDiagnostics>,
+    hw_frames_context_logged: bool,
 }
 
 #[cfg(feature = "ffmpeg-system")]
@@ -80,9 +81,14 @@ struct SeekDecodeDiagnostics {
     queue_depth_total: u64,
     queue_depth_max: usize,
     send_calls: u64,
+    send_successes: u64,
+    send_eagain: u64,
     send_us_total: u64,
     send_us_max: u64,
     receive_calls: u64,
+    receive_successes: u64,
+    receive_eagain: u64,
+    receive_eof: u64,
     receive_us_total: u64,
     receive_us_max: u64,
     frames_received: u64,
@@ -95,8 +101,9 @@ impl SeekDecodeDiagnostics {
             started_at: Instant::now(), packet_wait_us_total: 0, packet_wait_us_max: 0,
             packet_wait_timeouts: 0, batches: 0, packets: 0, batch_size_max: 0,
             queue_depth_samples: 0, queue_depth_total: 0, queue_depth_max: 0,
-            send_calls: 0, send_us_total: 0, send_us_max: 0,
-            receive_calls: 0, receive_us_total: 0, receive_us_max: 0, frames_received: 0,
+            send_calls: 0, send_successes: 0, send_eagain: 0, send_us_total: 0, send_us_max: 0,
+            receive_calls: 0, receive_successes: 0, receive_eagain: 0, receive_eof: 0,
+            receive_us_total: 0, receive_us_max: 0, frames_received: 0,
         }
     }
 
@@ -113,16 +120,21 @@ impl SeekDecodeDiagnostics {
         self.queue_depth_max = self.queue_depth_max.max(depth);
     }
 
-    fn record_send(&mut self, elapsed: Duration) {
+    fn record_send(&mut self, elapsed: Duration, succeeded: bool, would_block: bool) {
         let us = elapsed.as_micros() as u64;
         self.send_calls += 1;
+        self.send_successes += u64::from(succeeded);
+        self.send_eagain += u64::from(would_block);
         self.send_us_total += us;
         self.send_us_max = self.send_us_max.max(us);
     }
 
-    fn record_receive(&mut self, elapsed: Duration, received_frame: bool) {
+    fn record_receive(&mut self, elapsed: Duration, received_frame: bool, would_block: bool, eof: bool) {
         let us = elapsed.as_micros() as u64;
         self.receive_calls += 1;
+        self.receive_successes += u64::from(received_frame);
+        self.receive_eagain += u64::from(would_block);
+        self.receive_eof += u64::from(eof);
         self.receive_us_total += us;
         self.receive_us_max = self.receive_us_max.max(us);
         self.frames_received += u64::from(received_frame);
@@ -140,10 +152,13 @@ impl SeekDecodeDiagnostics {
             batch_size_max = self.batch_size_max,
             packet_queue_depth_average = if self.queue_depth_samples == 0 { 0.0 } else { self.queue_depth_total as f64 / self.queue_depth_samples as f64 },
             packet_queue_depth_max = self.queue_depth_max,
-            send_calls = self.send_calls, send_us_total = self.send_us_total,
+            send_calls = self.send_calls, send_successes = self.send_successes,
+            send_eagain = self.send_eagain, send_us_total = self.send_us_total,
             send_us_average = if self.send_calls == 0 { 0.0 } else { self.send_us_total as f64 / self.send_calls as f64 },
             send_us_max = self.send_us_max,
-            receive_calls = self.receive_calls, receive_us_total = self.receive_us_total,
+            receive_calls = self.receive_calls, receive_successes = self.receive_successes,
+            receive_eagain = self.receive_eagain, receive_eof = self.receive_eof,
+            receive_us_total = self.receive_us_total,
             receive_us_average = if self.receive_calls == 0 { 0.0 } else { self.receive_us_total as f64 / self.receive_calls as f64 },
             receive_us_max = self.receive_us_max, frames_received = self.frames_received,
             "Seek decode performance summary"
@@ -374,6 +389,7 @@ impl VideoDecoder {
             time_base_den: time_base.denominator(),
             frame_duration,
             seek_diagnostics: None,
+            hw_frames_context_logged: false,
         });
         tracing::info!(
             stream_index,
@@ -444,11 +460,18 @@ impl VideoDecoder {
                 let send_started_at = Instant::now();
                 let send_result = backend.decoder.send_packet(&packet);
                 if let Some(diagnostics) = backend.seek_diagnostics.as_mut() {
-                    diagnostics.record_send(send_started_at.elapsed());
+                    diagnostics.record_send(
+                        send_started_at.elapsed(),
+                        send_result.is_ok(),
+                        matches!(&send_result, Err(ffmpeg::Error::Other { errno }) if *errno == libc::EAGAIN),
+                    );
                 }
                 match send_result {
                     Ok(()) => break,
                     Err(ffmpeg::Error::Other { errno }) if errno == libc::EAGAIN => {
+                        if let Some(diagnostics) = backend.seek_diagnostics.as_mut() {
+                            diagnostics.batch_size_max = diagnostics.batch_size_max.max(packets_in_batch);
+                        }
                         let drained = Self::drain_frames(
                             backend,
                             &self.frame_queue,
@@ -558,7 +581,12 @@ impl VideoDecoder {
             let receive_started_at = Instant::now();
             let receive_result = backend.decoder.receive_frame(&mut decoded);
             if let Some(diagnostics) = backend.seek_diagnostics.as_mut() {
-                diagnostics.record_receive(receive_started_at.elapsed(), matches!(&receive_result, Ok(())));
+                diagnostics.record_receive(
+                    receive_started_at.elapsed(),
+                    matches!(&receive_result, Ok(())),
+                    matches!(&receive_result, Err(ffmpeg::Error::Other { errno }) if *errno == libc::EAGAIN),
+                    matches!(&receive_result, Err(ffmpeg::Error::Eof)),
+                );
             }
             match receive_result {
                 Ok(()) => frames_received += 1,
@@ -579,6 +607,38 @@ impl VideoDecoder {
                     height = decoded.height(),
                     "Decoder produced first video frame"
                 );
+            }
+
+            if !backend.hw_frames_context_logged {
+                backend.hw_frames_context_logged = true;
+                let codec_context = unsafe { &*backend.decoder.as_ptr() };
+                tracing::info!(
+                    thread_count = codec_context.thread_count,
+                    thread_type = codec_context.thread_type,
+                    active_thread_type = codec_context.active_thread_type,
+                    "Video decoder runtime threading configuration"
+                );
+
+                let frame = unsafe { &*decoded.as_ptr() };
+                if !frame.hw_frames_ctx.is_null() {
+                    let frames_buffer = unsafe { &*frame.hw_frames_ctx };
+                    let frames_context = frames_buffer.data as *const ffmpeg::ffi::AVHWFramesContext;
+                    if !frames_context.is_null() {
+                        let frames = unsafe { &*frames_context };
+                        tracing::info!(
+                            hardware_format = ?frames.format,
+                            software_format = ?frames.sw_format,
+                            surface_width = frames.width,
+                            surface_height = frames.height,
+                            initial_pool_size = frames.initial_pool_size,
+                            "Negotiated VAAPI hardware frames context"
+                        );
+                    } else {
+                        tracing::warn!("VAAPI frame has a hardware frames reference without context data");
+                    }
+                } else if backend.vaapi_enabled {
+                    tracing::warn!("VAAPI decoder produced a frame without hw_frames_ctx");
+                }
             }
 
             // timestamp() reads FFmpeg's best_effort_timestamp, so it is
