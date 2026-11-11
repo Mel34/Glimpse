@@ -12,28 +12,13 @@ use glimpse_engine::decoder::SubtitleCue;
 use glimpse_engine::{MasterClock, VideoFrameData};
 use glib::object::ObjectExt;
 use glib::prelude::Cast;
-use gtk4::prelude::GtkWindowExt;
 use gtk4::prelude::WidgetExtManual;
 use gtk4::prelude::WidgetExt;
 use std::cell::RefCell;
-use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-
-// Retained for the debug tick-history dump; derived Debug output isn't counted
-// as a field read by Rust's dead-code analysis.
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug)]
-struct TickSample {
-    interval_us: Option<u64>,
-    frame_time_us: i64,
-    frame_time_delta_us: Option<i64>,
-    refresh_interval_us: i64,
-    presentation_time_us: i64,
-    window_active: Option<bool>,
-}
 
 struct FrameSchedulerState {
     pending: Option<VideoFrameData>,
@@ -48,7 +33,6 @@ struct FrameSchedulerState {
     tick_count: u64,
     last_gdk_tick_at: Option<Instant>,
     last_frame_time_us: Option<i64>,
-    tick_history: VecDeque<TickSample>,
     last_ingest_at: Option<Instant>,
     last_ingest_interval_us: u64,
     max_ingest_interval_us: u64,
@@ -58,6 +42,17 @@ struct FrameSchedulerState {
 struct SubtitleSchedulerState {
     pending: std::collections::VecDeque<SubtitleCue>,
     active: Option<SubtitleCue>,
+}
+
+/// Keeps GDK's update phase running while video playback is active.
+/// The tick callback owns this guard so the updating request is balanced
+/// automatically when the callback is removed.
+struct FrameClockUpdateGuard(gdk4::FrameClock);
+
+impl Drop for FrameClockUpdateGuard {
+    fn drop(&mut self) {
+        self.0.end_updating();
+    }
 }
 
 fn subtitle_cue_markup(cue: &SubtitleCue) -> String {
@@ -279,26 +274,6 @@ fn forward_frames(
     }
 }
 
-fn should_present_video(window_active: Option<bool>) -> bool {
-    window_active != Some(false)
-}
-
-#[cfg(test)]
-mod focus_policy_tests {
-    use super::should_present_video;
-
-    #[test]
-    fn inactive_window_skips_video_presentation() {
-        assert!(!should_present_video(Some(false)));
-    }
-
-    #[test]
-    fn active_or_unavailable_window_state_does_not_block_presentation() {
-        assert!(should_present_video(Some(true)));
-        assert!(should_present_video(None));
-    }
-}
-
 fn schedule_frames(
     receiver: Receiver<Result<VideoFrameData, String>>,
     subtitle_receiver: Receiver<Result<SubtitleCue, String>>,
@@ -328,7 +303,6 @@ fn schedule_frames(
         tick_count: 0,
         last_gdk_tick_at: None,
         last_frame_time_us: None,
-        tick_history: VecDeque::with_capacity(32),
         last_ingest_at: None,
         last_ingest_interval_us: 0,
         max_ingest_interval_us: 0,
@@ -336,6 +310,18 @@ fn schedule_frames(
     }));
     let picture_weak = picture.downgrade();
     let subtitle_weak = subtitle_label.downgrade();
+    let frame_clock_update_guard = if std::env::var_os("GLIMPSE_FORCE_FRAME_CLOCK_UPDATES").is_some() {
+        picture.frame_clock().map(|frame_clock| {
+            frame_clock.begin_updating();
+            tracing::info!(
+                mapped = picture.is_mapped(),
+                "Experimental mode: keeping GDK frame-clock updates active"
+            );
+            FrameClockUpdateGuard(frame_clock)
+        })
+    } else {
+        None
+    };
     let subtitle_state = RefCell::new(SubtitleSchedulerState {
         pending: std::collections::VecDeque::new(),
         active: None,
@@ -347,6 +333,7 @@ fn schedule_frames(
             visible = picture.is_visible(),
             "Starting vblank-aware video presentation scheduler"
         );
+
     }
 
     // Keep frame ingestion independent of GDK's visibility-aware frame clock.
@@ -355,7 +342,6 @@ fn schedule_frames(
     let ingest_receiver = receiver.clone();
     let ingest_clock = Arc::clone(&media_clock);
     let ingest_cancelled = Arc::clone(&cancelled);
-    let ingest_first_frame_pending = Arc::clone(&first_frame_pending);
     let ingest_picture = picture.downgrade();
     glib::timeout_add_local(Duration::from_millis(5), move || {
         if ingest_cancelled.load(Ordering::Acquire) {
@@ -365,16 +351,7 @@ fn schedule_frames(
             return glib::ControlFlow::Break;
         };
 
-        let window_active = picture.root()
-            .and_then(|root| root.downcast::<gtk4::Window>().ok())
-            .map(|window| window.is_active());
         let mut state = ingest_state.borrow_mut();
-        if !should_present_video(window_active) {
-            // If focus is lost before the startup frame is presented, don't pin
-            // that old frame; resume by selecting the newest frame for current PTS.
-            state.present_first_frame = false;
-            ingest_first_frame_pending.store(false, Ordering::Release);
-        }
         if state.stream_finished {
             return glib::ControlFlow::Break;
         }
@@ -493,6 +470,8 @@ fn schedule_frames(
     // GDK invokes this callback in its frame-update phase, immediately before
     // GTK paints. Presentation therefore follows the display's refresh cadence.
     picture.add_tick_callback(move |_, frame_clock| {
+        // Keep the guard alive for the lifetime of this tick callback.
+        let _keep_frame_clock_updating = &frame_clock_update_guard;
         if cancelled.load(Ordering::Acquire) {
             tracing::debug!("Video frame scheduler stopped: playback run cancelled");
             return glib::ControlFlow::Break;
@@ -505,14 +484,13 @@ fn schedule_frames(
             tracing::warn!("Video frame scheduler stopped: subtitle widget was destroyed");
             return glib::ControlFlow::Break;
         };
-        let window_active = picture.root()
-            .and_then(|root| root.downcast::<gtk4::Window>().ok())
-            .map(|window| window.is_active());
+        let tick_interval_us = {
+            let mut state = state.borrow_mut();
+            state.last_gdk_tick_at
+                .replace(Instant::now())
+                .map(|last_tick| last_tick.elapsed().as_micros() as u64)
+        };
 
-        let tick_now = Instant::now();
-        let tick_interval_us = state.borrow().last_gdk_tick_at
-            .as_ref()
-            .map(|last_tick| last_tick.elapsed().as_micros() as u64);
         let frame_time_us = frame_clock.frame_time();
         let frame_time_delta_us = state.borrow().last_frame_time_us
             .map(|last_time| frame_time_us - last_time);
@@ -559,15 +537,7 @@ fn schedule_frames(
                 }
             }
         }
-        // Focus is presentation policy, never playback policy. Continue draining
-        // decoded frames and subtitle cues, but avoid GTK updates, frame selection,
-        // and GPU import while this window is on an inactive workspace.
-        if !should_present_video(window_active) {
-            state.borrow_mut().present_first_frame = false;
-            first_frame_pending.store(false, Ordering::Release);
-            return glib::ControlFlow::Continue;
-        }
-
+        // Presentation continues independently of keyboard focus.
         if let Some(cue) = subtitle_state.active.as_ref() {
             subtitle_label.set_markup(&subtitle_cue_markup(cue));
             apply_subtitle_font_size(&subtitle_label, picture.width());
@@ -577,35 +547,8 @@ fn schedule_frames(
         }
 
         let mut state = state.borrow_mut();
-        state.last_gdk_tick_at = Some(tick_now);
         state.last_frame_time_us = Some(frame_time_us);
-        let sample = TickSample {
-            interval_us: tick_interval_us,
-            frame_time_us,
-            frame_time_delta_us,
-            refresh_interval_us,
-            presentation_time_us,
-            window_active,
-        };
-        if state.tick_history.len() == 32 {
-            state.tick_history.pop_front();
-        }
-        state.tick_history.push_back(sample);
         state.tick_count += 1;
-        if video_debug && tick_interval_us.is_some_and(|interval| interval >= 100_000) {
-            tracing::warn!(
-                gap_ms = tick_interval_us.unwrap_or_default() as f64 / 1000.0,
-                frame_time_us,
-                frame_time_delta_us,
-                refresh_interval_us,
-                presentation_time_us,
-                window_active,
-                mapped = picture.is_mapped(),
-                visible = picture.is_visible(),
-                tick_history = ?state.tick_history,
-                "Long gap between GDK frame-clock callbacks"
-            );
-        }
         if video_debug && state.tick_count % 250 == 0 {
             tracing::info!(
                 ticks = state.tick_count,
@@ -613,7 +556,6 @@ fn schedule_frames(
                 frame_time_delta_us,
                 tick_interval_us,
                 presentation_time_us,
-                window_active,
                 frames_received = state.frames_received,
                 displayed_frames = state.displayed_frames,
                 dropped_stale_ingest = state.dropped_stale_ingest,
