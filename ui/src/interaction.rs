@@ -172,19 +172,6 @@ mod seekbar_wheel_tests {
     }
 }
 
-/// Map remaining forward-seek distance to a smooth temporary catch-up rate.
-/// Normal playback remains capped at 2×; adaptive scrubbing may reach 4×.
-pub fn adaptive_scrub_speed(distance_secs: f64, baseline_speed: f32) -> f32 {
-    let baseline = if baseline_speed.is_finite() {
-        baseline_speed.clamp(0.5, 2.0)
-    } else {
-        1.0
-    };
-    let progress = (distance_secs.max(0.0) / 4.0).clamp(0.0, 1.0);
-    let eased = progress * progress * (3.0 - 2.0 * progress);
-    baseline + (4.0 - baseline) * eased as f32
-}
-
 pub fn attach_seekbar_wheel<FSeek>(
     scale: &gtk4::Scale,
     get_duration: impl Fn() -> Option<Duration> + 'static,
