@@ -116,9 +116,9 @@ mod seekbar_wheel_tests {
     use std::time::Duration;
 
     #[test]
-    fn adaptive_scrub_speed_reaches_one_x_at_the_destination() {
+    fn adaptive_scrub_speed_restores_the_original_rate_at_the_destination() {
         assert_eq!(super::adaptive_scrub_speed(0.0, 1.0), 1.0);
-        assert_eq!(super::adaptive_scrub_speed(0.0, 1.5), 1.0);
+        assert_eq!(super::adaptive_scrub_speed(0.0, 1.5), 1.5);
     }
 
     #[test]
