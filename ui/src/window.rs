@@ -508,11 +508,11 @@ impl GlimpseWindow {
             }
         });
 
-        // If gesture was stopped or cancelled by GTK/compositor, cancel pending timer
-        let click_state_stop = Rc::clone(&click_state);
+        // GTK may emit "stopped" after a completed click (for example, when its
+        // double-click interval expires). The release handler has already accepted
+        // the click, so this signal must not cancel its pending play/pause action.
         click_gesture.connect_stopped(move |_| {
             tracing::info!("Video surface click gesture stopped by GTK");
-            click_state_stop.borrow_mut().cancel();
         });
 
         picture.add_controller(click_gesture);
