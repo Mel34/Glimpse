@@ -170,8 +170,25 @@ impl VideoDecoder {
             0.0
         };
 
-        let use_vaapi = std::env::var("GLIMPSE_VIDEO_DECODER")
-            .is_ok_and(|value| value.eq_ignore_ascii_case("vaapi"));
+        let use_vaapi = match std::env::var("GLIMPSE_VIDEO_DECODER") {
+            Ok(value) if value.eq_ignore_ascii_case("software") => false,
+            Ok(value) if value.eq_ignore_ascii_case("vaapi") => true,
+            Ok(value) => {
+                tracing::warn!(
+                    %value,
+                    "Unrecognized GLIMPSE_VIDEO_DECODER value; defaulting to VAAPI"
+                );
+                true
+            }
+            Err(std::env::VarError::NotPresent) => true,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "Could not read GLIMPSE_VIDEO_DECODER; defaulting to VAAPI"
+                );
+                true
+            }
+        };
         let mut context = ffmpeg::codec::context::Context::from_parameters(stream.parameters())
             .map_err(|error| format!("Could not create video decoder context: {error}"))?;
         // Packet timestamps are expressed in the demuxed stream time base.
