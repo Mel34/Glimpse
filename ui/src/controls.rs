@@ -7,7 +7,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 use gtk4::prelude::*;
-use gtk4::{Box as GtkBox, Button, CheckButton, Image, Label, MenuButton, Orientation, Scale};
+use gtk4::{Box as GtkBox, Button, CheckButton, DrawingArea, Image, Label, MenuButton, Orientation, Overlay, Scale};
 use crate::interaction::attach_popover_scroll_guard;
 
 #[derive(Clone)]
@@ -23,6 +23,8 @@ pub struct ControlBarWidgets {
     pub screenshot_button: Button,
     pub seekbar: Scale,
     pub seekbar_dragging: Rc<Cell<bool>>,
+    pub seekbar_marker: DrawingArea,
+    pub seekbar_marker_position: Rc<Cell<Option<f64>>>,
     pub elapsed_label: Label,
     pub duration_label: Label,
     pub open_popovers: Rc<Cell<usize>>,
@@ -120,7 +122,37 @@ pub fn create_floating_bottom_bar() -> ControlBarWidgets {
     seekbar.add_css_class("osd-scale");
     seekbar.set_tooltip_text(Some("Seek bar (Mouse wheel ±5s)"));
     let seekbar_dragging = Rc::new(Cell::new(false));
-    container.append(&seekbar);
+
+    // Draw the adaptive-scrub destination above the normal progress trough.
+    let seekbar_overlay = Overlay::new();
+    seekbar_overlay.set_child(Some(&seekbar));
+    let seekbar_marker_position = Rc::new(Cell::new(None));
+    let seekbar_marker = DrawingArea::new();
+    seekbar_marker.set_hexpand(true);
+    seekbar_marker.set_vexpand(true);
+    seekbar_marker.set_can_target(false);
+    let marker_position_for_draw = Rc::clone(&seekbar_marker_position);
+    seekbar_marker.set_draw_func(move |_area, cr, width, height| {
+        let Some(fraction) = marker_position_for_draw.get() else {
+            return;
+        };
+        let inset = 8.0;
+        let x = inset + fraction.clamp(0.0, 1.0) * (width as f64 - inset * 2.0).max(0.0);
+        let center_y = height as f64 / 2.0;
+        cr.set_line_cap(gtk4::cairo::LineCap::Round);
+        cr.set_line_width(4.0);
+        cr.set_source_rgba(0.0, 0.0, 0.0, 0.75);
+        cr.move_to(x, center_y - 6.0);
+        cr.line_to(x, center_y + 6.0);
+        let _ = cr.stroke();
+        cr.set_line_width(2.0);
+        cr.set_source_rgba(1.0, 1.0, 1.0, 1.0);
+        cr.move_to(x, center_y - 6.0);
+        cr.line_to(x, center_y + 6.0);
+        let _ = cr.stroke();
+    });
+    seekbar_overlay.add_overlay(&seekbar_marker);
+    container.append(&seekbar_overlay);
 
     // Row 3: Timestamps under the seek bar (left and right)
     let time_row = GtkBox::new(Orientation::Horizontal, 0);
@@ -151,6 +183,8 @@ pub fn create_floating_bottom_bar() -> ControlBarWidgets {
         screenshot_button,
         seekbar,
         seekbar_dragging,
+        seekbar_marker,
+        seekbar_marker_position,
         elapsed_label,
         duration_label,
         open_popovers,
