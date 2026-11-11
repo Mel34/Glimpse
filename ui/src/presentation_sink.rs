@@ -327,6 +327,12 @@ fn schedule_frames(
     // that is ready for the current GDK presentation opportunity.
     let video_debug = std::env::var_os("GLIMPSE_VIDEO_DEBUG").is_some();
     let ingest_video_debug = video_debug;
+    let disable_dmabuf = std::env::var_os("GLIMPSE_DISABLE_DMABUF").is_some();
+    if disable_dmabuf {
+        tracing::warn!(
+            "DMA-BUF presentation disabled by GLIMPSE_DISABLE_DMABUF; using RGBA fallback"
+        );
+    }
     let state = Rc::new(RefCell::new(FrameSchedulerState {
         pending: None,
         present_first_frame: true,
@@ -336,7 +342,7 @@ fn schedule_frames(
         dropped_late_presentation: 0,
         dropped_superseded: 0,
         presentation_failures: 0,
-        vaapi_import_disabled: false,
+        vaapi_import_disabled: disable_dmabuf,
         ingest_tick_count: 0,
         tick_count: 0,
         last_gdk_tick_at: None,
