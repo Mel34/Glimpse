@@ -7,11 +7,13 @@ use gtk4::{Box as GtkBox, CheckButton, Label, Orientation, Popover, PolicyType, 
 use glimpse_engine::{TrackId, TrackInfo, TrackList};
 use crate::interaction::attach_popover_scroll_guard;
 
-pub fn create_track_popover<FAudio, FSubtitle, FExternal>(
+pub fn create_track_popover<FAudio, FSubtitle, FExternal, FSpeed>(
     tracks: &TrackList,
     on_audio_selected: FAudio,
     on_subtitle_selected: FSubtitle,
     on_external_selected: FExternal,
+    initial_speed: f64,
+    on_speed_changed: FSpeed,
     loop_enabled: &Rc<Cell<bool>>,
     loop_menu_buttons: &Rc<RefCell<Vec<CheckButton>>>,
 ) -> Popover
@@ -19,6 +21,7 @@ where
     FAudio: Fn(Option<TrackId>) + 'static + Clone,
     FSubtitle: Fn(Option<TrackId>) + 'static + Clone,
     FExternal: Fn(CheckButton, CheckButton) + 'static + Clone,
+    FSpeed: Fn(f64) + 'static + Clone,
 {
     let popover = Popover::new();
     popover.add_css_class("menu-popover");
