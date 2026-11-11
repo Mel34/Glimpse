@@ -65,6 +65,9 @@ where
     });
     container.append(&speed_scale);
 
+    let speed_separator = Separator::new(Orientation::Horizontal);
+    container.append(&speed_separator);
+
     // Rotation controls intentionally remain a single, non-interactive label
     // with two independent icon buttons, matching the compact Loupe pattern.
     let rotate_row = GtkBox::new(Orientation::Horizontal, 8);
@@ -98,6 +101,9 @@ where
     rotate_right_button.connect_clicked(move |_| on_rotate(90));
     rotate_row.append(&rotate_right_button);
     container.append(&rotate_row);
+
+    let rotation_separator = Separator::new(Orientation::Horizontal);
+    container.append(&rotation_separator);
 
     let loop_row = GtkBox::new(Orientation::Horizontal, 20);
     loop_row.add_css_class("loop-menu-row");
