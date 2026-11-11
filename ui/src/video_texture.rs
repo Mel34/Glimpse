@@ -6,7 +6,7 @@ use glimpse_engine::{MasterClock, TrackList};
 use glib::object::ObjectExt;
 use gtk4::prelude::WidgetExt;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
@@ -280,8 +280,11 @@ fn decode_continuously(
     subtitle_sender: &Sender<Result<SubtitleCue, String>>,
     start_position: Duration,
 ) -> Result<(), String> {
+    let worker_started_at = Instant::now();
     let serial = Serial(0);
     let frame_queue = Arc::new(VideoFrameQueue::new(32, 512 * 1024 * 1024));
+    tracing::info!(target_secs = start_position.as_secs_f64(), "Video decode worker starting");
+    let decoder_open_started_at = Instant::now();
     let mut decoder = VideoDecoder::open_ffmpeg(
         path,
         video_stream_index,
@@ -289,6 +292,11 @@ fn decode_continuously(
         Arc::clone(&frame_queue),
         Arc::new(MasterClock::new()),
     )?;
+    tracing::info!(
+        decoder_open_us = decoder_open_started_at.elapsed().as_micros() as u64,
+        worker_elapsed_us = worker_started_at.elapsed().as_micros() as u64,
+        "Video decode worker opened decoder"
+    );
 
     let mut subtitle_decoder = if external_subtitle_path.is_none() {
         tracks.active_subtitle
@@ -322,6 +330,8 @@ fn decode_continuously(
     let demux_worker = thread::spawn(move || {
         demux_file_from(&worker_path, &worker_tracks, &worker_queues, serial, start_position)
     });
+    tracing::info!(worker_elapsed_us = worker_started_at.elapsed().as_micros() as u64, "Video demux worker spawned");
+    let mut first_frame_forwarded = false;
 
     loop {
         if cancelled.load(Ordering::Acquire) {
@@ -336,7 +346,7 @@ fn decode_continuously(
             let _ = demux_worker.join();
             return Err(error);
         }
-        if !forward_decoded_frames(&frame_queue, sender, start_position.as_secs_f64(), cancelled) {
+        if !forward_decoded_frames(&frame_queue, sender, start_position.as_secs_f64(), cancelled, &mut first_frame_forwarded, worker_started_at) {
             queues.abort();
             frame_queue.abort();
             let _ = demux_worker.join();
@@ -374,7 +384,7 @@ fn decode_continuously(
                 .map_err(|_| "Video demux worker panicked".to_string())?;
             result.map_err(|error| format!("Video demux failed: {error}"))?;
             decoder.finish(serial)?;
-            let _ = forward_decoded_frames(&frame_queue, sender, start_position.as_secs_f64(), cancelled);
+            let _ = forward_decoded_frames(&frame_queue, sender, start_position.as_secs_f64(), cancelled, &mut first_frame_forwarded, worker_started_at);
             return Ok(());
         }
     }
@@ -385,12 +395,23 @@ fn forward_decoded_frames(
     sender: &Sender<Result<VideoFrameData, String>>,
     minimum_pts: f64,
     cancelled: &AtomicBool,
+    first_frame_forwarded: &mut bool,
+    worker_started_at: Instant,
 ) -> bool {
     while let Some(frame) = frame_queue.pop_timeout(Duration::ZERO) {
         if frame.item.pts + 0.000_001 < minimum_pts {
             continue;
         }
 
+        if !*first_frame_forwarded {
+            *first_frame_forwarded = true;
+            tracing::info!(
+                frame_pts = frame.item.pts,
+                target_secs = minimum_pts,
+                worker_elapsed_us = worker_started_at.elapsed().as_micros() as u64,
+                "Forwarding first eligible decoded video frame to presentation"
+            );
+        }
         let mut message = Ok(frame.item);
         loop {
             if cancelled.load(Ordering::Acquire) {
