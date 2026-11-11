@@ -10,7 +10,7 @@ name = "glimpse"
 path = "src/main.rs"
 
 [features]
-default = []
+default = ["vaapi-dmabuf"]
 vaapi-dmabuf = ["dep:ffmpeg-the-third"]
 vaapi-hdr = ["vaapi-dmabuf"]
 
