@@ -276,7 +276,7 @@ impl Player {
     }
 
     pub fn set_volume(&self, volume: f32) {
-        let clamped = volume.clamp(0.0, 1.0);
+        let clamped = if volume.is_finite() { volume.clamp(0.0, 1.5) } else { 1.0 };
         {
             let mut v = self.volume.lock();
             *v = clamped;
