@@ -555,19 +555,16 @@ impl GlimpseWindow {
         let p_toggle = Rc::clone(&player);
         let p_toggle_press = Rc::clone(&player);
         let v_toggle = Rc::clone(&video_playback);
-        let v_toggle_press = Rc::clone(&video_playback);
         let win_click = window.clone();
         let click_state_press = Rc::clone(&click_state);
         let scrub_state_press = Rc::clone(&adaptive_scrub_state);
         let marker_position_press = Rc::clone(&bottom_controls.seekbar_marker_position);
         let marker_press = bottom_controls.seekbar_marker.clone();
-        let resume_from_scrub_press = Rc::clone(&resume_from_scrub);
         let scrub_click_interrupted = Rc::new(Cell::new(false));
         let scrub_click_interrupted_press = Rc::clone(&scrub_click_interrupted);
 
-        // A click during adaptive scrub means "return to normal playback".
-        // Restart both streams at the current media timestamp so no catch-up
-        // frames remain queued after the accelerated session is cancelled.
+        // A click during adaptive scrub returns to normal playback in place.
+        // Keep both streams running; the shared media clock already provides sync.
         click_gesture.connect_pressed(move |_gesture, n_press, x, y| {
             tracing::debug!(n_press, x, y, "Video surface gesture pressed");
             if n_press == 1
@@ -579,20 +576,12 @@ impl GlimpseWindow {
             {
                 if let Some(ref p) = *p_toggle_press.borrow() {
                     if p.state() == PlayerState::Playing {
-                        let position = p.position();
                         cancel_adaptive_scrub(
                             p,
                             &scrub_state_press,
                             &marker_position_press,
                             &marker_press,
                         );
-                        p.pause();
-                        p.seek(position);
-                        if let Some(ref mut video) = *v_toggle_press.borrow_mut() {
-                            video.seek(position);
-                        }
-                        resume_from_scrub_press.set(false);
-                        p.play();
                         scrub_click_interrupted_press.set(true);
                     }
                 }
