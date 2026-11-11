@@ -9,6 +9,7 @@ license=('LGPL-2.1-or-later')
 depends=(
   'ffmpeg'
   'gtk4'
+  'libdrm'
   'libadwaita'
   'alsa-lib'
   'libpulse'
@@ -21,7 +22,7 @@ makedepends=(
   'clang'
 )
 optdepends=(
-  'libva: for future hardware accelerated decoding (VA-API on AMD / Intel)'
+  'libva: VA-API userspace support for hardware video decoding'
   'mesa: AMD Radeon VA-API / Gallium drivers'
   'libass: for advanced ASS/SSA subtitle rendering'
 )
