@@ -223,6 +223,14 @@ mod volume_tests {
         remember_nonzero_volume(&last_volume, 0.27);
         assert_eq!(last_volume.get(), 0.27);
     }
+
+    #[test]
+    fn amplified_volume_is_preserved_when_remembered_and_unmuted() {
+        let last_volume = Cell::new(1.0);
+        remember_nonzero_volume(&last_volume, 1.35);
+        assert_eq!(last_volume.get(), 1.35);
+        assert_eq!(toggle_mute_volume(0.0, &last_volume), 1.35);
+    }
 }
 
 pub fn update_volume_indicator(
