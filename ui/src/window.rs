@@ -49,6 +49,7 @@ fn begin_speed_boost(player: &Rc<RefCell<Option<Player>>>, controls: &ControlBar
     if !controls.speed_button.is_sensitive() || controls.speed_button_held.replace(true) {
         return;
     }
+    controls.open_popovers.set(controls.open_popovers.get() + 1);
     controls.speed_button.set_label("2.0×");
     if let Some(active_player) = player.borrow().as_ref() {
         active_player.set_playback_speed(2.0);
@@ -59,6 +60,7 @@ fn end_speed_boost(player: &Rc<RefCell<Option<Player>>>, controls: &ControlBarWi
     if !controls.speed_button_held.replace(false) {
         return;
     }
+    controls.open_popovers.set(controls.open_popovers.get().saturating_sub(1));
     let speed = controls.playback_speed.get();
     controls.speed_button.set_label(&crate::controls::format_speed_label(speed));
     if let Some(active_player) = player.borrow().as_ref() {
@@ -67,7 +69,9 @@ fn end_speed_boost(player: &Rc<RefCell<Option<Player>>>, controls: &ControlBarWi
 }
 
 fn reset_playback_speed(player: &Rc<RefCell<Option<Player>>>, controls: &ControlBarWidgets) {
-    controls.speed_button_held.set(false);
+    if controls.speed_button_held.replace(false) {
+        controls.open_popovers.set(controls.open_popovers.get().saturating_sub(1));
+    }
     controls.playback_speed.set(1.0);
     controls.speed_button.set_label("1.0×");
     if let Some(active_player) = player.borrow().as_ref() {
@@ -1004,6 +1008,21 @@ impl GlimpseWindow {
             pointer_leave.set(None);
         });
         player_overlay.add_controller(motion);
+
+        let speed_hover = EventControllerMotion::new();
+        let speed_hover_controls = bottom_controls.clone();
+        speed_hover.connect_enter(move |_, _, _| {
+            speed_hover_controls.open_popovers.set(
+                speed_hover_controls.open_popovers.get() + 1,
+            );
+        });
+        let speed_leave_controls = bottom_controls.clone();
+        speed_hover.connect_leave(move |_| {
+            speed_leave_controls.open_popovers.set(
+                speed_leave_controls.open_popovers.get().saturating_sub(1),
+            );
+        });
+        bottom_controls.speed_button.add_controller(speed_hover);
 
         let top_fullscreen = top_controls.clone();
         let bottom_fullscreen = bottom_controls.container.clone();
