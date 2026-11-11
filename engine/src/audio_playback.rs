@@ -1,8 +1,9 @@
 //! Reusable FFmpeg-to-PipeWire audio playback session.
 //!
 //! Demuxing, decoding, prebuffering and PCM delivery run on worker threads.
-//! The PipeWire process callback remains real-time safe; the session updates
-//! the master clock from submitted media PTS and the sink's queued/device delay.
+//! The PipeWire process callback performs allocation-free rate conversion on
+//! queued source PCM; the session updates the master clock from media PTS and
+//! the sink's queued/device delay.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use crossbeam_channel::Sender;
