@@ -278,7 +278,7 @@ fn forward_frames(
 fn schedule_frames(
     receiver: Receiver<Result<VideoFrameData, String>>,
     subtitle_receiver: Receiver<Result<SubtitleCue, String>>,
-    picture: gtk4::Picture,
+    picture: RotatablePicture,
     subtitle_label: gtk4::Label,
     media_clock: Arc<MasterClock>,
     cancelled: Arc<AtomicBool>,
