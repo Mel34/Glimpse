@@ -100,9 +100,9 @@ where
     container.append(&rotate_row);
 
     let loop_row = GtkBox::new(Orientation::Horizontal, 20);
+    loop_row.add_css_class("loop-menu-row");
     let loop_toggle = CheckButton::with_label("Loop");
     loop_toggle.set_hexpand(true);
-    loop_toggle.set_halign(gtk4::Align::Start);
     loop_toggle.set_active(loop_enabled.get());
     loop_menu_buttons.borrow_mut().clear();
     loop_menu_buttons.borrow_mut().push(loop_toggle.clone());
