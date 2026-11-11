@@ -13,7 +13,11 @@ A Linux media player written in Rust with GTK4, libadwaita, an in-process FFmpeg
 - **Audio track selection.** Switch between embedded audio streams or turn audio off.
 - **Subtitle support.** Select embedded text subtitles or load an external `.srt`, `.ass`, `.ssa`, or `.vtt` file. Subtitles are off by default. Available embedded tracks are ordered using the system language preferences, with English as a fallback preference. Bitmap subtitle formats such as PGS and DVD subtitles are not rendered.
 - **Synchronized video playback.** Video frames are scheduled against the audio clock; video-only media uses a monotonic playback clock.
-- **Playback controls.** Seek, pause and resume, adjust or mute volume, and toggle fullscreen. Controls automatically hide after inactivity.
+- **Playback speed.** Adjust playback continuously from 0.5× to 2.0× in the playback menu.
+- **Video rotation.** Rotate the picture 90° clockwise or counterclockwise from the playback menu. Rotation is applied to the displayed video and captured screenshots.
+- **Screenshots.** Capture the current video frame without the playback controls. PNG screenshots are saved automatically to `~/Pictures/Screenshots/`, using unique, timestamped filenames.
+- **Volume control.** Adjust or mute audio, with software volume amplification up to 150%.
+- **Playback controls.** Seek, pause and resume, and toggle fullscreen. Controls automatically hide after inactivity.
 - **Looping.** Loop the entire file or define an A–B section.
 - **Flexible input.** Open media through the file chooser, drag and drop a file, or launch Glimpse with a media path or URI. Multiple windows are supported.
 - **GTK4 and libadwaita interface.** Includes persistent System, Light, and Dark appearance preferences.
@@ -36,7 +40,7 @@ Glimpse uses its in-process `glimpse-engine` for playback.
 | Toggle fullscreen | `F` or double-click the video |
 | Leave fullscreen | `Esc` |
 | Seek backward / forward | `←` / `→` (5 seconds) |
-| Adjust volume | `↑` / `↓` (5%) |
+| Adjust volume | `↑` / `↓` (5%, up to 150%) |
 | Mute / unmute | `M` |
 | Set A–B loop point A, then B; press again to clear | `L` |
 | Toggle whole-file looping | `Shift+L` |
@@ -46,8 +50,9 @@ Glimpse uses its in-process `glimpse-engine` for playback.
 Additional pointer controls:
 
 - Scroll over the seekbar to seek in five-second steps. Scroll down to advance and up to rewind; seeking stops at the media boundaries.
-- Scroll over the window to adjust volume in five-percent steps.
+- Scroll over the window to adjust volume in five-percent steps, up to 150%.
 - Drag the video surface to move the window when it is not fullscreen.
+- Playback speed and rotation are available from the playback menu; the screenshot button is beside the playback controls.
 - Playback controls appear when the pointer moves and hide after three seconds of inactivity. Open popovers remain available while in use.
 
 ## Rendering roadmap
