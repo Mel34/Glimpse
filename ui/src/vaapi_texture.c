@@ -68,8 +68,21 @@ static int map_matrix_coefficients(enum AVColorSpace value, guint *mapped)
 static GdkColorState *make_frame_color_state(const AVFrame *frame, GError **error)
 {
     guint primaries, transfer, matrix;
+    enum AVColorTransferCharacteristic transfer_function = frame->color_trc;
+
+    /*
+     * Some common SDR H.264 streams omit the transfer characteristic while
+     * explicitly identifying BT.709 primaries and matrix coefficients.
+     * In that narrowly defined case, use the BT.709 transfer function.
+     */
+    if (transfer_function == AVCOL_TRC_UNSPECIFIED &&
+        frame->color_primaries == AVCOL_PRI_BT709 &&
+        frame->colorspace == AVCOL_SPC_BT709 &&
+        frame->color_range == AVCOL_RANGE_MPEG)
+        transfer_function = AVCOL_TRC_BT709;
+
     if (map_color_primaries(frame->color_primaries, &primaries) < 0 ||
-        map_transfer_function(frame->color_trc, &transfer) < 0 ||
+        map_transfer_function(transfer_function, &transfer) < 0 ||
         map_matrix_coefficients(frame->colorspace, &matrix) < 0 ||
         (frame->color_range != AVCOL_RANGE_MPEG &&
          frame->color_range != AVCOL_RANGE_JPEG)) {
