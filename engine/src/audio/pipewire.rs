@@ -170,6 +170,10 @@ impl PipeWireAudioSink {
         PCM_RING_CAPACITY_FRAMES - producer.slots()
     }
 
+    pub fn buffer_capacity_frames(&self) -> usize {
+        PCM_RING_CAPACITY_FRAMES
+    }
+
     /// Marks that no more PCM will be submitted, so subsequent empty-ring
     /// callbacks are expected end-of-stream silence rather than starvation.
     pub fn mark_end_of_stream(&self) {
@@ -658,6 +662,24 @@ mod tests {
         assert_eq!(underflow, 0);
         assert_eq!(output, [0; 8]);
         assert_eq!(consumer.slots(), 1);
+    }
+
+    #[test]
+    fn half_speed_interpolates_between_source_frames() {
+        let (mut producer, mut consumer) = RingBuffer::new(8);
+        let shared = shared_state();
+        let mut resampler = ResamplerState::default();
+        push_frames(&mut producer, &[[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]]);
+        shared.speed.store(0.5f32.to_bits(), Ordering::Release);
+
+        let mut output = [0; 16];
+        let (written, underflow, _) =
+            render_pcm(&mut consumer, &shared, &mut resampler, &mut output, 2);
+
+        assert_eq!(written, 16);
+        assert_eq!(underflow, 0);
+        assert_eq!(sample(&output, 0, 0), 0.0);
+        assert_eq!(sample(&output, 1, 0), 0.5);
     }
 
     #[test]
