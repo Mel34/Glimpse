@@ -193,7 +193,7 @@ impl Drop for AudioPlaybackHandle {
 }
 
 fn sanitise_volume(volume: f32) -> f32 {
-    if volume.is_finite() { volume.clamp(0.0, 1.0) } else { 1.0 }
+    if volume.is_finite() { volume.clamp(0.0, 1.5) } else { 1.0 }
 }
 
 fn sanitise_speed(speed: f32) -> f32 {
@@ -706,7 +706,8 @@ mod tests {
     fn volume_sanitisation_clamps_values_and_recovers_non_finite_input() {
         assert_eq!(sanitise_volume(-1.0), 0.0);
         assert_eq!(sanitise_volume(0.4), 0.4);
-        assert_eq!(sanitise_volume(2.0), 1.0);
+        assert_eq!(sanitise_volume(2.0), 1.5);
+        assert_eq!(sanitise_volume(1.25), 1.25);
         assert_eq!(sanitise_volume(f32::NAN), 1.0);
         assert_eq!(sanitise_volume(f32::INFINITY), 1.0);
     }
