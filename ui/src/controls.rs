@@ -71,6 +71,7 @@ pub fn create_floating_bottom_bar() -> ControlBarWidgets {
     speed_button.add_css_class("osd-speed-button");
     speed_button.set_size_request(56, 32);
     speed_button.set_can_focus(false);
+    speed_button.set_sensitive(false);
     speed_button.set_tooltip_text(Some("Playback speed: hold for 2.0×, scroll to adjust"));
     let playback_speed = Rc::new(Cell::new(1.0f32));
     let speed_button_held = Rc::new(Cell::new(false));
@@ -261,7 +262,7 @@ pub fn toggle_mute_volume(current_volume: f64, last_nonzero_volume: &Cell<f64>) 
 
 #[cfg(test)]
 mod volume_tests {
-    use super::{remember_nonzero_volume, toggle_mute_volume};
+    use super::{adjust_playback_speed, remember_nonzero_volume, toggle_mute_volume};
     use std::cell::Cell;
 
     #[test]
