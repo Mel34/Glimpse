@@ -580,6 +580,24 @@ impl GlimpseWindow {
         let resume_from_scrub_click = Rc::clone(&resume_from_scrub);
         click_gesture.connect_released(move |_gesture, n_press, x, y| {
             tracing::debug!(n_press, x, y, "Video surface gesture released");
+            let scrub_is_active = matches!(
+                scrub_state_click.get(),
+                AdaptiveScrubState::CatchingUp { .. }
+                    | AdaptiveScrubState::Dragging { was_playing: true, .. }
+            );
+            if n_press == 1 && scrub_is_active {
+                if let Some(ref p) = *p_toggle.borrow() {
+                    let cancelled_scrub = cancel_adaptive_scrub(
+                        p,
+                        &scrub_state_click,
+                        &marker_position_click,
+                        &marker_click,
+                    );
+                    resume_from_scrub_click.set(cancelled_scrub);
+                    p.pause();
+                }
+                return;
+            }
             if n_press == 1 {
                 tracing::debug!("Single video-surface click accepted; scheduling play/pause toggle");
                 let p_action = Rc::clone(&p_toggle);
