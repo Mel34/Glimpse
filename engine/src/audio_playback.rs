@@ -4,6 +4,7 @@
 //! The PipeWire process callback remains real-time safe; the session updates
 //! the master clock from submitted media PTS and the sink's queued/device delay.
 
+use std::borrow::Cow;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use crossbeam_channel::Sender;
 use parking_lot::Mutex;
@@ -496,13 +497,13 @@ fn record_frame(stats: &mut PlaybackStats, frame: &AudioFrameData, sample_frames
 /// Resamples decoded PCM to the selected playback rate. The PipeWire stream
 /// remains fixed at 48 kHz, so changing the sample count changes both duration
 /// and pitch without involving its real-time process callback.
-fn resample_for_speed(samples: &[f32], speed: f64) -> Vec<f32> {
+fn resample_for_speed(samples: &[f32], speed: f64) -> Cow<'_, [f32]> {
     let input_frames = samples.len() / AUDIO_OUTPUT_CHANNELS;
     if input_frames == 0 {
-        return Vec::new();
+        return Cow::Borrowed(&[]);
     }
     if (speed - 1.0).abs() < f64::EPSILON {
-        return samples.to_vec();
+        return Cow::Borrowed(samples);
     }
 
     let output_frames = (input_frames as f64 / speed).ceil() as usize;
@@ -518,7 +519,7 @@ fn resample_for_speed(samples: &[f32], speed: f64) -> Vec<f32> {
             output.push(first + (second - first) * fraction);
         }
     }
-    output
+    Cow::Owned(output)
 }
 
 fn output_frame(
@@ -688,7 +689,7 @@ mod tests {
     fn playback_resampling_changes_sample_count_and_pitch_by_rate() {
         let input = vec![0.0, 0.0, 1.0, 1.0, 0.0, 0.0, -1.0, -1.0];
 
-        assert_eq!(resample_for_speed(&input, 1.0), input);
+        assert_eq!(resample_for_speed(&input, 1.0).as_ref(), input.as_slice());
         assert_eq!(resample_for_speed(&input, 2.0).len(), input.len() / 2);
         assert_eq!(resample_for_speed(&input, 0.5).len(), input.len() * 2);
     }
