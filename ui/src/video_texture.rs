@@ -213,7 +213,7 @@ impl Drop for VideoPlaybackHandle {
 pub fn present_continuous_frames(
     path: &str,
     tracks: TrackList,
-    picture: &gtk4::Picture,
+    picture: &RotatablePicture,
     subtitle_label: &gtk4::Label,
     clock: Arc<MasterClock>,
     window_active: bool,
