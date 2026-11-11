@@ -16,24 +16,10 @@ use gtk4::prelude::GtkWindowExt;
 use gtk4::prelude::WidgetExtManual;
 use gtk4::prelude::WidgetExt;
 use std::cell::RefCell;
-use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-
-// Retained for the debug tick-history dump; derived Debug output isn't counted
-// as a field read by Rust's dead-code analysis.
-#[allow(dead_code)]
-#[derive(Clone, Copy, Debug)]
-struct TickSample {
-    interval_us: Option<u64>,
-    frame_time_us: i64,
-    frame_time_delta_us: Option<i64>,
-    refresh_interval_us: i64,
-    presentation_time_us: i64,
-    window_active: Option<bool>,
-}
 
 struct FrameSchedulerState {
     pending: Option<VideoFrameData>,
@@ -46,10 +32,8 @@ struct FrameSchedulerState {
     presentation_failures: u64,
     ingest_tick_count: u64,
     tick_count: u64,
-    callback_count: u64,
     last_gdk_tick_at: Option<Instant>,
     last_frame_time_us: Option<i64>,
-    tick_history: VecDeque<TickSample>,
     last_ingest_at: Option<Instant>,
     last_ingest_interval_us: u64,
     max_ingest_interval_us: u64,
@@ -318,10 +302,8 @@ fn schedule_frames(
         presentation_failures: 0,
         ingest_tick_count: 0,
         tick_count: 0,
-        callback_count: 0,
         last_gdk_tick_at: None,
         last_frame_time_us: None,
-        tick_history: VecDeque::with_capacity(32),
         last_ingest_at: None,
         last_ingest_interval_us: 0,
         max_ingest_interval_us: 0,
@@ -353,37 +335,6 @@ fn schedule_frames(
             "Starting vblank-aware video presentation scheduler"
         );
 
-        if let Some(window) = picture.root()
-            .and_then(|root| root.downcast::<gtk4::Window>().ok())
-        {
-            let weak_window = window.downgrade();
-            window.connect_notify_local(Some("is-active"), move |_, _| {
-                if let Some(window) = weak_window.upgrade() {
-                    tracing::info!(
-                        window_active = window.is_active(),
-                        "GTK window active state changed"
-                    );
-                }
-            });
-
-            if window.find_property("suspended").is_some() {
-                tracing::info!(
-                    window_suspended = window.property::<bool>("suspended"),
-                    "GTK window suspended property available"
-                );
-                let weak_window = window.downgrade();
-                window.connect_notify_local(Some("suspended"), move |_, _| {
-                    if let Some(window) = weak_window.upgrade() {
-                        tracing::info!(
-                            window_suspended = window.property::<bool>("suspended"),
-                            "GTK window suspended state changed"
-                        );
-                    }
-                });
-            } else {
-                tracing::info!("GTK window suspended property unavailable");
-            }
-        }
     }
 
     // Keep frame ingestion independent of GDK's visibility-aware frame clock.
@@ -534,41 +485,12 @@ fn schedule_frames(
             tracing::warn!("Video frame scheduler stopped: subtitle widget was destroyed");
             return glib::ControlFlow::Break;
         };
-        let window_active = picture.root()
-            .and_then(|root| root.downcast::<gtk4::Window>().ok())
-            .map(|window| window.is_active());
-
-        // Count every callback so GDK delivery gaps remain observable.
-        let tick_now = Instant::now();
-        let (callback_count, tick_interval_us) = {
+        let tick_interval_us = {
             let mut state = state.borrow_mut();
-            state.callback_count += 1;
-            let interval_us = state.last_gdk_tick_at
-                .replace(tick_now)
-                .map(|last_tick| last_tick.elapsed().as_micros() as u64);
-            (state.callback_count, interval_us)
+            state.last_gdk_tick_at
+                .replace(Instant::now())
+                .map(|last_tick| last_tick.elapsed().as_micros() as u64)
         };
-
-        if video_debug && tick_interval_us.is_some_and(|interval| interval >= 100_000) {
-            tracing::warn!(
-                callback_count,
-                gap_ms = tick_interval_us.unwrap_or_default() as f64 / 1000.0,
-                window_active,
-                mapped = picture.is_mapped(),
-                visible = picture.is_visible(),
-                "Long gap between GDK callbacks before presentation policy"
-            );
-        }
-        if video_debug && callback_count % 250 == 0 {
-            tracing::info!(
-                callback_count,
-                tick_interval_us,
-                window_active,
-                mapped = picture.is_mapped(),
-                visible = picture.is_visible(),
-                "GDK frame-clock callback heartbeat"
-            );
-        }
 
         let frame_time_us = frame_clock.frame_time();
         let frame_time_delta_us = state.borrow().last_frame_time_us
@@ -616,8 +538,7 @@ fn schedule_frames(
                 }
             }
         }
-        // Keyboard focus does not determine whether a mapped, visible video
-        // surface should present frames. Continue presentation while inactive.
+        // Presentation continues independently of keyboard focus.
         if let Some(cue) = subtitle_state.active.as_ref() {
             subtitle_label.set_markup(&subtitle_cue_markup(cue));
             apply_subtitle_font_size(&subtitle_label, picture.width());
@@ -628,18 +549,6 @@ fn schedule_frames(
 
         let mut state = state.borrow_mut();
         state.last_frame_time_us = Some(frame_time_us);
-        let sample = TickSample {
-            interval_us: tick_interval_us,
-            frame_time_us,
-            frame_time_delta_us,
-            refresh_interval_us,
-            presentation_time_us,
-            window_active,
-        };
-        if state.tick_history.len() == 32 {
-            state.tick_history.pop_front();
-        }
-        state.tick_history.push_back(sample);
         state.tick_count += 1;
         if video_debug && state.tick_count % 250 == 0 {
             tracing::info!(
