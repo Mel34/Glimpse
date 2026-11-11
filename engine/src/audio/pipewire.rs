@@ -67,7 +67,6 @@ struct ResamplerState {
     current: Option<[f32; AUDIO_OUTPUT_CHANNELS]>,
     next: Option<[f32; AUDIO_OUTPUT_CHANNELS]>,
     phase: f64,
-    eof_last_sample_output: bool,
 }
 
 struct ProcessData {
@@ -512,13 +511,9 @@ fn render_pcm(
 
         if resampler.next.is_none() {
             resampler.next = consumer.pop().ok();
-            if resampler.next.is_none() && end_of_stream && !resampler.eof_last_sample_output {
-                resampler.next = resampler.current;
-                resampler.eof_last_sample_output = resampler.next.is_some();
-            }
         }
 
-        let (Some(current), Some(next)) = (resampler.current, resampler.next) else {
+        let Some(current) = resampler.current else {
             let remaining_samples = (frame_count - output_index) * AUDIO_OUTPUT_CHANNELS;
             if end_of_stream {
                 eof_silence_samples = remaining_samples;
@@ -536,6 +531,19 @@ fn render_pcm(
             }
             break;
         }
+        let next = match resampler.next {
+            Some(next) => next,
+            None if resampler.phase == 0.0 => current,
+            None => {
+                let remaining_samples = (frame_count - output_index) * AUDIO_OUTPUT_CHANNELS;
+                if end_of_stream {
+                    eof_silence_samples = remaining_samples;
+                } else {
+                    underflow_samples = remaining_samples;
+                }
+                break;
+            }
+        };
 
         let fraction = resampler.phase as f32;
         let left = (current[0] + (next[0] - current[0]) * fraction) * volume;
