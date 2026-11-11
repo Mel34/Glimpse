@@ -77,7 +77,7 @@ pub fn create_floating_bottom_bar() -> ControlBarWidgets {
     volume_percent_label.add_css_class("caption");
     vol_vbox.append(&volume_percent_label);
 
-    let volume_slider = Scale::with_range(Orientation::Vertical, 0.0, 1.0, 0.02);
+    let volume_slider = Scale::with_range(Orientation::Vertical, 0.0, 1.5, 0.02);
     volume_slider.set_inverted(true); // 1.0 at the top, 0.0 at the bottom
     volume_slider.set_size_request(24, 140);
     volume_slider.set_value(1.0);
@@ -175,7 +175,7 @@ pub fn track_popover_visibility(popover: &gtk4::Popover, open_popovers: &Rc<Cell
 
 /// Remember the most recent audible level without replacing it with zero while muted.
 pub fn remember_nonzero_volume(last_nonzero_volume: &Cell<f64>, volume: f64) {
-    let clamped = volume.clamp(0.0, 1.0);
+    let clamped = volume.clamp(0.0, 1.5);
     if clamped > 0.001 {
         last_nonzero_volume.set(clamped);
     }
@@ -183,12 +183,12 @@ pub fn remember_nonzero_volume(last_nonzero_volume: &Cell<f64>, volume: f64) {
 
 /// Toggle mute while preserving the previous non-zero volume level.
 pub fn toggle_mute_volume(current_volume: f64, last_nonzero_volume: &Cell<f64>) -> f64 {
-    let current = current_volume.clamp(0.0, 1.0);
+    let current = current_volume.clamp(0.0, 1.5);
     if current > 0.001 {
         last_nonzero_volume.set(current);
         0.0
     } else {
-        last_nonzero_volume.get().clamp(0.001, 1.0)
+        last_nonzero_volume.get().clamp(0.001, 1.5)
     }
 }
 
@@ -239,7 +239,7 @@ pub fn update_volume_indicator(
         return;
     }
 
-    let clamped = vol.clamp(0.0, 1.0);
+    let clamped = vol.clamp(0.0, 1.5);
     let pct = (clamped * 100.0).round() as i32;
     percent_label.set_text(&format!("{}%", pct));
 
