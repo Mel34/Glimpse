@@ -7,7 +7,6 @@ use std::cell::{Cell, RefCell};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 mod imp {
     use super::*;
@@ -169,20 +168,16 @@ impl RotatablePicture {
         fs::create_dir_all(&directory)
             .map_err(|error| format!("Could not create {}: {error}", directory.display()))?;
 
-        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)
-            .map_err(|error| format!("System clock is before the Unix epoch: {error}"))?;
+        let timestamp = glib::DateTime::now_local()
+            .and_then(|now| now.format("%Y-%m-%d %H-%M-%S"))
+            .map_err(|error| format!("Could not format the screenshot timestamp: {error}"))?;
         for attempt in 0..1000 {
             let suffix = if attempt == 0 {
                 String::new()
             } else {
-                format!("-{attempt}")
+                format!(" ({attempt})")
             };
-            let filename = format!(
-                "Glimpse-{}-{:09}{}.png",
-                timestamp.as_secs(),
-                timestamp.subsec_nanos(),
-                suffix,
-            );
+            let filename = format!("Screenshot From {timestamp}{suffix}.png");
             let path = directory.join(filename);
             let mut file = match OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(file) => file,
