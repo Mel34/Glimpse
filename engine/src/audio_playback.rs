@@ -214,15 +214,11 @@ impl AudioPlaybackReport {
 /// diagnostics. Video/subtitle packets are drained for now;
 /// unified audio/video demux consumption is the next pipeline milestone.
 fn run_file(path: &str, clock: Arc<MasterClock>) -> Result<AudioPlaybackReport, String> {
-    run_file_control(path, clock, Arc::new(PlaybackControl {
-        paused: AtomicBool::new(false),
-        stopped: AtomicBool::new(false),
-        volume: AtomicU32::new(1.0f32.to_bits()),
+    let control = Arc::new(PlaybackControl {
         speed: AtomicU32::new((clock.speed() as f32).to_bits()),
-        queues: Mutex::new(None),
-        finished: AtomicBool::new(false),
-        ended: AtomicBool::new(false),
-    }), Duration::ZERO, None)
+        ..PlaybackControl::default()
+    });
+    run_file_control(path, clock, control, Duration::ZERO, None)
 }
 
 fn run_file_control(
@@ -587,7 +583,7 @@ fn update_audio_clock(sink: &PipeWireAudioSink, clock: &MasterClock, submitted_e
     let queued_secs = queued_frames as f64 / AUDIO_OUTPUT_RATE as f64 * clock.speed();
     clock.set_audio_pts(
         (submitted_end_pts - queued_secs).max(0.0),
-        (stats.device_delay_ms / 1_000.0).max(0.0),
+        (stats.device_delay_ms / 1_000.0).max(0.0) * clock.speed(),
     );
 }
 
