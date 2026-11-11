@@ -24,6 +24,7 @@ const PACKET_QUEUE_BYTES: usize = 64 * 1024 * 1024;
 const AUDIO_FRAME_QUEUE_BYTES: usize = 32 * 1024 * 1024;
 const PREBUFFER_SECONDS: f64 = 0.20;
 const OUTPUT_CHUNK_FRAMES: usize = 480;
+const DEFAULT_PIPEWIRE_QUANTUM_FRAMES: usize = 1024;
 const OUTPUT_BUFFER_TARGET_FRAMES: usize = AUDIO_OUTPUT_RATE as usize / 5;
 
 /// Result of one complete audio-only playback session.
@@ -524,7 +525,7 @@ fn output_frame(
         let speed = f32::from_bits(control.speed.load(Ordering::Relaxed)) as f64;
         let requested_frames = sink.stats().last_requested_frames;
         let callback_frames = if requested_frames == 0 || requested_frames > (AUDIO_OUTPUT_RATE as u64 * 2) {
-            OUTPUT_CHUNK_FRAMES as f64
+            DEFAULT_PIPEWIRE_QUANTUM_FRAMES as f64
         } else {
             requested_frames as f64
         };
