@@ -1,6 +1,31 @@
 # Glimpse
 
+Glimpse is an independent **Showtime replacement for the GNOME desktop**. It aims to provide the same focused, native GTK4/libadwaita video-player experience, while building on a different playback engine and adding a few extra controls.
+
 A Linux media player written in Rust with GTK4, libadwaita, an in-process FFmpeg playback engine, and native PipeWire audio output.
+
+## Glimpse and GNOME Showtime
+
+Glimpse is designed as a practical alternative to [GNOME Showtime (Video Player)](https://apps.gnome.org/Showtime/). The table below compares the user-facing playback features documented by GNOME with the features available in Glimpse 0.4.0.
+
+| Feature | GNOME Showtime | Glimpse 0.4.0 |
+| --- | --- | --- |
+| Distraction-free playback controls | Yes | Yes |
+| Fullscreen playback | Yes | Yes |
+| Adjustable playback speed | Yes | Yes — continuous 0.5×–2.0× |
+| Multiple audio tracks | Yes | Yes |
+| Multiple subtitle tracks | Yes | Yes |
+| Video rotation | Yes | Yes — 90° clockwise or counterclockwise |
+| Screenshot capture | Yes | Yes — PNG saved to `~/Pictures/Screenshots/` |
+| Volume amplification above 100% | Not listed in GNOME's feature overview | Yes — up to 150% |
+| Whole-file looping | Not listed in GNOME's feature overview | Yes |
+| A–B section looping | Not listed in GNOME's feature overview | Yes |
+| External subtitle format details | Not specified in GNOME's feature overview | SRT, WebVTT, ASS, and SSA |
+
+The comparison focuses on documented player features rather than implementation quality or codec benchmarks. “Not listed” means the feature is not advertised in GNOME's official feature overview; it does not claim that Showtime cannot support it.
+
+Both applications share the same goal: a straightforward GNOME-native video player that gets out of the way while watching. Glimpse differentiates itself with its in-process FFmpeg engine, direct PipeWire audio output, A–B looping, and volume amplification up to 150%.
+
 
 - **Repository:** https://github.com/Mel34/Glimpse
 - **Application ID:** `com.github.Mel34.Glimpse`
