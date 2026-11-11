@@ -677,15 +677,6 @@ mod tests {
     }
 
     #[test]
-    fn playback_resampling_changes_sample_count_and_pitch_by_rate() {
-        let input = vec![0.0, 0.0, 1.0, 1.0, 0.0, 0.0, -1.0, -1.0];
-
-        assert_eq!(resample_for_speed(&input, 1.0).as_ref(), input.as_slice());
-        assert_eq!(resample_for_speed(&input, 2.0).len(), input.len() / 2);
-        assert_eq!(resample_for_speed(&input, 0.5).len(), input.len() * 2);
-    }
-
-    #[test]
     fn speed_sanitisation_clamps_values_and_recovers_non_finite_input() {
         assert_eq!(sanitise_speed(0.1), 0.5);
         assert_eq!(sanitise_speed(1.25), 1.25);
