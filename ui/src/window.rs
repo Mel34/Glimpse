@@ -388,7 +388,11 @@ impl GlimpseWindow {
         bottom_controls.container.set_valign(Align::End);
         player_overlay.add_overlay(&bottom_controls.container);
 
-        stack.add_named(&player_overlay, Some("player"));
+        let player_handle = WindowHandle::new();
+        player_handle.set_vexpand(true);
+        player_handle.set_hexpand(true);
+        player_handle.set_child(Some(&player_overlay));
+        stack.add_named(&player_handle, Some("player"));
         stack.set_visible_child_name("loader");
 
         root_overlay.set_child(Some(&stack));
@@ -434,7 +438,6 @@ impl GlimpseWindow {
             .min(300);
 
         let click_state = Rc::new(RefCell::new(VideoClickStateMachine::new(double_click_time)));
-        let is_dragging = Rc::new(RefCell::new(false));
 
         let click_gesture = GestureClick::new();
         click_gesture.set_button(1); // Left mouse button only
@@ -443,7 +446,6 @@ impl GlimpseWindow {
         let v_toggle = Rc::clone(&video_playback);
         let win_click = window.clone();
         let click_state_press = Rc::clone(&click_state);
-        let is_dragging_press = Rc::clone(&is_dragging);
 
         // On press: if double-click (n_press >= 2), toggle fullscreen immediately and cancel any timer
         click_gesture.connect_pressed(move |_gesture, n_press, x, y| {
@@ -451,30 +453,19 @@ impl GlimpseWindow {
             if n_press >= 2 {
                 tracing::info!("Double-click detected; toggling fullscreen");
                 click_state_press.borrow_mut().cancel();
-                *is_dragging_press.borrow_mut() = false;
                 if win_click.is_fullscreen() {
                     win_click.unfullscreen();
                 } else {
                     win_click.fullscreen();
                 }
-            } else {
-                *is_dragging_press.borrow_mut() = false;
             }
         });
 
-        // On release: only trigger single-click play/pause if no dragging took place!
+        // On release: schedule single-click play/pause unless this is a double-click.
         let click_state_rel = Rc::clone(&click_state);
-        let is_dragging_rel = Rc::clone(&is_dragging);
         let win_rel = window.clone();
         click_gesture.connect_released(move |_gesture, n_press, x, y| {
-            let dragging = *is_dragging_rel.borrow();
-            tracing::info!(n_press, x, y, dragging, "Video surface gesture released");
-            if *is_dragging_rel.borrow() {
-                // Dragging occurred: do not play/pause
-                *is_dragging_rel.borrow_mut() = false;
-                return;
-            }
-
+            tracing::info!(n_press, x, y, "Video surface gesture released");
             if n_press == 1 {
                 tracing::info!("Single video-surface click accepted; scheduling play/pause toggle");
                 let p_action = Rc::clone(&p_toggle);
@@ -517,51 +508,8 @@ impl GlimpseWindow {
 
         picture.add_controller(click_gesture);
 
-        // Window drag on video surface: starts moving window when drag exceeds threshold.
-        // Cancels click timer and sets is_dragging so playback continues uninterrupted!
-        let drag_gesture = gtk4::GestureDrag::new();
-        let win_drag_p = window.clone();
-        let click_state_drag_begin = Rc::clone(&click_state);
-
-        drag_gesture.connect_drag_begin(move |_gesture, start_x, start_y| {
-            tracing::info!(start_x, start_y, "Video surface drag gesture began");
-            click_state_drag_begin.borrow_mut().cancel();
-        });
-
-        let click_state_upd = Rc::clone(&click_state);
-        let is_dragging_upd = Rc::clone(&is_dragging);
-        drag_gesture.connect_drag_update(move |gesture, offset_x, offset_y| {
-            if win_drag_p.is_fullscreen() {
-                return;
-            }
-            if offset_x.hypot(offset_y) > 4.0 && !*is_dragging_upd.borrow() {
-                // Start the compositor move once per gesture. Reissuing
-                // begin_move() on every drag update can disrupt the Wayland
-                // interactive-move loop and starve GTK's main context.
-                tracing::info!(offset_x, offset_y, "Video surface drag threshold crossed");
-                *is_dragging_upd.borrow_mut() = true;
-                click_state_upd.borrow_mut().cancel();
-
-                if let Some(surface) = win_drag_p.surface() {
-                    if let Ok(toplevel) = surface.downcast::<gdk4::Toplevel>() {
-                        if let Some(device) = gesture.device() {
-                            toplevel.begin_move(&device, 1, 0.0, 0.0, 0);
-                        }
-                    }
-                }
-            }
-        });
-
-        let is_dragging_end = Rc::clone(&is_dragging);
-        drag_gesture.connect_drag_end(move |_gesture, offset_x, offset_y| {
-            tracing::info!(offset_x, offset_y, "Video surface drag gesture ended");
-            let is_d = Rc::clone(&is_dragging_end);
-            glib::timeout_add_local_once(Duration::from_millis(50), move || {
-                *is_d.borrow_mut() = false;
-            });
-        });
-
-        picture.add_controller(drag_gesture);
+        // The surrounding player WindowHandle provides native window dragging,
+        // matching Showtime without manually starting compositor moves.
 
         // Rule 3: Mouse wheel over seekbar seeks in 5s steps (consumed)
         let p_seek_wheel = Rc::clone(&player);
