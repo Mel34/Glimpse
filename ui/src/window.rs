@@ -32,7 +32,7 @@ fn cancel_adaptive_scrub(
     state: &Cell<AdaptiveScrubState>,
     marker_position: &Cell<Option<f64>>,
     marker: &gtk4::DrawingArea,
-) {
+) -> bool {
     let original_speed = match state.get() {
         AdaptiveScrubState::Dragging { original_speed, .. }
         | AdaptiveScrubState::CatchingUp { original_speed, .. } => Some(original_speed),
@@ -45,6 +45,7 @@ fn cancel_adaptive_scrub(
     if marker_position.take().is_some() {
         marker.queue_draw();
     }
+    original_speed.is_some()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,6 +123,7 @@ impl GlimpseWindow {
         let video_playback: Rc<RefCell<Option<VideoPlaybackHandle>>> = Rc::new(RefCell::new(None));
         let ab_loop = Rc::new(Cell::new(AbLoopState::Unset));
         let adaptive_scrub_state = Rc::new(Cell::new(AdaptiveScrubState::Idle));
+        let resume_from_scrub = Rc::new(Cell::new(false));
         let seekbar_drag_moved = Rc::new(Cell::new(false));
         let video_playback_on_focus = Rc::clone(&video_playback);
         window.connect_is_active_notify(move |window| {
@@ -575,6 +577,7 @@ impl GlimpseWindow {
         let scrub_state_click = Rc::clone(&adaptive_scrub_state);
         let marker_position_click = Rc::clone(&bottom_controls.seekbar_marker_position);
         let marker_click = bottom_controls.seekbar_marker.clone();
+        let resume_from_scrub_click = Rc::clone(&resume_from_scrub);
         click_gesture.connect_released(move |_gesture, n_press, x, y| {
             tracing::debug!(n_press, x, y, "Video surface gesture released");
             if n_press == 1 {
@@ -584,6 +587,7 @@ impl GlimpseWindow {
                 let scrub_state_action = Rc::clone(&scrub_state_click);
                 let marker_position_action = Rc::clone(&marker_position_click);
                 let marker_action = marker_click.clone();
+                let resume_from_scrub_action = Rc::clone(&resume_from_scrub_click);
                 let w_fs = win_rel.clone();
                 VideoClickStateMachine::handle_click(
                     Rc::clone(&click_state_rel), 1,
@@ -592,15 +596,22 @@ impl GlimpseWindow {
                             let was_playing = p.state() == PlayerState::Playing;
                             tracing::debug!(was_playing, "Video-surface play/pause timer fired");
                             if was_playing {
-                                cancel_adaptive_scrub(
+                                let cancelled_scrub = cancel_adaptive_scrub(
                                     p,
                                     &scrub_state_action,
                                     &marker_position_action,
                                     &marker_action,
                                 );
+                                resume_from_scrub_action.set(cancelled_scrub);
                                 p.pause();
                             } else {
-                                if p.state() == PlayerState::Ended {
+                                if resume_from_scrub_action.replace(false) {
+                                    let position = p.position();
+                                    p.seek(position);
+                                    if let Some(ref mut video) = *v_action.borrow_mut() {
+                                        video.seek(position);
+                                    }
+                                } else if p.state() == PlayerState::Ended {
                                     if let Some(ref mut video) = *v_action.borrow_mut() { video.seek(Duration::ZERO); }
                                 }
                                 p.play();
@@ -1033,21 +1044,29 @@ impl GlimpseWindow {
         let scrub_state_space = Rc::clone(&adaptive_scrub_state);
         let marker_position_space = Rc::clone(&bottom_controls.seekbar_marker_position);
         let marker_space = bottom_controls.seekbar_marker.clone();
+        let resume_from_scrub_space = Rc::clone(&resume_from_scrub);
         space_controller.connect_key_pressed(move |_, keyval, _, _| {
             if keyval != gdk4::Key::space {
                 return glib::Propagation::Proceed;
             }
             if let Some(ref p) = *p_space.borrow() {
                 if p.state() == PlayerState::Playing {
-                    cancel_adaptive_scrub(
+                    let cancelled_scrub = cancel_adaptive_scrub(
                         p,
                         &scrub_state_space,
                         &marker_position_space,
                         &marker_space,
                     );
+                    resume_from_scrub_space.set(cancelled_scrub);
                     p.pause();
                 } else {
-                    if p.state() == PlayerState::Ended {
+                    if resume_from_scrub_space.replace(false) {
+                        let position = p.position();
+                        p.seek(position);
+                        if let Some(ref mut video) = *video_space.borrow_mut() {
+                            video.seek(position);
+                        }
+                    } else if p.state() == PlayerState::Ended {
                         if let Some(ref mut video) = *video_space.borrow_mut() {
                             video.seek(Duration::ZERO);
                         }
