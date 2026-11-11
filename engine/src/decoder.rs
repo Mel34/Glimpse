@@ -349,26 +349,75 @@ impl VideoDecoder {
         }
 
         let mut vaapi_enabled = use_vaapi;
+        let mut vaapi_decoder = None;
         if use_vaapi {
             let context_ptr = unsafe { context.as_mut_ptr() };
             let codec_id = unsafe { (*context_ptr).codec_id };
-            let codec = unsafe { ffmpeg::ffi::avcodec_find_decoder(codec_id) };
-            if codec.is_null() {
-                tracing::warn!(
-                    codec_id = ?codec_id,
-                    "FFmpeg could not resolve the video decoder while inspecting VAAPI support"
-                );
+            let default_codec = unsafe { ffmpeg::ffi::avcodec_find_decoder(codec_id) };
+            let codec_id_name = unsafe { ffmpeg::ffi::avcodec_get_name(codec_id) };
+            let codec_id_name = if codec_id_name.is_null() {
+                String::new()
             } else {
-                let codec_name = unsafe { ffmpeg::ffi::avcodec_get_name(codec_id) };
-                let codec_name = if codec_name.is_null() {
-                    "unknown".to_string()
-                } else {
-                    unsafe { std::ffi::CStr::from_ptr(codec_name) }.to_string_lossy().into_owned()
+                unsafe { std::ffi::CStr::from_ptr(codec_id_name) }
+                    .to_string_lossy()
+                    .into_owned()
+            };
+            let named_codec = if codec_id_name.is_empty() {
+                std::ptr::null()
+            } else {
+                let name = std::ffi::CString::new(codec_id_name.as_str())
+                    .expect("FFmpeg codec names cannot contain NUL");
+                unsafe { ffmpeg::ffi::avcodec_find_decoder_by_name(name.as_ptr()) }
+            };
+
+            let supports_vaapi = |codec: *const ffmpeg::ffi::AVCodec| {
+                if codec.is_null() {
+                    return false;
+                }
+                let mut index = 0;
+                loop {
+                    let config = unsafe { ffmpeg::ffi::avcodec_get_hw_config(codec, index) };
+                    if config.is_null() {
+                        return false;
+                    }
+                    if unsafe {
+                        (*config).device_type == ffmpeg::ffi::AVHWDeviceType::VAAPI
+                    } {
+                        return true;
+                    }
+                    index += 1;
+                }
+            };
+
+            let selected_codec = if supports_vaapi(default_codec) {
+                default_codec
+            } else if supports_vaapi(named_codec) {
+                named_codec
+            } else {
+                std::ptr::null()
+            };
+
+            if selected_codec.is_null() {
+                tracing::warn!(
+                    codec = %codec_id_name,
+                    "No decoder advertising VAAPI support was found; falling back to software video decoding"
+                );
+                vaapi_enabled = false;
+            } else {
+                let selected_name = unsafe {
+                    let name = (*selected_codec).name;
+                    if name.is_null() {
+                        "unknown".to_string()
+                    } else {
+                        std::ffi::CStr::from_ptr(name).to_string_lossy().into_owned()
+                    }
                 };
                 let mut hardware_configs = Vec::new();
                 let mut config_index = 0;
                 loop {
-                    let config = unsafe { ffmpeg::ffi::avcodec_get_hw_config(codec, config_index) };
+                    let config = unsafe {
+                        ffmpeg::ffi::avcodec_get_hw_config(selected_codec, config_index)
+                    };
                     if config.is_null() {
                         break;
                     }
@@ -380,59 +429,74 @@ impl VideoDecoder {
                     config_index += 1;
                 }
                 tracing::info!(
-                    codec = %codec_name,
-                    codec_id = ?codec_id,
+                    codec = %codec_id_name,
+                    decoder = %selected_name,
                     hardware_configs = ?hardware_configs,
-                    "Video decoder hardware configurations"
+                    "Selected VAAPI-capable video decoder"
                 );
+                vaapi_decoder = unsafe {
+                    ffmpeg::codec::Codec::from_raw(selected_codec)
+                }
+                .and_then(|codec| codec.video());
+                if vaapi_decoder.is_none() {
+                    tracing::warn!(
+                        decoder = %selected_name,
+                        "Selected VAAPI decoder is not a video decoder; falling back to software"
+                    );
+                    vaapi_enabled = false;
+                }
             }
 
-            let setup_result = (|| -> Result<(), String> {
-                let render_node = std::env::var("GLIMPSE_DRM_RENDER_NODE").ok();
-                let render_node = render_node
-                    .as_deref()
-                    .map(std::ffi::CString::new)
-                    .transpose()
-                    .map_err(|_| "GLIMPSE_DRM_RENDER_NODE contains an interior NUL byte".to_string())?;
-                let device_name = render_node.as_ref().map_or(std::ptr::null(), |value| value.as_ptr());
-                let mut device: *mut ffmpeg::ffi::AVBufferRef = std::ptr::null_mut();
-                let result = unsafe {
-                    ffmpeg::ffi::av_hwdevice_ctx_create(
-                        &mut device,
-                        ffmpeg::ffi::AVHWDeviceType::VAAPI,
-                        device_name,
-                        std::ptr::null_mut(),
-                        0,
-                    )
-                };
-                if result < 0 {
-                    return Err(format!("Could not create VAAPI device (FFmpeg error {result})"));
-                }
+            if vaapi_enabled {
+                let setup_result = (|| -> Result<(), String> {
+                    let render_node = std::env::var("GLIMPSE_DRM_RENDER_NODE").ok();
+                    let render_node = render_node
+                        .as_deref()
+                        .map(std::ffi::CString::new)
+                        .transpose()
+                        .map_err(|_| "GLIMPSE_DRM_RENDER_NODE contains an interior NUL byte".to_string())?;
+                    let device_name = render_node.as_ref().map_or(std::ptr::null(), |value| value.as_ptr());
+                    let mut device: *mut ffmpeg::ffi::AVBufferRef = std::ptr::null_mut();
+                    let result = unsafe {
+                        ffmpeg::ffi::av_hwdevice_ctx_create(
+                            &mut device,
+                            ffmpeg::ffi::AVHWDeviceType::VAAPI,
+                            device_name,
+                            std::ptr::null_mut(),
+                            0,
+                        )
+                    };
+                    if result < 0 {
+                        return Err(format!("Could not create VAAPI device (FFmpeg error {result})"));
+                    }
 
-                let context_ptr = unsafe { context.as_mut_ptr() };
-                let device_ref = unsafe { ffmpeg::ffi::av_buffer_ref(device) };
-                unsafe { ffmpeg::ffi::av_buffer_unref(&mut device) };
-                if device_ref.is_null() {
-                    return Err("Could not retain the VAAPI device context".to_string());
-                }
-                unsafe {
-                    (*context_ptr).get_format = Some(select_vaapi_pixel_format);
-                    (*context_ptr).hw_device_ctx = device_ref;
-                }
-                Ok(())
-            })();
+                    let context_ptr = unsafe { context.as_mut_ptr() };
+                    let device_ref = unsafe { ffmpeg::ffi::av_buffer_ref(device) };
+                    unsafe { ffmpeg::ffi::av_buffer_unref(&mut device) };
+                    if device_ref.is_null() {
+                        return Err("Could not retain the VAAPI device context".to_string());
+                    }
+                    unsafe {
+                        (*context_ptr).get_format = Some(select_vaapi_pixel_format);
+                        (*context_ptr).hw_device_ctx = device_ref;
+                    }
+                    Ok(())
+                })();
 
-            if let Err(error) = setup_result {
-                tracing::warn!(%error, "VAAPI setup failed; falling back to software video decoding");
-                vaapi_enabled = false;
+                if let Err(error) = setup_result {
+                    tracing::warn!(%error, "VAAPI setup failed; falling back to software video decoding");
+                    vaapi_enabled = false;
+                    vaapi_decoder = None;
+                }
             }
         }
 
         let decoder = if vaapi_enabled {
-            match context.decoder().video() {
+            let codec = vaapi_decoder.expect("VAAPI decoder selection must succeed when enabled");
+            match context.decoder().open_as(codec).and_then(|opened| opened.video()) {
                 Ok(decoder) => decoder,
                 Err(error) => {
-                    tracing::warn!(%error, "Could not open VAAPI decoder; falling back to software video decoding");
+                    tracing::warn!(%error, "Could not open selected VAAPI decoder; falling back to software video decoding");
                     vaapi_enabled = false;
                     open_software_video_decoder(path, stream_index)?
                 }
