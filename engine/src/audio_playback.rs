@@ -42,14 +42,28 @@ pub struct AudioPlaybackSession {
     clock: Arc<MasterClock>,
 }
 
-#[derive(Default)]
 struct PlaybackControl {
     paused: AtomicBool,
     stopped: AtomicBool,
     volume: AtomicU32,
+    speed: AtomicU32,
     queues: Mutex<Option<(PacketQueues, Arc<AudioFrameQueue>)>>,
     finished: AtomicBool,
     ended: AtomicBool,
+}
+
+impl Default for PlaybackControl {
+    fn default() -> Self {
+        Self {
+            paused: AtomicBool::new(false),
+            stopped: AtomicBool::new(false),
+            volume: AtomicU32::new(1.0f32.to_bits()),
+            speed: AtomicU32::new(1.0f32.to_bits()),
+            queues: Mutex::new(None),
+            finished: AtomicBool::new(false),
+            ended: AtomicBool::new(false),
+        }
+    }
 }
 
 /// A joinable PipeWire playback worker owned by its Player.
@@ -89,6 +103,7 @@ impl AudioPlaybackSession {
     ) -> Result<AudioPlaybackHandle, String> {
         let control = Arc::new(PlaybackControl::default());
         control.volume.store(sanitise_volume(initial_volume).to_bits(), Ordering::Relaxed);
+        control.speed.store((self.clock.speed() as f32).to_bits(), Ordering::Relaxed);
         let worker_control = Arc::clone(&control);
         let clock = Arc::clone(&self.clock);
         let worker = thread::Builder::new()
@@ -142,6 +157,10 @@ impl AudioPlaybackHandle {
         self.control.volume.store(sanitise_volume(volume).to_bits(), Ordering::Relaxed);
     }
 
+    pub fn set_speed(&self, speed: f32) {
+        self.control.speed.store(sanitise_speed(speed).to_bits(), Ordering::Relaxed);
+    }
+
     /// Returns true once the worker has completed and published its result.
     pub fn is_finished(&self) -> bool {
         self.control.finished.load(Ordering::Acquire)
@@ -176,6 +195,10 @@ fn sanitise_volume(volume: f32) -> f32 {
     if volume.is_finite() { volume.clamp(0.0, 1.0) } else { 1.0 }
 }
 
+fn sanitise_speed(speed: f32) -> f32 {
+    if speed.is_finite() { speed.clamp(0.5, 2.0) } else { 1.0 }
+}
+
 impl AudioPlaybackReport {
     pub fn decoded_duration(&self) -> f64 {
         self.last_end_pts
@@ -195,6 +218,7 @@ fn run_file(path: &str, clock: Arc<MasterClock>) -> Result<AudioPlaybackReport, 
         paused: AtomicBool::new(false),
         stopped: AtomicBool::new(false),
         volume: AtomicU32::new(1.0f32.to_bits()),
+        speed: AtomicU32::new((clock.speed() as f32).to_bits()),
         queues: Mutex::new(None),
         finished: AtomicBool::new(false),
         ended: AtomicBool::new(false),
@@ -464,14 +488,41 @@ struct PlaybackStats {
     last_end_pts: Option<f64>,
 }
 
-fn record_frame(stats: &mut PlaybackStats, frame: &AudioFrameData) -> usize {
-    let sample_frames = frame.samples.len() / AUDIO_OUTPUT_CHANNELS;
+fn record_frame(stats: &mut PlaybackStats, frame: &AudioFrameData, sample_frames: usize) -> usize {
     if sample_frames == 0 { return 0; }
     stats.blocks += 1;
     stats.sample_frames += sample_frames as u64;
     stats.first_pts.get_or_insert(frame.pts);
     stats.last_end_pts = Some(frame.pts + frame.duration);
     sample_frames
+}
+
+/// Resamples decoded PCM to the selected playback rate. The PipeWire stream
+/// remains fixed at 48 kHz, so changing the sample count changes both duration
+/// and pitch without involving its real-time process callback.
+fn resample_for_speed(samples: &[f32], speed: f64) -> Vec<f32> {
+    let input_frames = samples.len() / AUDIO_OUTPUT_CHANNELS;
+    if input_frames == 0 {
+        return Vec::new();
+    }
+    if (speed - 1.0).abs() < f64::EPSILON {
+        return samples.to_vec();
+    }
+
+    let output_frames = (input_frames as f64 / speed).ceil() as usize;
+    let mut output = Vec::with_capacity(output_frames * AUDIO_OUTPUT_CHANNELS);
+    for output_index in 0..output_frames {
+        let source_position = (output_index as f64 * speed).min((input_frames - 1) as f64);
+        let source_index = source_position.floor() as usize;
+        let next_index = (source_index + 1).min(input_frames - 1);
+        let fraction = (source_position - source_index as f64) as f32;
+        for channel in 0..AUDIO_OUTPUT_CHANNELS {
+            let first = samples[source_index * AUDIO_OUTPUT_CHANNELS + channel];
+            let second = samples[next_index * AUDIO_OUTPUT_CHANNELS + channel];
+            output.push(first + (second - first) * fraction);
+        }
+    }
+    output
 }
 
 fn output_frame(
@@ -481,8 +532,9 @@ fn output_frame(
     frame: AudioFrameData,
     stats: &mut PlaybackStats,
 ) -> bool {
-    let samples = frame.samples.as_slice();
-    let sample_frames = record_frame(stats, &frame);
+    let speed = f32::from_bits(control.speed.load(Ordering::Relaxed)) as f64;
+    let samples = resample_for_speed(frame.samples.as_slice(), speed);
+    let sample_frames = record_frame(stats, &frame, samples.len() / AUDIO_OUTPUT_CHANNELS);
     if sample_frames == 0 { return true; }
 
     let mut offset = 0;
@@ -494,7 +546,7 @@ fn output_frame(
         let chunk_frames = (sample_frames - offset).min(OUTPUT_CHUNK_FRAMES);
         let start = offset * AUDIO_OUTPUT_CHANNELS;
         let end = (offset + chunk_frames) * AUDIO_OUTPUT_CHANNELS;
-        let chunk_pts = frame.pts + offset as f64 / AUDIO_OUTPUT_RATE as f64;
+        let chunk_pts = frame.pts + offset as f64 / AUDIO_OUTPUT_RATE as f64 * speed;
 
         while sink.buffered_sample_frames() >= OUTPUT_BUFFER_TARGET_FRAMES {
             if !wait_until_active(sink, clock, control) {
@@ -505,7 +557,7 @@ fn output_frame(
         }
         sink.push_samples(&samples[start..end], chunk_pts);
         offset += chunk_frames;
-        update_audio_clock(sink, clock, chunk_pts + chunk_frames as f64 / AUDIO_OUTPUT_RATE as f64);
+        update_audio_clock(sink, clock, chunk_pts + chunk_frames as f64 / AUDIO_OUTPUT_RATE as f64 * speed);
     }
     true
 }
@@ -532,7 +584,7 @@ fn update_audio_clock(sink: &PipeWireAudioSink, clock: &MasterClock, submitted_e
     let stats = sink.stats();
     let queued_frames = sink.buffered_sample_frames() as u64
         + stats.resampler_buffered_frames;
-    let queued_secs = queued_frames as f64 / AUDIO_OUTPUT_RATE as f64;
+    let queued_secs = queued_frames as f64 / AUDIO_OUTPUT_RATE as f64 * clock.speed();
     clock.set_audio_pts(
         (submitted_end_pts - queued_secs).max(0.0),
         (stats.device_delay_ms / 1_000.0).max(0.0),
@@ -634,6 +686,23 @@ mod tests {
         assert!(control.stopped.load(Ordering::Acquire));
         assert!(handle.is_finished());
         assert!(handle.worker.is_none());
+    }
+
+    #[test]
+    fn playback_resampling_changes_sample_count_and_pitch_by_rate() {
+        let input = vec![0.0, 0.0, 1.0, 1.0, 0.0, 0.0, -1.0, -1.0];
+
+        assert_eq!(resample_for_speed(&input, 1.0), input);
+        assert_eq!(resample_for_speed(&input, 2.0).len(), input.len() / 2);
+        assert_eq!(resample_for_speed(&input, 0.5).len(), input.len() * 2);
+    }
+
+    #[test]
+    fn speed_sanitisation_clamps_values_and_recovers_non_finite_input() {
+        assert_eq!(sanitise_speed(0.1), 0.5);
+        assert_eq!(sanitise_speed(1.25), 1.25);
+        assert_eq!(sanitise_speed(3.0), 2.0);
+        assert_eq!(sanitise_speed(f32::NAN), 1.0);
     }
 
     #[test]
