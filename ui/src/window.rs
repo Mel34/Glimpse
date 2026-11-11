@@ -634,9 +634,16 @@ impl GlimpseWindow {
         let seekbar_drag_state = Rc::clone(&bottom_controls.seekbar_dragging);
         let seekbar_motion_dragging = Rc::clone(&bottom_controls.seekbar_dragging);
         let seekbar_motion_moved = Rc::clone(&seekbar_drag_moved);
+        let seekbar_press_position: Rc<Cell<Option<(f64, f64)>>> = Rc::new(Cell::new(None));
+        let seekbar_motion_origin = Rc::clone(&seekbar_press_position);
         let seekbar_motion = EventControllerMotion::new();
-        seekbar_motion.connect_motion(move |_, _, _| {
-            if seekbar_motion_dragging.get() {
+        seekbar_motion.connect_motion(move |_, x, y| {
+            const DRAG_THRESHOLD_PX: f64 = 8.0;
+            if seekbar_motion_dragging.get()
+                && seekbar_motion_origin.get().is_some_and(|(start_x, start_y)| {
+                    (x - start_x).hypot(y - start_y) >= DRAG_THRESHOLD_PX
+                })
+            {
                 seekbar_motion_moved.set(true);
             }
         });
@@ -663,6 +670,7 @@ impl GlimpseWindow {
                             scrub_state_for_events.set(AdaptiveScrubState::Idle);
                         }
                         seekbar_drag_moved.set(false);
+                        seekbar_press_position.set(event.position());
                         seekbar_drag_state.set(true);
                     }
                 }
@@ -673,6 +681,7 @@ impl GlimpseWindow {
                     {
                         let target = Duration::from_secs_f64(seekbar_for_release.value().max(0.0));
                         let did_drag = seekbar_drag_moved.replace(false);
+                        seekbar_press_position.set(None);
                         if let Some(p) = p_seekbar_release.borrow().as_ref() {
                             match scrub_state_for_events.get() {
                                 AdaptiveScrubState::Dragging { original_speed, was_playing }
