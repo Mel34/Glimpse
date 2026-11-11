@@ -95,18 +95,6 @@ static GdkColorState *make_frame_color_state(const AVFrame *frame, GError **erro
     return state;
 }
 
-static GdkColorState *make_hdr10_color_state(GError **error)
-{
-    GdkCicpParams *params = gdk_cicp_params_new();
-    gdk_cicp_params_set_color_primaries(params, 9);      /* BT.2020 */
-    gdk_cicp_params_set_transfer_function(params, 16);   /* SMPTE ST 2084 */
-    gdk_cicp_params_set_matrix_coefficients(params, 9);  /* BT.2020 NCL */
-    gdk_cicp_params_set_range(params, GDK_CICP_RANGE_NARROW);
-    GdkColorState *state = gdk_cicp_params_build_color_state(params, error);
-    g_object_unref(params);
-    return state;
-}
-
 static int validate_420_layout(
     const AVDRMFrameDescriptor *descriptor,
     int width,
@@ -228,20 +216,11 @@ GdkTexture *glimpse_vaapi_texture_from_frame(
         y_format = DRM_FORMAT_R16;
         uv_format = DRM_FORMAT_GR1616;
         bytes_per_sample = 2;
-        if (decoded->color_primaries != AVCOL_PRI_BT2020 ||
-            decoded->color_trc != AVCOL_TRC_SMPTE2084 ||
-            decoded->colorspace != AVCOL_SPC_BT2020_NCL ||
-            decoded->color_range != AVCOL_RANGE_MPEG) {
-            set_error_message(error_message,
-                "P010 presentation currently requires limited-range BT.2020 NCL / PQ HDR10");
-            av_frame_free(&drm);
-            return NULL;
-        }
         GError *error = NULL;
-        color_state = make_hdr10_color_state(&error);
+        color_state = make_frame_color_state(decoded, &error);
         if (!color_state) {
             set_error_message(error_message,
-                error ? error->message : "Creating HDR10 color state failed");
+                error ? error->message : "Could not determine P010 color state");
             g_clear_error(&error);
             av_frame_free(&drm);
             return NULL;
