@@ -52,7 +52,7 @@ Both applications share the same goal: a straightforward GNOME-native video play
 Glimpse uses its in-process `glimpse-engine` for playback.
 
 - FFmpeg/libavformat demuxes media and routes timestamped packets into bounded audio, video, and subtitle queues.
-- FFmpeg/libavcodec decodes media. Video decoding runs independently from the GTK interface, and decoded frames are handed to the presentation path.
+- FFmpeg/libavcodec decodes media. VAAPI hardware decoding is preferred by default, with supported NV12/P010 frames imported through GTK DMA-BUF textures. If VAAPI setup or initial packet submission is unsupported, Glimpse falls back to software decoding and the RGBA/GTK texture path. Set `GLIMPSE_VIDEO_DECODER=software` to force software decoding for diagnostics. Video decoding runs independently from the GTK interface, and decoded frames are handed to the presentation path.
 - Audio is decoded and written directly to PipeWire. The audio clock is authoritative when an audio stream is active; video-only playback uses a monotonic clock.
 - Seeking coordinates the audio and video playback paths. Paused seeks remain paused.
 - Embedded and external text subtitles are rendered over the video. Subtitle selection is independent of audio-track selection.
