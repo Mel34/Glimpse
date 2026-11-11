@@ -13,10 +13,19 @@ use gtk4::{
 
 use glimpse_engine::{Event, Player, PlayerState};
 use crate::controls::{create_floating_bottom_bar, ControlBarWidgets};
-use crate::interaction::{attach_popover_scroll_guard, attach_seekbar_wheel, attach_window_volume_wheel, VideoClickStateMachine};
+use crate::interaction::{adaptive_scrub_speed, attach_popover_scroll_guard, attach_seekbar_wheel, attach_window_volume_wheel, VideoClickStateMachine};
 use crate::track_menu::create_track_popover;
 use crate::video_texture::{bind_subtitle_scaling, VideoPlaybackHandle};
 use crate::rotatable_picture::RotatablePicture;
+
+const SCRUB_TARGET_TOLERANCE: Duration = Duration::from_millis(120);
+
+#[derive(Clone, Copy, Debug)]
+enum AdaptiveScrubState {
+    Idle,
+    Dragging { original_speed: f32, was_playing: bool },
+    CatchingUp { target: Duration, original_speed: f32 },
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AbLoopState {
@@ -91,6 +100,7 @@ impl GlimpseWindow {
         let player: Rc<RefCell<Option<Player>>> = Rc::new(RefCell::new(None));
         let video_playback: Rc<RefCell<Option<VideoPlaybackHandle>>> = Rc::new(RefCell::new(None));
         let ab_loop = Rc::new(Cell::new(AbLoopState::Unset));
+        let adaptive_scrub_state = Rc::new(Cell::new(AdaptiveScrubState::Idle));
         let video_playback_on_focus = Rc::clone(&video_playback);
         window.connect_is_active_notify(move |window| {
             if let Some(video) = video_playback_on_focus.borrow_mut().as_mut() {
@@ -337,6 +347,7 @@ impl GlimpseWindow {
         let timeline_video = Rc::clone(&video_playback);
         let timeline_loop_enabled = Rc::clone(&loop_enabled);
         let timeline_ab_loop = Rc::clone(&ab_loop);
+        let timeline_scrub_state = Rc::clone(&adaptive_scrub_state);
         let loop_resume: Rc<RefCell<Option<crossbeam_channel::Receiver<()>>>> = Rc::new(RefCell::new(None));
         let timeline_loop_resume = Rc::clone(&loop_resume);
         let timeline_seekbar = bottom_controls.seekbar.clone();
@@ -347,8 +358,49 @@ impl GlimpseWindow {
             let Some(_window) = timeline_window.upgrade() else {
                 return glib::ControlFlow::Break;
             };
-            if !timeline_dragging.get() {
-                if let Some(current_player) = timeline_player.borrow().as_ref() {
+            if let Some(current_player) = timeline_player.borrow().as_ref() {
+                if timeline_dragging.get() {
+                    if let AdaptiveScrubState::Dragging { original_speed, was_playing } = timeline_scrub_state.get() {
+                        let position = current_player.position();
+                        let target = Duration::from_secs_f64(timeline_seekbar.value().max(0.0));
+                        if was_playing
+                            && current_player.state() == PlayerState::Playing
+                            && target.saturating_sub(position) > SCRUB_TARGET_TOLERANCE
+                        {
+                            current_player.set_scrub_muted(true);
+                            current_player.set_scrub_speed(adaptive_scrub_speed(
+                                target.saturating_sub(position).as_secs_f64(),
+                                original_speed,
+                            ));
+                        } else {
+                            current_player.set_playback_speed(original_speed);
+                            current_player.set_scrub_muted(false);
+                        }
+                    }
+                } else {
+                    if let AdaptiveScrubState::CatchingUp { target, original_speed } = timeline_scrub_state.get() {
+                        let position = current_player.position();
+                        if target.saturating_sub(position) <= SCRUB_TARGET_TOLERANCE {
+                            current_player.seek(target);
+                            current_player.set_playback_speed(original_speed);
+                            current_player.set_scrub_muted(false);
+                            if let Some(video) = timeline_video.borrow_mut().as_mut() {
+                                video.seek(target);
+                            }
+                            timeline_scrub_state.set(AdaptiveScrubState::Idle);
+                        } else if current_player.state() == PlayerState::Playing {
+                            current_player.set_scrub_muted(true);
+                            current_player.set_scrub_speed(adaptive_scrub_speed(
+                                target.saturating_sub(position).as_secs_f64(),
+                                original_speed,
+                            ));
+                        } else {
+                            current_player.set_playback_speed(original_speed);
+                            current_player.set_scrub_muted(false);
+                            timeline_scrub_state.set(AdaptiveScrubState::Idle);
+                        }
+                    }
+
                     let media_position = current_player.position();
                     let readiness = timeline_loop_resume.borrow().as_ref().map(|ready| ready.try_recv());
                     if let Some(readiness) = readiness {
@@ -546,12 +598,25 @@ impl GlimpseWindow {
         let seekbar_for_release = bottom_controls.seekbar.clone();
         let p_seekbar_release = Rc::clone(&player);
         let v_seekbar_release = Rc::clone(&video_playback);
+        let scrub_state_for_events = Rc::clone(&adaptive_scrub_state);
         seekbar_events.connect_event(move |_, event| {
             match event.event_type() {
                 gdk4::EventType::ButtonPress => {
                     if event.downcast_ref::<gdk4::ButtonEvent>()
                         .is_some_and(|button| button.button() == 1)
                     {
+                        if let Some(p) = p_seekbar_release.borrow().as_ref() {
+                            if let AdaptiveScrubState::CatchingUp { original_speed, .. } = scrub_state_for_events.get() {
+                                p.set_playback_speed(original_speed);
+                                p.set_scrub_muted(false);
+                            }
+                            scrub_state_for_events.set(AdaptiveScrubState::Dragging {
+                                original_speed: p.playback_speed(),
+                                was_playing: p.state() == PlayerState::Playing,
+                            });
+                        } else {
+                            scrub_state_for_events.set(AdaptiveScrubState::Idle);
+                        }
                         seekbar_drag_state.set(true);
                     }
                 }
@@ -561,8 +626,41 @@ impl GlimpseWindow {
                         && seekbar_drag_state.replace(false)
                     {
                         let target = Duration::from_secs_f64(seekbar_for_release.value().max(0.0));
-                        if let Some(ref p) = *p_seekbar_release.borrow() { p.seek(target); }
-                        if let Some(ref mut video) = *v_seekbar_release.borrow_mut() { video.seek(target); }
+                        if let Some(p) = p_seekbar_release.borrow().as_ref() {
+                            match scrub_state_for_events.get() {
+                                AdaptiveScrubState::Dragging { original_speed, was_playing }
+                                    if was_playing
+                                        && p.state() == PlayerState::Playing
+                                        && target.saturating_sub(p.position()) > SCRUB_TARGET_TOLERANCE =>
+                                {
+                                    let distance = target.saturating_sub(p.position()).as_secs_f64();
+                                    scrub_state_for_events.set(AdaptiveScrubState::CatchingUp {
+                                        target,
+                                        original_speed,
+                                    });
+                                    p.set_scrub_muted(true);
+                                    p.set_scrub_speed(adaptive_scrub_speed(distance, original_speed));
+                                }
+                                AdaptiveScrubState::Dragging { original_speed, .. } => {
+                                    scrub_state_for_events.set(AdaptiveScrubState::Idle);
+                                    p.set_playback_speed(original_speed);
+                                    p.set_scrub_muted(false);
+                                    p.seek(target);
+                                    if let Some(video) = v_seekbar_release.borrow_mut().as_mut() {
+                                        video.seek(target);
+                                    }
+                                }
+                                _ => {
+                                    scrub_state_for_events.set(AdaptiveScrubState::Idle);
+                                    p.seek(target);
+                                    if let Some(video) = v_seekbar_release.borrow_mut().as_mut() {
+                                        video.seek(target);
+                                    }
+                                }
+                            }
+                        } else if let Some(video) = v_seekbar_release.borrow_mut().as_mut() {
+                            video.seek(target);
+                        }
                     }
                 }
                 _ => {}
