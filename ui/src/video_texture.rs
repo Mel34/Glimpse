@@ -118,7 +118,7 @@ impl VideoPlaybackHandle {
         self.stop_run();
         if self.window_active {
             let position = Duration::from_secs_f64(self.clock.get_pts().max(0.0));
-            self.start_run(position, None)
+            self.start_run(position, None, false)
         } else {
             Ok(())
         }
@@ -134,7 +134,7 @@ impl VideoPlaybackHandle {
         self.window_active = active;
         if active && self.run.is_none() {
             let position = Duration::from_secs_f64(self.clock.get_pts().max(0.0));
-            if let Err(error) = self.start_run(position, None) {
+            if let Err(error) = self.start_run(position, None, false) {
                 tracing::error!(%error, "Could not resume video after window activation");
             }
         }
