@@ -257,7 +257,6 @@ fn run_file_control(
                 &worker_queues,
                 serial,
                 start_position,
-                false,
             )
         })
         .map_err(|error| format!("Could not start demux worker: {error}"))?);
