@@ -124,6 +124,12 @@ impl VideoPlaybackHandle {
     /// again; the presentation sink already skips GTK updates while inactive.
     pub fn set_window_active(&mut self, active: bool) {
         self.window_active = active;
+        if active && self.run.is_none() {
+            let position = Duration::from_secs_f64(self.clock.get_pts().max(0.0));
+            if let Err(error) = self.start_run(position, None) {
+                tracing::error!(%error, "Could not resume video after window activation");
+            }
+        }
     }
 
     pub fn stop(&mut self) {
