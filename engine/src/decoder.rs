@@ -351,14 +351,15 @@ impl VideoDecoder {
         let mut vaapi_enabled = use_vaapi;
         if use_vaapi {
             let context_ptr = unsafe { context.as_mut_ptr() };
-            let codec = unsafe { ffmpeg::ffi::avcodec_find_decoder((*context_ptr).codec_id) };
+            let codec_id = unsafe { (*context_ptr).codec_id };
+            let codec = unsafe { ffmpeg::ffi::avcodec_find_decoder(codec_id) };
             if codec.is_null() {
                 tracing::warn!(
-                    codec_id = (*context_ptr).codec_id as i32,
+                    codec_id = codec_id as i32,
                     "FFmpeg could not resolve the video decoder while inspecting VAAPI support"
                 );
             } else {
-                let codec_name = unsafe { ffmpeg::ffi::avcodec_get_name((*context_ptr).codec_id) };
+                let codec_name = unsafe { ffmpeg::ffi::avcodec_get_name(codec_id) };
                 let codec_name = if codec_name.is_null() {
                     "unknown".to_string()
                 } else {
@@ -380,7 +381,7 @@ impl VideoDecoder {
                 }
                 tracing::info!(
                     codec = %codec_name,
-                    codec_id = (*context_ptr).codec_id as i32,
+                    codec_id = codec_id as i32,
                     hardware_configs = ?hardware_configs,
                     "Video decoder hardware configurations"
                 );
