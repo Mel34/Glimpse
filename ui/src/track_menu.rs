@@ -13,6 +13,7 @@ pub fn create_track_popover<FAudio, FSubtitle, FExternal, FSpeed, FRotate>(
     on_subtitle_selected: FSubtitle,
     on_external_selected: FExternal,
     initial_speed: f64,
+    get_speed: impl Fn() -> f64 + 'static,
     on_speed_changed: FSpeed,
     on_rotate: FRotate,
     loop_enabled: &Rc<Cell<bool>>,
@@ -62,6 +63,15 @@ where
         let speed = scale.value();
         speed_value_changed.set_text(&format_playback_speed(speed));
         speed_callback(speed);
+    });
+    let speed_scale_visible = speed_scale.clone();
+    let speed_value_visible = speed_value.clone();
+    popover.connect_notify_local(Some("visible"), move |popover, _| {
+        if popover.is_visible() {
+            let speed = get_speed().clamp(0.5, 2.0);
+            speed_scale_visible.set_value(speed);
+            speed_value_visible.set_text(&format_playback_speed(speed));
+        }
     });
     container.append(&speed_scale);
 
