@@ -7,13 +7,14 @@ use gtk4::{Box as GtkBox, CheckButton, Label, Orientation, Popover, PolicyType, 
 use glimpse_engine::{TrackId, TrackInfo, TrackList};
 use crate::interaction::attach_popover_scroll_guard;
 
-pub fn create_track_popover<FAudio, FSubtitle, FExternal, FSpeed>(
+pub fn create_track_popover<FAudio, FSubtitle, FExternal, FSpeed, FRotate>(
     tracks: &TrackList,
     on_audio_selected: FAudio,
     on_subtitle_selected: FSubtitle,
     on_external_selected: FExternal,
     initial_speed: f64,
     on_speed_changed: FSpeed,
+    on_rotate: FRotate,
     loop_enabled: &Rc<Cell<bool>>,
     loop_menu_buttons: &Rc<RefCell<Vec<CheckButton>>>,
 ) -> Popover
@@ -22,6 +23,7 @@ where
     FSubtitle: Fn(Option<TrackId>) + 'static + Clone,
     FExternal: Fn(CheckButton, CheckButton) + 'static + Clone,
     FSpeed: Fn(f64) + 'static + Clone,
+    FRotate: Fn(i32) + 'static + Clone,
 {
     let popover = Popover::new();
     popover.add_css_class("menu-popover");
@@ -62,6 +64,40 @@ where
         speed_callback(speed);
     });
     container.append(&speed_scale);
+
+    // Rotation controls intentionally remain a single, non-interactive label
+    // with two independent icon buttons, matching the compact Loupe pattern.
+    let rotate_row = GtkBox::new(Orientation::Horizontal, 8);
+    let rotate_label = Label::new(Some("Rotate"));
+    rotate_label.set_halign(gtk4::Align::Start);
+    rotate_label.set_hexpand(true);
+    rotate_row.append(&rotate_label);
+
+    let rotate_left_button = gtk4::Button::new();
+    rotate_left_button.add_css_class("flat");
+    rotate_left_button.add_css_class("circular");
+    rotate_left_button.add_css_class("rotate-menu-button");
+    rotate_left_button.set_can_focus(false);
+    rotate_left_button.set_tooltip_text(Some("Rotate counterclockwise"));
+    let rotate_left_icon = gtk4::Image::from_icon_name("object-rotate-left-symbolic");
+    rotate_left_icon.set_pixel_size(16);
+    rotate_left_button.set_child(Some(&rotate_left_icon));
+    let rotate_left_callback = on_rotate.clone();
+    rotate_left_button.connect_clicked(move |_| rotate_left_callback(-90));
+    rotate_row.append(&rotate_left_button);
+
+    let rotate_right_button = gtk4::Button::new();
+    rotate_right_button.add_css_class("flat");
+    rotate_right_button.add_css_class("circular");
+    rotate_right_button.add_css_class("rotate-menu-button");
+    rotate_right_button.set_can_focus(false);
+    rotate_right_button.set_tooltip_text(Some("Rotate clockwise"));
+    let rotate_right_icon = gtk4::Image::from_icon_name("object-rotate-right-symbolic");
+    rotate_right_icon.set_pixel_size(16);
+    rotate_right_button.set_child(Some(&rotate_right_icon));
+    rotate_right_button.connect_clicked(move |_| on_rotate(90));
+    rotate_row.append(&rotate_right_button);
+    container.append(&rotate_row);
 
     let loop_row = GtkBox::new(Orientation::Horizontal, 20);
     let loop_toggle = CheckButton::with_label("Loop");
