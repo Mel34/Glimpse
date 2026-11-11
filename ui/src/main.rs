@@ -7,6 +7,7 @@ mod theme;
 mod window;
 mod presentation_sink;
 mod video_texture;
+mod rotatable_picture;
 #[cfg(feature = "vaapi-hdr")]
 mod vaapi_texture;
 
