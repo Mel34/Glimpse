@@ -236,6 +236,27 @@ impl GlimpseWindow {
         let loop_enabled = Rc::clone(&bottom_controls.loop_enabled);
         let loop_menu_buttons = Rc::clone(&bottom_controls.loop_menu_buttons);
 
+        let screenshot_picture = picture.clone();
+        let screenshot_window = window.clone();
+        bottom_controls.screenshot_button.connect_clicked(move |button| {
+            match screenshot_picture.save_screenshot() {
+                Ok(path) => {
+                    tracing::info!(path = %path.display(), "Screenshot saved");
+                    button.set_tooltip_text(Some(&format!("Saved: {}", path.display())));
+                }
+                Err(error) => {
+                    tracing::error!(%error, "Could not save screenshot");
+                    let dialog = gtk4::AlertDialog::builder()
+                        .modal(true)
+                        .message("Could not save screenshot")
+                        .detail(&error)
+                        .buttons(["Close"])
+                        .build();
+                    dialog.show(Some(&screenshot_window));
+                }
+            }
+        });
+
         // Top Floating OSD Bar (margins 6px from corner matching standard Libadwaita)
         let top_controls = GtkBox::new(Orientation::Horizontal, 0);
         top_controls.add_css_class("floating-osd-top");
@@ -1227,6 +1248,8 @@ fn load_and_play_file(
     };
 
     ab_loop.set(AbLoopState::Unset);
+    bottom_controls.screenshot_button.set_sensitive(false);
+    bottom_controls.screenshot_button.set_tooltip_text(Some("Take Screenshot"));
     window.set_title(Some(&format!("Glimpse - {}", file_name)));
     bottom_controls.title_label.set_text(&file_name);
 
@@ -1267,6 +1290,7 @@ fn load_and_play_file(
             // Setup audio stream selection and report current subtitle support.
             if let Some(ref current_p) = *player.borrow() {
                 let tracks = current_p.tracks();
+                bottom_controls.screenshot_button.set_sensitive(!tracks.video_tracks.is_empty());
                 crate::controls::set_audio_available(
                     bottom_controls,
                     !tracks.audio_tracks.is_empty(),
@@ -1372,6 +1396,7 @@ fn load_and_play_file(
         }
         Err(e) => {
             eprintln!("Could not open media: {}", e);
+            bottom_controls.screenshot_button.set_sensitive(false);
             window.set_title(Some("Glimpse"));
             bottom_controls.title_label.set_text("No media loaded");
             bottom_controls.elapsed_label.set_text("0:00");
