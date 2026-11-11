@@ -54,6 +54,11 @@ struct FfmpegDecoderState {
     packets_submitted: u64,
     first_packet_submitted_at: Option<Instant>,
     first_frame_logged: bool,
+    minimum_pts: Option<f64>,
+    pre_target_frames_dropped: u64,
+    first_pre_target_frame_pts: Option<f64>,
+    last_pre_target_frame_pts: Option<f64>,
+    first_target_frame_logged: bool,
     path: String,
     stream_index: usize,
     time_base_num: i32,
@@ -273,6 +278,11 @@ impl VideoDecoder {
             packets_submitted: 0,
             first_packet_submitted_at: None,
             first_frame_logged: false,
+            minimum_pts: None,
+            pre_target_frames_dropped: 0,
+            first_pre_target_frame_pts: None,
+            last_pre_target_frame_pts: None,
+            first_target_frame_logged: false,
             path: path.to_owned(),
             stream_index,
             time_base_num: time_base.numerator(),
@@ -286,6 +296,15 @@ impl VideoDecoder {
             "Video decoder opened"
         );
         Ok(result)
+    }
+
+    /// Discard decoded frames before this media timestamp inside the decoder,
+    /// before allocating presentation frames or converting pixel formats.
+    #[cfg(feature = "ffmpeg-system")]
+    pub fn set_minimum_pts(&mut self, minimum_pts: f64) {
+        if let Some(backend) = self.backend.as_mut() {
+            backend.minimum_pts = Some(minimum_pts);
+        }
     }
 
     /// Consumes at most one compressed packet and queues every frame made
@@ -406,11 +425,31 @@ impl VideoDecoder {
                 continue;
             };
 
+            let pts = timestamp as f64 * backend.time_base_num as f64
+                / backend.time_base_den as f64;
+            if let Some(minimum_pts) = backend.minimum_pts {
+                if pts + 0.000_001 < minimum_pts {
+                    backend.pre_target_frames_dropped += 1;
+                    backend.first_pre_target_frame_pts.get_or_insert(pts);
+                    backend.last_pre_target_frame_pts = Some(pts);
+                    continue;
+                }
+                if !backend.first_target_frame_logged {
+                    backend.first_target_frame_logged = true;
+                    tracing::info!(
+                        target_secs = minimum_pts,
+                        first_eligible_frame_pts = pts,
+                        pre_target_frames_dropped = backend.pre_target_frames_dropped,
+                        first_pre_target_frame_pts = backend.first_pre_target_frame_pts,
+                        last_pre_target_frame_pts = backend.last_pre_target_frame_pts,
+                        "Decoder reached seek target after discarding pre-target frames"
+                    );
+                }
+            }
+
             if backend.vaapi_enabled && decoded.format() == ffmpeg::format::Pixel::VAAPI {
                 let width = decoded.width();
                 let height = decoded.height();
-                let pts = timestamp as f64 * backend.time_base_num as f64
-                    / backend.time_base_den as f64;
                 let frame = VideoFrameData {
                     width,
                     height,
@@ -471,8 +510,6 @@ impl VideoDecoder {
                     .copy_from_slice(&source[source_start..source_start + stride]);
             }
 
-            let pts = timestamp as f64 * backend.time_base_num as f64
-                / backend.time_base_den as f64;
             let frame = VideoFrameData {
                 width,
                 height,
