@@ -521,9 +521,15 @@ fn output_frame(
         let chunk_pts = frame.pts + offset as f64 / AUDIO_OUTPUT_RATE as f64;
 
         let speed = f32::from_bits(control.speed.load(Ordering::Relaxed)) as f64;
-        let callback_frames = sink.stats().last_requested_frames.max(OUTPUT_CHUNK_FRAMES as u64) as f64;
+        let requested_frames = sink.stats().last_requested_frames;
+        let callback_frames = if requested_frames == 0 || requested_frames > (AUDIO_OUTPUT_RATE as u64 * 2) {
+            OUTPUT_CHUNK_FRAMES as f64
+        } else {
+            requested_frames as f64
+        };
         let buffer_target_frames = OUTPUT_BUFFER_TARGET_FRAMES
-            .max((callback_frames * speed).ceil() as usize);
+            .max((callback_frames * speed).ceil() as usize)
+            .min(sink.buffer_capacity_frames().saturating_sub(OUTPUT_CHUNK_FRAMES).max(1));
         while sink.buffered_sample_frames() >= buffer_target_frames {
             if !wait_until_active(sink, clock, control) {
                 return false;
