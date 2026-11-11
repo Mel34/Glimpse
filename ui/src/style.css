@@ -127,7 +127,9 @@ button.header-close-button image {
 button.osd-speed-button {
     min-width: 40px;
     min-height: 40px;
-    padding: 0 2px;
+    max-width: 40px;
+    max-height: 40px;
+    padding: 0;
     margin: 0;
     border: none;
     border-radius: 50%;
