@@ -1,6 +1,7 @@
 //! Engine-clock-driven video presentation through GTK4 textures.
 
 use crate::presentation_sink::GtkPresentationSink;
+use crate::rotatable_picture::RotatablePicture;
 use glimpse_engine::{MasterClock, TrackList};
 use glib::object::ObjectExt;
 use gtk4::prelude::WidgetExt;
@@ -39,7 +40,7 @@ pub(super) fn apply_subtitle_font_size(label: &gtk4::Label, display_width: i32) 
     label.set_attributes(Some(&attributes));
 }
 
-pub fn bind_subtitle_scaling(picture: &gtk4::Picture, subtitle_label: &gtk4::Label) {
+pub fn bind_subtitle_scaling(picture: &RotatablePicture, subtitle_label: &gtk4::Label) {
     apply_subtitle_font_size(subtitle_label, picture.width());
     let label = subtitle_label.downgrade();
     picture.connect_notify_local(Some("width"), move |picture, _| {
@@ -52,7 +53,7 @@ pub fn bind_subtitle_scaling(picture: &gtk4::Picture, subtitle_label: &gtk4::Lab
 pub struct VideoPlaybackHandle {
     path: String,
     tracks: TrackList,
-    picture: gtk4::Picture,
+    picture: RotatablePicture,
     subtitle_label: gtk4::Label,
     external_subtitle_path: Option<String>,
     clock: Arc<MasterClock>,
