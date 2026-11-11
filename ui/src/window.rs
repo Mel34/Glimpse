@@ -123,24 +123,16 @@ impl GlimpseWindow {
         loader_page.set_hexpand(true);
 
         // Loader Top Bar: Title "Glimpse" in center, hamburger & close on right (6px corner margins)
-        let loader_header = GtkBox::new(Orientation::Horizontal, 0);
+        let loader_header = gtk4::CenterBox::new();
         loader_header.add_css_class("loader-header");
         loader_header.set_valign(Align::Start);
         loader_header.set_margin_start(6);
         loader_header.set_margin_end(6);
         loader_header.set_margin_top(6);
 
-        let left_spacer = GtkBox::new(Orientation::Horizontal, 0);
-        left_spacer.set_hexpand(true);
-        loader_header.append(&left_spacer);
-
         let loader_title = Label::new(Some("Glimpse"));
         loader_title.add_css_class("loader-title");
-        loader_header.append(&loader_title);
-
-        let right_spacer = GtkBox::new(Orientation::Horizontal, 0);
-        right_spacer.set_hexpand(true);
-        loader_header.append(&right_spacer);
+        loader_header.set_center_widget(Some(&loader_title));
 
         let loader_right_box = GtkBox::new(Orientation::Horizontal, 6);
         loader_right_box.set_halign(Align::End);
@@ -169,7 +161,7 @@ impl GlimpseWindow {
         loader_close_btn.connect_clicked(move |_| win_close.close());
         loader_right_box.append(&loader_close_btn);
 
-        loader_header.append(&loader_right_box);
+        loader_header.set_end_widget(Some(&loader_right_box));
 
         // Make top header draggable to move window
         let loader_handle = WindowHandle::new();
