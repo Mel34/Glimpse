@@ -82,6 +82,7 @@ pub fn create_floating_bottom_bar() -> ControlBarWidgets {
     volume_slider.set_size_request(24, 140);
     volume_slider.set_value(1.0);
     volume_slider.set_draw_value(false);
+    volume_slider.add_mark(1.0, gtk4::PositionType::Right, Some("100%"));
     volume_slider.add_css_class("volume-scale");
     vol_vbox.append(&volume_slider);
 
