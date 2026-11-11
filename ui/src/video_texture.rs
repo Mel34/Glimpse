@@ -73,7 +73,7 @@ impl VideoPlaybackHandle {
         self.subtitle_label.set_visible(false);
         self.stop_run();
         if self.window_active {
-            if let Err(error) = self.start_run(target, None) {
+            if let Err(error) = self.start_run(target, None, true) {
                 tracing::error!(%error, "Could not restart video after seek");
             }
         }
@@ -89,7 +89,7 @@ impl VideoPlaybackHandle {
             return None;
         }
         let (ready_sender, ready_receiver) = bounded(1);
-        if let Err(error) = self.start_run(target, Some(ready_sender)) {
+        if let Err(error) = self.start_run(target, Some(ready_sender), false) {
             tracing::error!(%error, "Could not restart video for synchronized loop");
             return None;
         }
@@ -104,7 +104,7 @@ impl VideoPlaybackHandle {
         self.stop_run();
         if self.window_active {
             let position = Duration::from_secs_f64(self.clock.get_pts().max(0.0));
-            if let Err(error) = self.start_run(position, None) {
+            if let Err(error) = self.start_run(position, None, false) {
                 tracing::error!(%error, "Could not restart video after subtitle selection");
             }
         }
@@ -159,7 +159,7 @@ impl VideoPlaybackHandle {
         }
     }
 
-    fn start_run(&mut self, start_position: Duration, first_frame_ready: Option<Sender<()>>) -> Result<(), String> {
+    fn start_run(&mut self, start_position: Duration, first_frame_ready: Option<Sender<()>>, prefer_forward_keyframe: bool) -> Result<(), String> {
         if !self.window_active {
             return Ok(());
         }
@@ -180,6 +180,7 @@ impl VideoPlaybackHandle {
             sender,
             subtitle_sender,
             start_position,
+            prefer_forward_keyframe,
         )?;
         let first_frame_pending = Arc::new(AtomicBool::new(true));
         let presentation_worker = match GtkPresentationSink::start(
@@ -237,7 +238,7 @@ pub fn present_continuous_frames(
         drop_stale_until_current: Arc::new(AtomicBool::new(false)),
         run: None,
     };
-    if let Err(error) = handle.start_run(Duration::ZERO, None) {
+    if let Err(error) = handle.start_run(Duration::ZERO, None, false) {
         tracing::error!(%error, "Could not start engine video playback");
         return None;
     }
@@ -254,12 +255,13 @@ fn spawn_decoder_worker(
     sender: Sender<Result<VideoFrameData, String>>,
     subtitle_sender: Sender<Result<SubtitleCue, String>>,
     start_position: Duration,
+    prefer_forward_keyframe: bool,
 ) -> Result<JoinHandle<()>, String> {
     thread::Builder::new()
         .name("glimpse-video-decode".to_string())
         .spawn(move || {
             if let Err(error) = decode_continuously(
-                &path, &tracks, external_subtitle_path.as_deref(), video_stream_index, &queues, &cancelled, &sender, &subtitle_sender, start_position,
+                &path, &tracks, external_subtitle_path.as_deref(), video_stream_index, &queues, &cancelled, &sender, &subtitle_sender, start_position, prefer_forward_keyframe,
             ) {
                 if !cancelled.load(Ordering::Acquire) {
                     let _ = sender.try_send(Err(error));
@@ -279,6 +281,7 @@ fn decode_continuously(
     sender: &Sender<Result<VideoFrameData, String>>,
     subtitle_sender: &Sender<Result<SubtitleCue, String>>,
     start_position: Duration,
+    prefer_forward_keyframe: bool,
 ) -> Result<(), String> {
     let worker_started_at = Instant::now();
     let serial = Serial(0);
@@ -330,7 +333,7 @@ fn decode_continuously(
     let worker_tracks = tracks.clone();
     let worker_queues = queues.clone();
     let demux_worker = thread::spawn(move || {
-        demux_file_from(&worker_path, &worker_tracks, &worker_queues, serial, start_position)
+        demux_file_from(&worker_path, &worker_tracks, &worker_queues, serial, start_position, prefer_forward_keyframe)
     });
     tracing::info!(worker_elapsed_us = worker_started_at.elapsed().as_micros() as u64, "Video demux worker spawned");
     let mut first_frame_forwarded = false;
