@@ -49,6 +49,9 @@ struct FfmpegDecoderState {
     decoder: ffmpeg_the_third::decoder::Video,
     scaler: Option<ffmpeg_the_third::software::scaling::Context>,
     vaapi_enabled: bool,
+    packets_submitted: u64,
+    path: String,
+    stream_index: usize,
     time_base_num: i32,
     time_base_den: i32,
     frame_duration: f64,
@@ -75,6 +78,37 @@ unsafe extern "C" fn select_vaapi_pixel_format(
         current = unsafe { current.add(1) };
     }
     AVPixelFormat::NONE
+}
+
+#[cfg(feature = "ffmpeg-system")]
+fn open_software_video_decoder(
+    path: &str,
+    stream_index: usize,
+) -> Result<ffmpeg_the_third::decoder::Video, String> {
+    use ffmpeg_the_third as ffmpeg;
+
+    let input = ffmpeg::format::input(path)
+        .map_err(|error| format!("Could not reopen media for software video decoding: {error}"))?;
+    let stream = input
+        .streams()
+        .find(|stream| stream.index() == stream_index)
+        .ok_or_else(|| format!("Video stream {stream_index} was not found during software fallback"))?;
+    let time_base = stream.time_base();
+    if time_base.denominator() == 0 {
+        return Err("Video stream has an invalid time base during software fallback".to_string());
+    }
+    let mut context = ffmpeg::codec::context::Context::from_parameters(stream.parameters())
+        .map_err(|error| format!("Could not create software video decoder context: {error}"))?;
+    unsafe {
+        (*context.as_mut_ptr()).pkt_timebase = ffmpeg::ffi::AVRational {
+            num: time_base.numerator(),
+            den: time_base.denominator(),
+        };
+    }
+    context
+        .decoder()
+        .video()
+        .map_err(|error| format!("Could not open software video decoder: {error}"))
 }
 
 pub struct VideoDecoder {
@@ -149,56 +183,73 @@ impl VideoDecoder {
             };
         }
 
+        let mut vaapi_enabled = use_vaapi;
         if use_vaapi {
-            let render_node = std::env::var("GLIMPSE_DRM_RENDER_NODE").ok();
-            let render_node = render_node
-                .as_deref()
-                .map(std::ffi::CString::new)
-                .transpose()
-                .map_err(|_| "GLIMPSE_DRM_RENDER_NODE contains an interior NUL byte".to_string())?;
-            let device_name = render_node.as_ref().map_or(std::ptr::null(), |value| value.as_ptr());
-            let mut device: *mut ffmpeg::ffi::AVBufferRef = std::ptr::null_mut();
-            let result = unsafe {
-                ffmpeg::ffi::av_hwdevice_ctx_create(
-                    &mut device,
-                    ffmpeg::ffi::AVHWDeviceType::VAAPI,
-                    device_name,
-                    std::ptr::null_mut(),
-                    0,
-                )
-            };
-            if result < 0 {
-                return Err(format!("Could not create VAAPI device (FFmpeg error {result})"));
-            }
+            let setup_result = (|| -> Result<(), String> {
+                let render_node = std::env::var("GLIMPSE_DRM_RENDER_NODE").ok();
+                let render_node = render_node
+                    .as_deref()
+                    .map(std::ffi::CString::new)
+                    .transpose()
+                    .map_err(|_| "GLIMPSE_DRM_RENDER_NODE contains an interior NUL byte".to_string())?;
+                let device_name = render_node.as_ref().map_or(std::ptr::null(), |value| value.as_ptr());
+                let mut device: *mut ffmpeg::ffi::AVBufferRef = std::ptr::null_mut();
+                let result = unsafe {
+                    ffmpeg::ffi::av_hwdevice_ctx_create(
+                        &mut device,
+                        ffmpeg::ffi::AVHWDeviceType::VAAPI,
+                        device_name,
+                        std::ptr::null_mut(),
+                        0,
+                    )
+                };
+                if result < 0 {
+                    return Err(format!("Could not create VAAPI device (FFmpeg error {result})"));
+                }
 
-            let context_ptr = unsafe { context.as_mut_ptr() };
-            let device_ref = unsafe { ffmpeg::ffi::av_buffer_ref(device) };
-            unsafe { ffmpeg::ffi::av_buffer_unref(&mut device) };
-            if device_ref.is_null() {
-                return Err("Could not retain the VAAPI device context".to_string());
-            }
-            unsafe {
-                (*context_ptr).get_format = Some(select_vaapi_pixel_format);
-                (*context_ptr).hw_device_ctx = device_ref;
+                let context_ptr = unsafe { context.as_mut_ptr() };
+                let device_ref = unsafe { ffmpeg::ffi::av_buffer_ref(device) };
+                unsafe { ffmpeg::ffi::av_buffer_unref(&mut device) };
+                if device_ref.is_null() {
+                    return Err("Could not retain the VAAPI device context".to_string());
+                }
+                unsafe {
+                    (*context_ptr).get_format = Some(select_vaapi_pixel_format);
+                    (*context_ptr).hw_device_ctx = device_ref;
+                }
+                Ok(())
+            })();
+
+            if let Err(error) = setup_result {
+                tracing::warn!(%error, "VAAPI setup failed; falling back to software video decoding");
+                vaapi_enabled = false;
             }
         }
 
-        let decoder = context
-            .decoder()
-            .video()
-            .map_err(|error| {
-                if use_vaapi {
-                    format!("Could not open VAAPI video decoder: {error}")
-                } else {
-                    format!("Could not open software video decoder: {error}")
+        let decoder = if vaapi_enabled {
+            match context.decoder().video() {
+                Ok(decoder) => decoder,
+                Err(error) => {
+                    tracing::warn!(%error, "Could not open VAAPI decoder; falling back to software video decoding");
+                    vaapi_enabled = false;
+                    open_software_video_decoder(path, stream_index)?
                 }
-            })?;
+            }
+        } else {
+            context
+                .decoder()
+                .video()
+                .map_err(|error| format!("Could not open software video decoder: {error}"))?
+        };
 
         let mut result = Self::new(packet_queue, frame_queue, clock);
         result.backend = Some(FfmpegDecoderState {
             decoder,
             scaler: None,
-            vaapi_enabled: use_vaapi,
+            vaapi_enabled,
+            packets_submitted: 0,
+            path: path.to_owned(),
+            stream_index,
             time_base_num: time_base.numerator(),
             time_base_den: time_base.denominator(),
             frame_duration,
@@ -227,10 +278,30 @@ impl VideoDecoder {
         packet.set_dts(tagged_packet.item.dts);
         packet.set_duration(tagged_packet.item.duration);
         packet.set_stream(tagged_packet.item.stream_index);
-        backend
-            .decoder
-            .send_packet(&packet)
-            .map_err(|error| format!("Could not submit compressed video packet: {error}"))?;
+        if let Err(error) = backend.decoder.send_packet(&packet) {
+            if backend.vaapi_enabled && backend.packets_submitted == 0 {
+                tracing::warn!(
+                    %error,
+                    "VAAPI rejected the first compressed video packet; retrying with software decoding"
+                );
+                let software_decoder =
+                    open_software_video_decoder(&backend.path, backend.stream_index)?;
+                backend.decoder = software_decoder;
+                backend.vaapi_enabled = false;
+                backend.scaler = None;
+                backend
+                    .decoder
+                    .send_packet(&packet)
+                    .map_err(|software_error| {
+                        format!(
+                            "VAAPI rejected the first packet ({error}); software fallback also failed: {software_error}"
+                        )
+                    })?;
+            } else {
+                return Err(format!("Could not submit compressed video packet: {error}"));
+            }
+        }
+        backend.packets_submitted += 1;
 
         Self::drain_frames(backend, &self.frame_queue, tagged_packet.serial)?;
         Ok(true)
