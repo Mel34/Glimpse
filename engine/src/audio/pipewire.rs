@@ -1,8 +1,8 @@
 //! Native PipeWire output with a real-time-safe SPSC PCM handoff.
 //!
-//! Decoding, resampling, and producer-side queueing happen outside PipeWire's
-//! process callback. The callback only dequeues a PipeWire buffer, reads from
-//! the lock-free SPSC ring, applies an atomic volume value, and copies samples.
+//! Decoding and producer-side queueing happen outside PipeWire's process
+//! callback. The callback performs allocation-free variable-rate interpolation,
+//! applies atomic volume, and copies samples from the lock-free SPSC ring.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
