@@ -1,5 +1,6 @@
 //! Zero-copy, aspect-correct video presentation with user rotation.
 
+use gdk4::prelude::*;
 use gtk4::prelude::*;
 use gtk4::subclass::prelude::*;
 use std::cell::{Cell, RefCell};
