@@ -555,6 +555,7 @@ impl GlimpseWindow {
         let p_toggle = Rc::clone(&player);
         let p_toggle_press = Rc::clone(&player);
         let v_toggle = Rc::clone(&video_playback);
+        let v_drop_stale_press = Rc::clone(&video_playback);
         let win_click = window.clone();
         let click_state_press = Rc::clone(&click_state);
         let scrub_state_press = Rc::clone(&adaptive_scrub_state);
@@ -582,6 +583,9 @@ impl GlimpseWindow {
                             &marker_position_press,
                             &marker_press,
                         );
+                        if let Some(ref video) = *v_drop_stale_press.borrow() {
+                            video.drop_stale_frames();
+                        }
                         scrub_click_interrupted_press.set(true);
                     }
                 }
