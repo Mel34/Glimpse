@@ -9,7 +9,7 @@ use gtk4::{
     Align, Box as GtkBox, Button, CheckButton, DropTarget, EventControllerKey, EventControllerMotion,
     EventControllerScroll, EventControllerScrollFlags, FileDialog, FileFilter, GestureClick,
     Image, Label, MenuButton, Orientation, Overlay, Separator, Settings, Stack,
-    StackTransitionType, WindowHandle,
+    StackTransitionType, WindowHandle, GraphicsOffload,
 };
 
 use glimpse_engine::{Event, Player, PlayerState};
@@ -296,7 +296,11 @@ impl GlimpseWindow {
         picture.set_vexpand(true);
         picture.set_hexpand(true);
         picture.set_can_target(true);
-        player_overlay.set_child(Some(&picture));
+        let graphics_offload = GraphicsOffload::new(Some(&picture));
+        graphics_offload.set_black_background(true);
+        graphics_offload.set_vexpand(true);
+        graphics_offload.set_hexpand(true);
+        player_overlay.set_child(Some(&graphics_offload));
 
         // Subtitle overlay label (hidden by default to avoid dark square on video)
         let subtitle_label = Label::new(None);
