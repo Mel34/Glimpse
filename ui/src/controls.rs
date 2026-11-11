@@ -7,7 +7,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 use gtk4::prelude::*;
-use gtk4::{Box as GtkBox, CheckButton, Image, Label, MenuButton, Orientation, Scale};
+use gtk4::{Box as GtkBox, Button, CheckButton, Image, Label, MenuButton, Orientation, Scale};
 use crate::interaction::attach_popover_scroll_guard;
 
 #[derive(Clone)]
@@ -20,6 +20,7 @@ pub struct ControlBarWidgets {
     pub volume_percent_label: Label,
     pub last_nonzero_volume: Rc<Cell<f64>>,
     pub settings_button: MenuButton,
+    pub screenshot_button: Button,
     pub seekbar: Scale,
     pub seekbar_dragging: Rc<Cell<bool>>,
     pub elapsed_label: Label,
@@ -90,6 +91,17 @@ pub fn create_floating_bottom_bar() -> ControlBarWidgets {
     volume_button.set_popover(Some(&volume_popover));
     top_row.append(&volume_button);
 
+    let screenshot_button = Button::new();
+    let screenshot_icon = Image::from_icon_name("camera-photo-symbolic");
+    screenshot_icon.set_pixel_size(16);
+    screenshot_button.set_child(Some(&screenshot_icon));
+    screenshot_button.add_css_class("osd-icon-button");
+    screenshot_button.set_size_request(32, 32);
+    screenshot_button.set_can_focus(false);
+    screenshot_button.set_sensitive(false);
+    screenshot_button.set_tooltip_text(Some("Take Screenshot"));
+    top_row.append(&screenshot_button);
+
     let settings_button = MenuButton::new();
     settings_button.set_icon_name("emblem-system-symbolic");
     settings_button.add_css_class("osd-icon-button");
@@ -134,6 +146,7 @@ pub fn create_floating_bottom_bar() -> ControlBarWidgets {
         volume_percent_label,
         last_nonzero_volume,
         settings_button,
+        screenshot_button,
         seekbar,
         seekbar_dragging,
         elapsed_label,
