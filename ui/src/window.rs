@@ -683,7 +683,17 @@ impl GlimpseWindow {
                                         target,
                                         original_speed,
                                     });
-                                    p.set_scrub_speed(adaptive_scrub_speed(distance, original_speed));
+                                    let final_approach = p.duration()
+                                        .map(|duration| adaptive_scrub_approach_distance(
+                                            duration.as_secs_f64(),
+                                            seekbar_for_release.width(),
+                                        ))
+                                        .unwrap_or(0.5);
+                                    p.set_scrub_speed(adaptive_scrub_speed(
+                                        distance,
+                                        original_speed,
+                                        final_approach,
+                                    ));
                                 }
                                 AdaptiveScrubState::Dragging { original_speed, .. } => {
                                     scrub_state_for_events.set(AdaptiveScrubState::Idle);
