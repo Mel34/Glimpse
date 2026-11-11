@@ -92,30 +92,18 @@ struct SeekDecodeDiagnostics {
 impl SeekDecodeDiagnostics {
     fn new() -> Self {
         Self {
-            started_at: Instant::now(),
-            packet_wait_us_total: 0,
-            packet_wait_us_max: 0,
-            packet_wait_timeouts: 0,
-            batches: 0,
-            packets: 0,
-            batch_size_max: 0,
-            queue_depth_samples: 0,
-            queue_depth_total: 0,
-            queue_depth_max: 0,
-            send_calls: 0,
-            send_us_total: 0,
-            send_us_max: 0,
-            receive_calls: 0,
-            receive_us_total: 0,
-            receive_us_max: 0,
-            frames_received: 0,
+            started_at: Instant::now(), packet_wait_us_total: 0, packet_wait_us_max: 0,
+            packet_wait_timeouts: 0, batches: 0, packets: 0, batch_size_max: 0,
+            queue_depth_samples: 0, queue_depth_total: 0, queue_depth_max: 0,
+            send_calls: 0, send_us_total: 0, send_us_max: 0,
+            receive_calls: 0, receive_us_total: 0, receive_us_max: 0, frames_received: 0,
         }
     }
 
     fn record_packet_wait(&mut self, elapsed: Duration, timed_out: bool) {
-        let elapsed_us = elapsed.as_micros() as u64;
-        self.packet_wait_us_total += elapsed_us;
-        self.packet_wait_us_max = self.packet_wait_us_max.max(elapsed_us);
+        let us = elapsed.as_micros() as u64;
+        self.packet_wait_us_total += us;
+        self.packet_wait_us_max = self.packet_wait_us_max.max(us);
         self.packet_wait_timeouts += u64::from(timed_out);
     }
 
@@ -126,43 +114,38 @@ impl SeekDecodeDiagnostics {
     }
 
     fn record_send(&mut self, elapsed: Duration) {
-        let elapsed_us = elapsed.as_micros() as u64;
+        let us = elapsed.as_micros() as u64;
         self.send_calls += 1;
-        self.send_us_total += elapsed_us;
-        self.send_us_max = self.send_us_max.max(elapsed_us);
+        self.send_us_total += us;
+        self.send_us_max = self.send_us_max.max(us);
     }
 
     fn record_receive(&mut self, elapsed: Duration, received_frame: bool) {
-        let elapsed_us = elapsed.as_micros() as u64;
+        let us = elapsed.as_micros() as u64;
         self.receive_calls += 1;
-        self.receive_us_total += elapsed_us;
-        self.receive_us_max = self.receive_us_max.max(elapsed_us);
+        self.receive_us_total += us;
+        self.receive_us_max = self.receive_us_max.max(us);
         self.frames_received += u64::from(received_frame);
     }
 
     fn log_summary(&self, target_secs: f64, first_eligible_frame_pts: f64) {
         tracing::info!(
-            target_secs,
-            first_eligible_frame_pts,
+            target_secs, first_eligible_frame_pts,
             elapsed_us = self.started_at.elapsed().as_micros() as u64,
             packet_wait_us_total = self.packet_wait_us_total,
             packet_wait_us_max = self.packet_wait_us_max,
             packet_wait_timeouts = self.packet_wait_timeouts,
-            batches = self.batches,
-            packets = self.packets,
+            batches = self.batches, packets = self.packets,
             average_batch_size = if self.batches == 0 { 0.0 } else { self.packets as f64 / self.batches as f64 },
             batch_size_max = self.batch_size_max,
             packet_queue_depth_average = if self.queue_depth_samples == 0 { 0.0 } else { self.queue_depth_total as f64 / self.queue_depth_samples as f64 },
             packet_queue_depth_max = self.queue_depth_max,
-            send_calls = self.send_calls,
-            send_us_total = self.send_us_total,
+            send_calls = self.send_calls, send_us_total = self.send_us_total,
             send_us_average = if self.send_calls == 0 { 0.0 } else { self.send_us_total as f64 / self.send_calls as f64 },
             send_us_max = self.send_us_max,
-            receive_calls = self.receive_calls,
-            receive_us_total = self.receive_us_total,
+            receive_calls = self.receive_calls, receive_us_total = self.receive_us_total,
             receive_us_average = if self.receive_calls == 0 { 0.0 } else { self.receive_us_total as f64 / self.receive_calls as f64 },
-            receive_us_max = self.receive_us_max,
-            frames_received = self.frames_received,
+            receive_us_max = self.receive_us_max, frames_received = self.frames_received,
             "Seek decode performance summary"
         );
     }
@@ -467,7 +450,8 @@ impl VideoDecoder {
                     Ok(()) => break,
                     Err(ffmpeg::Error::Other { errno }) if errno == libc::EAGAIN => {
                         let drained = Self::drain_frames(
-                            backend,                            &self.frame_queue,
+                            backend,
+                            &self.frame_queue,
                             tagged.serial,
                         )?;
                         if drained == 0 {
@@ -574,10 +558,7 @@ impl VideoDecoder {
             let receive_started_at = Instant::now();
             let receive_result = backend.decoder.receive_frame(&mut decoded);
             if let Some(diagnostics) = backend.seek_diagnostics.as_mut() {
-                diagnostics.record_receive(
-                    receive_started_at.elapsed(),
-                    matches!(&receive_result, Ok(())),
-                );
+                diagnostics.record_receive(receive_started_at.elapsed(), matches!(&receive_result, Ok(())));
             }
             match receive_result {
                 Ok(()) => frames_received += 1,
@@ -834,7 +815,8 @@ impl SubtitleDecoder {
             };
 
             if rect_spans.iter().any(|span| !span.text.is_empty()) {
-                if !spans.is_empty() {                    spans.push(SubtitleSpan {
+                if !spans.is_empty() {
+                    spans.push(SubtitleSpan {
                         text: "\n".to_string(),
                         bold: false,
                         italic: false,
@@ -1183,7 +1165,8 @@ impl AudioDecoder {
         let backend = self.backend.as_mut().ok_or_else(|| {
             "AudioDecoder was not initialised with AudioDecoder::open_ffmpeg".to_string()
         })?;
-        if tagged_packet.item.stream_index != backend.stream_index {            return Ok(true);
+        if tagged_packet.item.stream_index != backend.stream_index {
+            return Ok(true);
         }
         let mut packet = ffmpeg::Packet::copy(&tagged_packet.item.data);
         packet.set_pts(tagged_packet.item.pts);
