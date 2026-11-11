@@ -20,6 +20,11 @@
     <binary>glimpse</binary>
   </provides>
   <releases>
+    <release version="0.4.1" date="2026-11-11">
+      <description>
+        <p>Polishes the playback menus and volume controls, improves playback-speed controls, adds keyboard shortcuts for screenshots and speed adjustment, and refines the loading-page and main-menu presentation.</p>
+      </description>
+    </release>
     <release version="0.4.0" date="2026-11-11">
       <description>
         <p>Adds adjustable playback speed, video rotation, screenshot capture, and software volume amplification up to 150%. Also refines the volume control and positions Glimpse as a GNOME Showtime alternative.</p>
