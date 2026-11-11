@@ -116,21 +116,14 @@ impl VideoPlaybackHandle {
         }
     }
 
-    /// Stop producing video frames while the window is hidden on another
-    /// workspace. Restart from the live media clock when it becomes active.
+    /// Update presentation eligibility without restarting the decoder.
+    ///
+    /// GTK may briefly report the window as inactive during an interactive
+    /// move/resize operation. Keep decoding and draining frames so audio-clock
+    /// playback remains visually continuous when the window becomes active
+    /// again; the presentation sink already skips GTK updates while inactive.
     pub fn set_window_active(&mut self, active: bool) {
-        if self.window_active == active {
-            return;
-        }
         self.window_active = active;
-        if !active {
-            self.stop_run();
-        } else if self.run.is_none() {
-            let position = Duration::from_secs_f64(self.clock.get_pts().max(0.0));
-            if let Err(error) = self.start_run(position, None) {
-                tracing::error!(%error, "Could not resume video after window activation");
-            }
-        }
     }
 
     pub fn stop(&mut self) {
