@@ -538,9 +538,7 @@ fn schedule_frames(
             .and_then(|root| root.downcast::<gtk4::Window>().ok())
             .map(|window| window.is_active());
 
-        // Count every callback before applying the focus/presentation policy.
-        // This distinguishes missing GDK callbacks from callbacks skipped by
-        // should_present_video() below.
+        // Count every callback so GDK delivery gaps remain observable.
         let tick_now = Instant::now();
         let (callback_count, tick_interval_us) = {
             let mut state = state.borrow_mut();
