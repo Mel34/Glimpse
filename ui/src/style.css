@@ -146,6 +146,19 @@ button.header-close-button image {
     color: @window_fg_color;
 }
 
+/* MenuButton renders an internal toggle button; keep GTK's default hover
+ * and checked backgrounds from leaking through the transparent header style. */
+menubutton.header-button > button,
+menubutton.header-button > button:hover,
+menubutton.header-button > button:active,
+menubutton.header-button > button:checked {
+    background-color: transparent;
+    background-image: none;
+    color: @window_fg_color;
+    box-shadow: none;
+    border: none;
+}
+
 button.header-close-button {
     min-width: 28px;
     min-height: 28px;
