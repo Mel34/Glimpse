@@ -595,6 +595,16 @@ impl GlimpseWindow {
         let seekbar_events = gtk4::EventControllerLegacy::new();
         seekbar_events.set_propagation_phase(gtk4::PropagationPhase::Capture);
         let seekbar_drag_state = Rc::clone(&bottom_controls.seekbar_dragging);
+        let seekbar_drag_moved = Rc::new(Cell::new(false));
+        let seekbar_motion_dragging = Rc::clone(&bottom_controls.seekbar_dragging);
+        let seekbar_motion_moved = Rc::clone(&seekbar_drag_moved);
+        let seekbar_motion = EventControllerMotion::new();
+        seekbar_motion.connect_motion(move |_, _, _| {
+            if seekbar_motion_dragging.get() {
+                seekbar_motion_moved.set(true);
+            }
+        });
+        bottom_controls.seekbar.add_controller(seekbar_motion);
         let seekbar_for_release = bottom_controls.seekbar.clone();
         let p_seekbar_release = Rc::clone(&player);
         let v_seekbar_release = Rc::clone(&video_playback);
@@ -617,6 +627,7 @@ impl GlimpseWindow {
                         } else {
                             scrub_state_for_events.set(AdaptiveScrubState::Idle);
                         }
+                        seekbar_drag_moved.set(false);
                         seekbar_drag_state.set(true);
                     }
                 }
@@ -626,10 +637,12 @@ impl GlimpseWindow {
                         && seekbar_drag_state.replace(false)
                     {
                         let target = Duration::from_secs_f64(seekbar_for_release.value().max(0.0));
+                        let did_drag = seekbar_drag_moved.replace(false);
                         if let Some(p) = p_seekbar_release.borrow().as_ref() {
                             match scrub_state_for_events.get() {
                                 AdaptiveScrubState::Dragging { original_speed, was_playing }
-                                    if was_playing
+                                    if did_drag
+                                        && was_playing
                                         && p.state() == PlayerState::Playing
                                         && target.saturating_sub(p.position()) > SCRUB_TARGET_TOLERANCE =>
                                 {
