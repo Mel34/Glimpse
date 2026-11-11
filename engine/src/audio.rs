@@ -46,7 +46,7 @@ impl AudioSink for MockAudioSink {
 
     fn set_volume(&self, volume: f32) {
         self.volume
-            .store(volume.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+            .store(volume.clamp(0.0, 1.5).to_bits(), Ordering::Relaxed);
     }
 
     fn get_volume(&self) -> f32 {
