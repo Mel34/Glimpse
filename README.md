@@ -107,7 +107,7 @@ Future rendering work can build on this foundation:
 Arch Linux prerequisites:
 
 ```bash
-sudo pacman -S --needed ffmpeg gtk4 libadwaita cargo rust clang pkgconf alsa-lib libpulse pipewire
+sudo pacman -S --needed ffmpeg gtk4 libadwaita libdrm cargo rust clang pkgconf alsa-lib libpulse pipewire
 ```
 
 Build and test:
