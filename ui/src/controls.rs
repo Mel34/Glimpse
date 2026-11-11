@@ -64,7 +64,7 @@ pub fn create_floating_bottom_bar() -> ControlBarWidgets {
     volume_icon.set_pixel_size(16);
     volume_button.set_child(Some(&volume_icon));
     volume_button.add_css_class("osd-icon-button");
-    volume_button.set_size_request(36, 36);
+    volume_button.set_size_request(40, 40);
     volume_button.set_tooltip_text(Some("Volume: 100%"));
 
     let speed_button = Button::with_label("1.0×");
@@ -113,7 +113,7 @@ pub fn create_floating_bottom_bar() -> ControlBarWidgets {
     screenshot_icon.set_pixel_size(16);
     screenshot_button.set_child(Some(&screenshot_icon));
     screenshot_button.add_css_class("osd-icon-button");
-    screenshot_button.set_size_request(36, 36);
+    screenshot_button.set_size_request(40, 40);
     screenshot_button.set_can_focus(false);
     screenshot_button.set_sensitive(false);
     screenshot_button.set_tooltip_text(Some("Take Screenshot"));
@@ -122,7 +122,7 @@ pub fn create_floating_bottom_bar() -> ControlBarWidgets {
     let settings_button = MenuButton::new();
     settings_button.set_icon_name("emblem-system-symbolic");
     settings_button.add_css_class("osd-icon-button");
-    settings_button.set_size_request(36, 36);
+    settings_button.set_size_request(40, 40);
     settings_button.set_tooltip_text(Some("Tracks & Preferences"));
     top_row.append(&settings_button);
 
