@@ -292,6 +292,19 @@ impl Player {
         *self.volume.lock()
     }
 
+    /// Sets the playback rate, including the audio output and shared video clock.
+    pub fn set_playback_speed(&self, speed: f32) {
+        self.clock.set_speed(speed as f64);
+        #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
+        if let Some(handle) = self.audio_session.lock().as_ref() {
+            handle.set_speed(self.clock.speed() as f32);
+        }
+    }
+
+    pub fn playback_speed(&self) -> f32 {
+        self.clock.speed() as f32
+    }
+
     pub fn tracks(&self) -> TrackList {
         self.tracks.lock().clone()
     }
@@ -415,6 +428,17 @@ fn clamp_seek_target(target: Duration, duration: Option<Duration>) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn player_playback_speed_is_clamped_and_persisted_in_the_clock() {
+        let (player, _events) = test_player(Some(Duration::from_secs(120)));
+
+        player.set_playback_speed(1.5);
+        assert_eq!(player.playback_speed(), 1.5);
+
+        player.set_playback_speed(4.0);
+        assert_eq!(player.playback_speed(), 2.0);
+    }
 
     #[test]
     fn seek_target_is_clamped_to_known_duration() {
