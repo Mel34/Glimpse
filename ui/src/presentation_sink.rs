@@ -10,9 +10,7 @@ use crossbeam_channel::{bounded, Receiver, Sender, TryRecvError, TrySendError};
 use std::thread::{self, JoinHandle};
 use glimpse_engine::decoder::SubtitleCue;
 use glimpse_engine::{MasterClock, VideoFrameData};
-use glib::object::ObjectExt;
 use glib::prelude::Cast;
-use gtk4::prelude::GtkWindowExt;
 use gtk4::prelude::WidgetExtManual;
 use gtk4::prelude::WidgetExt;
 use std::cell::RefCell;
@@ -557,7 +555,6 @@ fn schedule_frames(
                 frame_time_delta_us,
                 tick_interval_us,
                 presentation_time_us,
-                window_active,
                 frames_received = state.frames_received,
                 displayed_frames = state.displayed_frames,
                 dropped_stale_ingest = state.dropped_stale_ingest,
