@@ -8,7 +8,7 @@ use gio::SimpleAction;
 use gtk4::{
     Align, Box as GtkBox, Button, CheckButton, DropTarget, EventControllerKey, EventControllerMotion,
     FileDialog, FileFilter, GestureClick, Image, Label, MenuButton,
-    Orientation, Overlay, Picture, Separator, Settings, Stack, StackTransitionType, WindowHandle,
+    Orientation, Overlay, Separator, Settings, Stack, StackTransitionType, WindowHandle,
 };
 
 use glimpse_engine::{Event, Player, PlayerState};
@@ -16,6 +16,7 @@ use crate::controls::{create_floating_bottom_bar, ControlBarWidgets};
 use crate::interaction::{attach_popover_scroll_guard, attach_seekbar_wheel, attach_window_volume_wheel, VideoClickStateMachine};
 use crate::track_menu::create_track_popover;
 use crate::video_texture::{bind_subtitle_scaling, VideoPlaybackHandle};
+use crate::rotatable_picture::RotatablePicture;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AbLoopState {
@@ -63,7 +64,7 @@ pub struct GlimpseWindow {
     player: Rc<RefCell<Option<Player>>>,
     video_playback: Rc<RefCell<Option<VideoPlaybackHandle>>>,
     bottom_controls: ControlBarWidgets,
-    picture: Picture,
+    picture: RotatablePicture,
     subtitle_label: Label,
     #[allow(dead_code)]
     top_controls: GtkBox,
@@ -213,9 +214,7 @@ impl GlimpseWindow {
         player_overlay.set_hexpand(true);
 
         // Video picture surface (letterboxed/contain aspect ratio fit)
-        let picture = Picture::new();
-        picture.set_content_fit(gtk4::ContentFit::Contain);
-        picture.set_can_shrink(true);
+        let picture = RotatablePicture::new();
         picture.set_vexpand(true);
         picture.set_hexpand(true);
         picture.set_can_target(true);
@@ -1073,7 +1072,7 @@ fn trigger_open_file_dialog(
     stack: &Stack,
     player: &Rc<RefCell<Option<Player>>>,
     video_playback: &Rc<RefCell<Option<VideoPlaybackHandle>>>,
-    picture: &Picture,
+    picture: &RotatablePicture,
     subtitle_label: &Label,
     bottom_controls: &ControlBarWidgets,
     ab_loop: &Rc<Cell<AbLoopState>>,
@@ -1237,7 +1236,8 @@ fn load_and_play_file(
         old_player.stop();
     }
 
-    picture.set_paintable(gdk4::Paintable::NONE);
+    picture.set_paintable(None);
+    picture.set_rotation(0);
 
     // Restore the normal control state while probing the replacement file.
     // Keep the slider's value; this does not modify the Player volume.
@@ -1356,6 +1356,10 @@ fn load_and_play_file(
                         if let Some(ref active_player) = *player_speed.borrow() {
                             active_player.set_playback_speed(speed as f32);
                         }
+                    },
+                    {
+                        let picture = picture.clone();
+                        move |degrees| picture.rotate_by(degrees)
                     },
                     &bottom_controls.loop_enabled,
                     &bottom_controls.loop_menu_buttons,
