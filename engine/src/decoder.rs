@@ -446,7 +446,7 @@ impl VideoDecoder {
         loop {
             let mut decoded = ffmpeg::frame::Video::empty();
             match backend.decoder.receive_frame(&mut decoded) {
-                Ok(()) => frames_received += 1
+                Ok(()) => frames_received += 1,
                 Err(ffmpeg::Error::Eof) => break,
                 Err(ffmpeg::Error::Other { errno }) if errno == libc::EAGAIN => break,
                 Err(error) => return Err(format!("Video frame decoding failed: {error}")),
