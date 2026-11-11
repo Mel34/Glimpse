@@ -36,6 +36,7 @@ pub struct Player {
     tracks: Arc<Mutex<TrackList>>,
     volume: Arc<Mutex<f32>>,
     audio_enabled: AtomicBool,
+    scrub_muted: AtomicBool,
     current_serial: Arc<Mutex<Serial>>,
     event_sender: Sender<Event>,
     #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
@@ -77,6 +78,7 @@ impl Player {
             tracks,
             volume,
             audio_enabled: AtomicBool::new(discovered_tracks.active_audio.is_some()),
+            scrub_muted: AtomicBool::new(false),
             current_serial,
             event_sender: event_tx,
             #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
@@ -103,11 +105,7 @@ impl Player {
                 self.clock.resume();
                 let _ = self.event_sender.send(Event::StateChanged(PlayerState::Playing));
             } else {
-                let initial_volume = if self.audio_enabled.load(Ordering::Acquire) {
-                    self.volume()
-                } else {
-                    0.0
-                };
+                let initial_volume = self.effective_audio_volume();
                 let mut start_position = *self.seek_position.lock();
                 let selected_audio = self.tracks.lock().active_audio.map(|track| track.0);
                 let mut reset_position = false;
@@ -221,7 +219,7 @@ impl Player {
 
         #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
         {
-            let initial_volume = if self.audio_enabled.load(Ordering::Acquire) { self.volume() } else { 0.0 };
+            let initial_volume = self.effective_audio_volume();
             let mut session = self.audio_session.lock();
             if let Some(mut previous) = session.take() {
                 let restart = was_playing && !previous.is_finished();
@@ -283,13 +281,22 @@ impl Player {
         }
         #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
         if let Some(handle) = self.audio_session.lock().as_ref() {
-            let effective = if self.audio_enabled.load(Ordering::Acquire) { clamped } else { 0.0 };
-            handle.set_volume(effective);
+            handle.set_volume(self.effective_audio_volume());
         }
     }
 
     pub fn volume(&self) -> f32 {
         *self.volume.lock()
+    }
+
+    fn effective_audio_volume(&self) -> f32 {
+        if self.audio_enabled.load(Ordering::Acquire)
+            && !self.scrub_muted.load(Ordering::Acquire)
+        {
+            self.volume()
+        } else {
+            0.0
+        }
     }
 
     /// Sets the user-visible playback rate, which remains limited to 2×.
@@ -314,17 +321,11 @@ impl Player {
 
     /// Temporarily silence the audio output without changing the saved volume.
     pub fn set_scrub_muted(&self, muted: bool) {
+        self.scrub_muted.store(muted, Ordering::Release);
         #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
         if let Some(handle) = self.audio_session.lock().as_ref() {
-            let volume = if muted || !self.audio_enabled.load(Ordering::Acquire) {
-                0.0
-            } else {
-                self.volume()
-            };
-            handle.set_volume(volume);
+            handle.set_volume(self.effective_audio_volume());
         }
-        #[cfg(not(all(feature = "audio-pipewire", feature = "ffmpeg-system")))]
-        let _ = muted;
     }
 
     pub fn playback_speed(&self) -> f32 {
@@ -374,7 +375,7 @@ impl Player {
                 let playback = AudioPlaybackSession::new(Arc::clone(&self.clock));
                 match playback.spawn_from(
                     self.path.clone(),
-                    self.volume(),
+                    self.effective_audio_volume(),
                     position,
                     Some(selected_track.0),
                     self.event_sender.clone(),
