@@ -15,7 +15,21 @@ use gtk4::prelude::*;
 use gtk4::{glib, EventControllerScroll, EventControllerScrollFlags, Window};
 
 /// Smoothly scale catch-up speed with remaining distance, reaching 32× at 30s.
-pub fn adaptive_scrub_speed(distance_secs: f64, baseline_speed: f32) -> f32 {
+/// Convert half the seekbar thumb width into media time so catch-up drops
+/// to 1× when the thumb's leading edge reaches the destination marker.
+pub fn adaptive_scrub_approach_distance(duration_secs: f64, seekbar_width_px: i32) -> f64 {
+    const THUMB_HALF_WIDTH_PX: f64 = 8.0;
+    const SEEKBAR_INSET_PX: f64 = 8.0;
+    let usable_width = (seekbar_width_px as f64 - SEEKBAR_INSET_PX * 2.0).max(1.0);
+    duration_secs.max(0.0) * THUMB_HALF_WIDTH_PX / usable_width
+}
+
+/// Smoothly scale catch-up speed with remaining distance, reaching 32× at 30s.
+pub fn adaptive_scrub_speed(
+    distance_secs: f64,
+    baseline_speed: f32,
+    final_approach_secs: f64,
+) -> f32 {
     const SCRUB_MAX_SPEED: f32 = 32.0;
     const FULL_SPEED_DISTANCE_SECS: f64 = 30.0;
 
@@ -29,10 +43,7 @@ pub fn adaptive_scrub_speed(distance_secs: f64, baseline_speed: f32) -> f32 {
     let eased = progress * progress * (3.0 - 2.0 * progress);
     let adaptive_speed = baseline + (SCRUB_MAX_SPEED - baseline) * eased as f32;
 
-    // Blend down to 1× over the final half-second so the playhead reaches
-    // the destination marker without the 50ms timeline tick stepping past it.
-    const FINAL_APPROACH_SECS: f64 = 0.5;
-    let approach = (distance / FINAL_APPROACH_SECS).clamp(0.0, 1.0);
+    let approach = (distance / final_approach_secs.max(0.001)).clamp(0.0, 1.0);
     let approach_eased = approach * approach * (3.0 - 2.0 * approach);
     1.0 + (adaptive_speed - 1.0) * approach_eased as f32
 }
@@ -117,35 +128,40 @@ mod seekbar_wheel_tests {
     use std::time::Duration;
 
     #[test]
-    fn adaptive_scrub_speed_starts_at_the_original_rate() {
-        assert_eq!(super::adaptive_scrub_speed(0.0, 1.5), 1.5);
+    fn adaptive_scrub_speed_reaches_one_x_at_the_destination() {
+        assert_eq!(super::adaptive_scrub_speed(0.0, 1.0, 0.5), 1.0);
+        assert_eq!(super::adaptive_scrub_speed(0.0, 1.5, 0.5), 1.0);
     }
 
     #[test]
     fn adaptive_scrub_speed_smoothly_reaches_its_internal_ceiling() {
-        assert!(super::adaptive_scrub_speed(2.0, 1.0) > 1.0);
-        assert!(super::adaptive_scrub_speed(10.0, 1.0) > 8.0);
-        assert_eq!(super::adaptive_scrub_speed(30.0, 1.0), 32.0);
-        assert_eq!(super::adaptive_scrub_speed(120.0, 1.0), 32.0);
+        assert!(super::adaptive_scrub_speed(2.0, 1.0, 0.5) > 1.0);
+        assert!(super::adaptive_scrub_speed(10.0, 1.0, 0.5) > 8.0);
+        assert_eq!(super::adaptive_scrub_speed(30.0, 1.0, 0.5), 32.0);
+        assert_eq!(super::adaptive_scrub_speed(120.0, 1.0, 0.5), 32.0);
     }
 
     #[test]
-    fn adaptive_scrub_speed_reaches_one_x_for_the_final_approach() {
-        assert_eq!(super::adaptive_scrub_speed(0.0, 1.0), 1.0);
-        assert_eq!(super::adaptive_scrub_speed(0.0, 2.0), 1.0);
-        assert!(super::adaptive_scrub_speed(0.25, 2.0) > 1.0);
-        assert!(super::adaptive_scrub_speed(0.25, 2.0) < 2.1);
+    fn adaptive_scrub_speed_reaches_one_x_when_thumb_edge_reaches_marker() {
+        assert_eq!(super::adaptive_scrub_speed(0.5, 2.0, 0.5), 1.0);
+        assert!(super::adaptive_scrub_speed(0.75, 2.0, 0.5) > 1.0);
+        assert!(super::adaptive_scrub_speed(0.75, 2.0, 0.5) < 2.1);
+    }
+
+    #[test]
+    fn adaptive_scrub_approach_distance_matches_thumb_geometry() {
+        assert!((super::adaptive_scrub_approach_distance(600.0, 616) - 8.0).abs() < 0.001);
     }
 
     #[test]
     fn adaptive_scrub_speed_preserves_user_speed_as_its_baseline() {
-        assert!(super::adaptive_scrub_speed(2.0, 2.0) >= 2.0);
-        assert!(super::adaptive_scrub_speed(2.0, 0.5) >= 0.5);
+        assert!(super::adaptive_scrub_speed(2.0, 2.0, 0.5) >= 2.0);
+        assert!(super::adaptive_scrub_speed(2.0, 0.5, 0.5) >= 0.5);
     }
 
     #[test]
     fn adaptive_scrub_speed_recovers_from_non_finite_baseline() {
-        assert_eq!(super::adaptive_scrub_speed(0.0, f32::NAN), 1.0);
+        assert_eq!(super::adaptive_scrub_speed(0.0, f32::NAN, 0.5), 1.0);
     }
 
     #[test]
