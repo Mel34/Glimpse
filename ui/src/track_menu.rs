@@ -33,6 +33,33 @@ where
     playback_label.add_css_class("heading");
     container.append(&playback_label);
 
+    let speed_row = GtkBox::new(Orientation::Horizontal, 12);
+    let speed_label = Label::new(Some("Playback speed"));
+    speed_label.set_halign(gtk4::Align::Start);
+    speed_label.set_hexpand(true);
+    let speed_value = Label::new(Some(&format_playback_speed(initial_speed)));
+    speed_value.add_css_class("dim-label");
+    speed_row.append(&speed_label);
+    speed_row.append(&speed_value);
+    container.append(&speed_row);
+
+    let speed_scale = gtk4::Scale::with_range(Orientation::Horizontal, 0.5, 2.0, 0.001);
+    speed_scale.set_draw_value(false);
+    speed_scale.set_hexpand(true);
+    speed_scale.set_digits(3);
+    speed_scale.set_value(initial_speed.clamp(0.5, 2.0));
+    speed_scale.add_mark(0.5, gtk4::PositionType::Bottom, Some("0.5×"));
+    speed_scale.add_mark(1.0, gtk4::PositionType::Bottom, Some("1.0×"));
+    speed_scale.add_mark(2.0, gtk4::PositionType::Bottom, Some("2.0×"));
+    let speed_value_changed = speed_value.clone();
+    let speed_callback = on_speed_changed.clone();
+    speed_scale.connect_value_changed(move |scale| {
+        let speed = scale.value();
+        speed_value_changed.set_text(&format_playback_speed(speed));
+        speed_callback(speed);
+    });
+    container.append(&speed_scale);
+
     let loop_row = GtkBox::new(Orientation::Horizontal, 20);
     let loop_toggle = CheckButton::with_label("Loop");
     loop_toggle.set_hexpand(true);
@@ -144,6 +171,16 @@ where
     popover.set_child(Some(&container));
     attach_popover_scroll_guard(&popover);
     popover
+}
+
+fn format_playback_speed(speed: f64) -> String {
+    let mut value = format!("{speed:.3}");
+    while value.ends_with('0')
+        && value.split('.').nth(1).is_some_and(|decimals| decimals.len() > 1)
+    {
+        value.pop();
+    }
+    format!("{value}×")
 }
 
 fn ordered_subtitle_tracks(tracks: &[TrackInfo]) -> Vec<&TrackInfo> {
