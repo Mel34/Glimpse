@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::process::Command;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -110,11 +110,16 @@ pub fn demux_file_from(
 ) -> Result<DemuxStats, String> {
     use ffmpeg_the_third as ffmpeg;
 
+    let demux_started_at = Instant::now();
+    tracing::info!(target_secs = start_position.as_secs_f64(), "Video demux worker starting");
     ffmpeg::init().map_err(|error| format!("Could not initialise FFmpeg: {error}"))?;
+    let open_started_at = Instant::now();
     let mut input = ffmpeg::format::input(path)
         .map_err(|error| format!("Could not open media with libavformat: {error}"))?;
+    tracing::info!(open_us = open_started_at.elapsed().as_micros() as u64, "Video demux input opened");
     if !start_position.is_zero() {
         let timestamp = i64::try_from(start_position.as_micros()).unwrap_or(i64::MAX);
+        let seek_started_at = Instant::now();
         // Prefer a backward-bounded seek so decoding can trim from the
         // preceding keyframe. Some demuxers reject that constrained interval
         // even when they support ordinary timestamp seeking, so retry with
@@ -129,6 +134,12 @@ pub fn demux_file_from(
                 )
             })?;
         }
+        tracing::info!(
+            target_secs = start_position.as_secs_f64(),
+            seek_us = seek_started_at.elapsed().as_micros() as u64,
+            elapsed_us = demux_started_at.elapsed().as_micros() as u64,
+            "Video demux seek completed"
+        );
     }
 
     let mut stream_types = HashMap::new();
@@ -143,6 +154,7 @@ pub fn demux_file_from(
     }
 
     let mut stats = DemuxStats::default();
+    let mut first_video_packet = true;
 
     for packet_result in input.packets() {
         let (stream, packet) = packet_result
@@ -170,6 +182,17 @@ pub fn demux_file_from(
         let queue = match stream_type {
             TrackType::Video => {
                 stats.video_packets += 1;
+                if first_video_packet {
+                    first_video_packet = false;
+                    tracing::info!(
+                        target_secs = start_position.as_secs_f64(),
+                        packet_pts_secs = demux_packet.pts_secs(),
+                        keyframe = demux_packet.is_keyframe,
+                        packet_bytes = byte_size,
+                        elapsed_us = demux_started_at.elapsed().as_micros() as u64,
+                        "Demux produced first video packet"
+                    );
+                }
                 &queues.video
             }
             TrackType::Audio => {
