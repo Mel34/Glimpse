@@ -514,7 +514,15 @@ fn schedule_frames(
             // one-refresh fallback when no prediction is available at all.
             presentation_window
         };
-        let presentation_deadline_pts = master_pts + predicted_lead_secs;
+        // Convert the wall-clock lead until the next display refresh into media
+        // time using the same authoritative rate that drives PipeWire. Without
+        // this scaling, audio advances (for example) 32× during a refresh while
+        // the video scheduler only looks one wall-clock refresh ahead.
+        let presentation_deadline_pts = presentation_deadline_pts(
+            master_pts,
+            predicted_lead_secs,
+            media_clock.speed(),
+        );
 
         let mut subtitle_state = subtitle_state.borrow_mut();
         loop {
@@ -770,3 +778,40 @@ fn schedule_frames(
         glib::ControlFlow::Continue
     });
 }
+
+/// Map the next display opportunity's wall-clock lead into media time.
+/// Audio and video use the same playback rate, so a 16 ms display lead at 32×
+/// represents roughly 512 ms of media time, not 16 ms.
+fn presentation_deadline_pts(master_pts: f64, wall_lead_secs: f64, playback_speed: f64) -> f64 {
+    let speed = if playback_speed.is_finite() {
+        playback_speed.clamp(0.5, 32.0)
+    } else {
+        1.0
+    };
+    master_pts + wall_lead_secs.max(0.0) * speed
+}
+
+#[cfg(test)]
+mod presentation_deadline_tests {
+    use super::presentation_deadline_pts;
+
+    #[test]
+    fn scales_display_lead_by_the_shared_playback_rate() {
+        let normal = presentation_deadline_pts(10.0, 1.0 / 60.0, 1.0);
+        let accelerated = presentation_deadline_pts(10.0, 1.0 / 60.0, 32.0);
+
+        assert!((normal - (10.0 + 1.0 / 60.0)).abs() < 1e-9);
+        assert!((accelerated - (10.0 + 32.0 / 60.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn invalid_speed_falls_back_to_normal_rate() {
+        assert_eq!(presentation_deadline_pts(10.0, 0.02, f64::NAN), 10.02);
+    }
+
+    #[test]
+    fn negative_display_lead_does_not_move_deadline_backwards() {
+        assert_eq!(presentation_deadline_pts(10.0, -0.02, 4.0), 10.0);
+    }
+}
+
