@@ -632,22 +632,7 @@ impl GlimpseWindow {
         let seekbar_events = gtk4::EventControllerLegacy::new();
         seekbar_events.set_propagation_phase(gtk4::PropagationPhase::Capture);
         let seekbar_drag_state = Rc::clone(&bottom_controls.seekbar_dragging);
-        let seekbar_motion_dragging = Rc::clone(&bottom_controls.seekbar_dragging);
-        let seekbar_motion_moved = Rc::clone(&seekbar_drag_moved);
         let seekbar_press_position: Rc<Cell<Option<(f64, f64)>>> = Rc::new(Cell::new(None));
-        let seekbar_motion_origin = Rc::clone(&seekbar_press_position);
-        let seekbar_motion = EventControllerMotion::new();
-        seekbar_motion.connect_motion(move |_, x, y| {
-            const DRAG_THRESHOLD_PX: f64 = 8.0;
-            if seekbar_motion_dragging.get()
-                && seekbar_motion_origin.get().is_some_and(|(start_x, start_y)| {
-                    (x - start_x).hypot(y - start_y) >= DRAG_THRESHOLD_PX
-                })
-            {
-                seekbar_motion_moved.set(true);
-            }
-        });
-        bottom_controls.seekbar.add_controller(seekbar_motion);
         let seekbar_for_release = bottom_controls.seekbar.clone();
         let p_seekbar_release = Rc::clone(&player);
         let v_seekbar_release = Rc::clone(&video_playback);
@@ -672,6 +657,17 @@ impl GlimpseWindow {
                         seekbar_drag_moved.set(false);
                         seekbar_press_position.set(event.position());
                         seekbar_drag_state.set(true);
+                    }
+                }
+                gdk4::EventType::MotionNotify => {
+                    const DRAG_THRESHOLD_PX: f64 = 8.0;
+                    if seekbar_drag_state.get()
+                        && event.position().zip(seekbar_press_position.get())
+                            .is_some_and(|((x, y), (start_x, start_y))| {
+                                (x - start_x).hypot(y - start_y) >= DRAG_THRESHOLD_PX
+                            })
+                    {
+                        seekbar_drag_moved.set(true);
                     }
                 }
                 gdk4::EventType::ButtonRelease => {
