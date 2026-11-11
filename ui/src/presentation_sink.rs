@@ -6,7 +6,8 @@
 //! for audio playback); GDK's frame clock controls presentation cadence only.
 
 use crate::video_texture::apply_subtitle_font_size;
-use crossbeam_channel::{Receiver, Sender, TryRecvError};
+use crossbeam_channel::{bounded, Receiver, Sender, TryRecvError, TrySendError};
+use std::thread::{self, JoinHandle};
 use glimpse_engine::decoder::SubtitleCue;
 use glimpse_engine::{MasterClock, VideoFrameData};
 use glib::object::ObjectExt;
@@ -144,16 +145,137 @@ impl GtkPresentationSink {
         media_clock: Arc<MasterClock>,
         cancelled: Arc<AtomicBool>,
         first_frame_ready: Option<Sender<()>>,
-    ) {
+        first_frame_pending: Arc<AtomicBool>,
+    ) -> Result<JoinHandle<()>, String> {
+        let (presentation_sender, presentation_receiver) =
+            bounded::<Result<VideoFrameData, String>>(1);
+        let presentation_drop_receiver = presentation_receiver.clone();
+        let worker_clock = Arc::clone(&media_clock);
+        let worker_cancelled = Arc::clone(&cancelled);
+        let worker_first_frame_pending = Arc::clone(&first_frame_pending);
+        let worker = thread::Builder::new()
+            .name("glimpse-video-ingest".to_string())
+            .spawn(move || {
+                forward_frames(
+                    receiver,
+                    presentation_sender,
+                    presentation_drop_receiver,
+                    worker_clock,
+                    worker_cancelled,
+                    worker_first_frame_pending,
+                );
+            })
+            .map_err(|error| format!("Could not start video ingestion worker: {error}"))?;
+
         schedule_frames(
-            receiver,
+            presentation_receiver,
             subtitle_receiver,
             picture,
             subtitle_label,
             media_clock,
             cancelled,
             first_frame_ready,
+            first_frame_pending,
         );
+        Ok(worker)
+    }
+}
+
+fn forward_frames(
+    receiver: Receiver<Result<VideoFrameData, String>>,
+    sender: Sender<Result<VideoFrameData, String>>,
+    drop_receiver: Receiver<Result<VideoFrameData, String>>,
+    media_clock: Arc<MasterClock>,
+    cancelled: Arc<AtomicBool>,
+    first_frame_pending: Arc<AtomicBool>,
+) {
+    let video_debug = std::env::var_os("GLIMPSE_VIDEO_DEBUG").is_some();
+    let mut forwarded = 0_u64;
+    let mut dropped_stale = 0_u64;
+    let mut last_heartbeat = Instant::now();
+
+    while !cancelled.load(Ordering::Acquire) {
+        let message = match receiver.recv_timeout(Duration::from_millis(5)) {
+            Ok(message) => message,
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                if video_debug && last_heartbeat.elapsed() >= Duration::from_secs(1) {
+                    tracing::info!(
+                        forwarded,
+                        dropped_stale,
+                        source_queued = receiver.len(),
+                        presentation_queued = drop_receiver.len(),
+                        master_pts = media_clock.get_pts(),
+                        "Video ingestion worker heartbeat"
+                    );
+                    last_heartbeat = Instant::now();
+                }
+                continue;
+            }
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+        };
+
+        let mut message = message;
+        loop {
+            if cancelled.load(Ordering::Acquire) {
+                return;
+            }
+            match sender.try_send(message) {
+                Ok(()) => {
+                    forwarded += 1;
+                    break;
+                }
+                Err(TrySendError::Disconnected(_)) => return,
+                Err(TrySendError::Full(returned)) => {
+                    message = returned;
+                    if first_frame_pending.load(Ordering::Acquire) {
+                        thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+
+                    match drop_receiver.try_recv() {
+                        Ok(Ok(queued_frame)) => {
+                            let master_pts = media_clock.get_pts();
+                            let lateness = master_pts - queued_frame.pts;
+                            if lateness > 0.040 {
+                                dropped_stale += 1;
+                                if video_debug
+                                    && (dropped_stale == 1 || dropped_stale % 120 == 0)
+                                {
+                                    tracing::warn!(
+                                        frame_pts = queued_frame.pts,
+                                        master_pts,
+                                        lateness_ms = lateness * 1000.0,
+                                        dropped_stale,
+                                        "Ingestion worker discarded stale queued video frame"
+                                    );
+                                }
+                            } else {
+                                let _ = sender.try_send(Ok(queued_frame));
+                                thread::sleep(Duration::from_millis(5));
+                            }
+                        }
+                        Ok(Err(error)) => {
+                            let _ = sender.try_send(Err(error));
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(TryRecvError::Empty) => thread::sleep(Duration::from_millis(2)),
+                        Err(TryRecvError::Disconnected) => return,
+                    }
+                }
+            }
+        }
+
+        if video_debug && last_heartbeat.elapsed() >= Duration::from_secs(1) {
+            tracing::info!(
+                forwarded,
+                dropped_stale,
+                source_queued = receiver.len(),
+                presentation_queued = drop_receiver.len(),
+                master_pts = media_clock.get_pts(),
+                "Video ingestion worker heartbeat"
+            );
+            last_heartbeat = Instant::now();
+        }
     }
 }
 
@@ -185,6 +307,7 @@ fn schedule_frames(
     media_clock: Arc<MasterClock>,
     cancelled: Arc<AtomicBool>,
     first_frame_ready: Option<Sender<()>>,
+    first_frame_pending: Arc<AtomicBool>,
 ) {
     let first_frame_ready = Rc::new(RefCell::new(first_frame_ready));
     // The sink reads engine media time but never adjusts it. PipeWire remains
@@ -232,6 +355,7 @@ fn schedule_frames(
     let ingest_receiver = receiver.clone();
     let ingest_clock = Arc::clone(&media_clock);
     let ingest_cancelled = Arc::clone(&cancelled);
+    let ingest_first_frame_pending = Arc::clone(&first_frame_pending);
     let ingest_picture = picture.downgrade();
     glib::timeout_add_local(Duration::from_millis(5), move || {
         if ingest_cancelled.load(Ordering::Acquire) {
@@ -249,6 +373,7 @@ fn schedule_frames(
             // If focus is lost before the startup frame is presented, don't pin
             // that old frame; resume by selecting the newest frame for current PTS.
             state.present_first_frame = false;
+            ingest_first_frame_pending.store(false, Ordering::Release);
         }
         if state.stream_finished {
             return glib::ControlFlow::Break;
@@ -439,6 +564,7 @@ fn schedule_frames(
         // and GPU import while this window is on an inactive workspace.
         if !should_present_video(window_active) {
             state.borrow_mut().present_first_frame = false;
+            first_frame_pending.store(false, Ordering::Release);
             return glib::ControlFlow::Continue;
         }
 
@@ -517,6 +643,7 @@ fn schedule_frames(
 
         if selected_frame.is_some() {
             state.present_first_frame = false;
+            first_frame_pending.store(false, Ordering::Release);
         } else if !state.present_first_frame {
             let mut candidate = state.pending.take();
             let mut latest_late_frame = None;
