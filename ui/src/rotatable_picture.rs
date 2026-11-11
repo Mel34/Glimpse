@@ -113,53 +113,54 @@ impl RotatablePicture {
             return Err("The current video frame has invalid dimensions.".to_string());
         }
 
-        // GDK downloads textures in Cairo ARGB32 layout. This deliberately
-        // performs readback only on an explicit screenshot request; playback
-        // itself remains on the existing GPU-backed presentation path.
-        let mut source = gtk4::cairo::ImageSurface::create(
-            gtk4::cairo::Format::ARgb32,
+        // GDK downloads in its default premultiplied BGRA format on
+        // little-endian systems. Convert to straight RGBA for GdkPixbuf.
+        let stride = (width as usize)
+            .checked_mul(4)
+            .ok_or_else(|| "The video frame is too wide to capture.".to_string())?;
+        let byte_len = stride
+            .checked_mul(height as usize)
+            .ok_or_else(|| "The video frame is too large to capture.".to_string())?;
+        if stride > i32::MAX as usize {
+            return Err("The video frame is too wide to capture.".to_string());
+        }
+        let mut pixels = vec![0; byte_len];
+        texture.download(&mut pixels, stride);
+        for pixel in pixels.chunks_exact_mut(4) {
+            let alpha = pixel[3] as u32;
+            if alpha > 0 && alpha < 255 {
+                for channel in &mut pixel[..3] {
+                    *channel = ((*channel as u32 * 255 + alpha / 2) / alpha)
+                        .min(255) as u8;
+                }
+            }
+            pixel.swap(0, 2);
+        }
+
+        let bytes = glib::Bytes::from_owned(pixels);
+        let pixbuf = gtk4::gdk_pixbuf::Pixbuf::from_bytes(
+            &bytes,
+            gtk4::gdk_pixbuf::Colorspace::Rgb,
+            true,
+            8,
             width,
             height,
-        ).map_err(|error| format!("Could not allocate screenshot buffer: {error}"))?;
-        let stride = source.stride() as usize;
-        {
-            let mut pixels = source.data()
-                .map_err(|error| format!("Could not access screenshot pixels: {error}"))?;
-            texture.download(&mut pixels, stride);
-        }
-        source.mark_dirty();
+            stride as i32,
+        );
 
-        let rotation = self.rotation();
+        let rotation = self.rotation().rem_euclid(360);
         let (output_width, output_height) = screenshot_dimensions(width, height, rotation);
-        let output = gtk4::cairo::ImageSurface::create(
-            gtk4::cairo::Format::ARgb32,
-            output_width,
-            output_height,
-        ).map_err(|error| format!("Could not allocate rotated screenshot: {error}"))?;
-        let context = gtk4::cairo::Context::new(&output)
-            .map_err(|error| format!("Could not prepare screenshot: {error}"))?;
-
-        match rotation {
-            90 => {
-                context.translate(output_width as f64, 0.0);
-                context.rotate(std::f64::consts::FRAC_PI_2);
-            }
-            180 => {
-                context.translate(output_width as f64, output_height as f64);
-                context.rotate(std::f64::consts::PI);
-            }
-            270 => {
-                context.translate(0.0, output_height as f64);
-                context.rotate(-std::f64::consts::FRAC_PI_2);
-            }
-            _ => {}
+        let rotated = match rotation {
+            90 => pixbuf.rotate_simple(gtk4::gdk_pixbuf::PixbufRotation::Clockwise),
+            180 => pixbuf.rotate_simple(gtk4::gdk_pixbuf::PixbufRotation::Upsidedown),
+            270 => pixbuf.rotate_simple(gtk4::gdk_pixbuf::PixbufRotation::Counterclockwise),
+            _ => Some(pixbuf),
+        }.ok_or_else(|| "Could not rotate the screenshot.".to_string())?;
+        if rotated.width() != output_width || rotated.height() != output_height {
+            return Err("The rotated screenshot has unexpected dimensions.".to_string());
         }
-        context.set_source_surface(&source, 0.0, 0.0)
-            .map_err(|error| format!("Could not prepare screenshot image: {error}"))?;
-        context.paint()
-            .map_err(|error| format!("Could not render screenshot: {error}"))?;
-        drop(context);
-        output.flush();
+        let png = rotated.save_to_bufferv("png", &[])
+            .map_err(|error| format!("Could not encode screenshot: {error}"))?;
 
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
@@ -191,7 +192,7 @@ impl RotatablePicture {
                 }
             };
 
-            if let Err(error) = output.write_to_png(&mut file) {
+            if let Err(error) = file.write_all(&png) {
                 let _ = fs::remove_file(&path);
                 return Err(format!("Could not write screenshot: {error}"));
             }
