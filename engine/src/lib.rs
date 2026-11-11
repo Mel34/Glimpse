@@ -292,13 +292,39 @@ impl Player {
         *self.volume.lock()
     }
 
-    /// Sets the playback rate, including the audio output and shared video clock.
+    /// Sets the user-visible playback rate, which remains limited to 2×.
     pub fn set_playback_speed(&self, speed: f32) {
+        let speed = if speed.is_finite() { speed.clamp(0.5, 2.0) } else { 1.0 };
+        self.set_speed_internal(speed);
+    }
+
+    /// Sets the temporary adaptive-scrub rate, with a separate 4× ceiling.
+    pub fn set_scrub_speed(&self, speed: f32) {
+        let speed = if speed.is_finite() { speed.clamp(0.5, 4.0) } else { 1.0 };
+        self.set_speed_internal(speed);
+    }
+
+    fn set_speed_internal(&self, speed: f32) {
         self.clock.set_speed(speed as f64);
         #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
         if let Some(handle) = self.audio_session.lock().as_ref() {
             handle.set_speed(self.clock.speed() as f32);
         }
+    }
+
+    /// Temporarily silence the audio output without changing the saved volume.
+    pub fn set_scrub_muted(&self, muted: bool) {
+        #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
+        if let Some(handle) = self.audio_session.lock().as_ref() {
+            let volume = if muted && self.audio_enabled.load(Ordering::Acquire) {
+                0.0
+            } else {
+                self.volume()
+            };
+            handle.set_volume(volume);
+        }
+        #[cfg(not(all(feature = "audio-pipewire", feature = "ffmpeg-system")))]
+        let _ = muted;
     }
 
     pub fn playback_speed(&self) -> f32 {
@@ -438,6 +464,13 @@ mod tests {
 
         player.set_playback_speed(4.0);
         assert_eq!(player.playback_speed(), 2.0);
+
+        player.set_scrub_speed(4.0);
+        assert_eq!(player.playback_speed(), 4.0);
+        player.set_scrub_speed(8.0);
+        assert_eq!(player.playback_speed(), 4.0);
+        player.set_playback_speed(f32::NAN);
+        assert_eq!(player.playback_speed(), 1.0);
     }
 
     #[test]
