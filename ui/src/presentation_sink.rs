@@ -6,6 +6,7 @@
 //! for audio playback); GDK's frame clock controls presentation cadence only.
 
 use crate::video_texture::apply_subtitle_font_size;
+use crate::rotatable_picture::RotatablePicture;
 use crossbeam_channel::{bounded, Receiver, Sender, TryRecvError, TrySendError};
 use std::thread::{self, JoinHandle};
 use glimpse_engine::decoder::SubtitleCue;
@@ -135,7 +136,7 @@ impl GtkPresentationSink {
     pub fn start(
         receiver: Receiver<Result<VideoFrameData, String>>,
         subtitle_receiver: Receiver<Result<SubtitleCue, String>>,
-        picture: gtk4::Picture,
+        picture: RotatablePicture,
         subtitle_label: gtk4::Label,
         media_clock: Arc<MasterClock>,
         cancelled: Arc<AtomicBool>,
@@ -738,7 +739,7 @@ fn schedule_frames(
         };
         let texture_import_us = texture_import_started.elapsed().as_micros() as u64;
         let paintable_started = Instant::now();
-        picture.set_paintable(Some(&texture));
+        picture.set_paintable(Some(texture.upcast_ref()));
         if let Some(ready) = first_frame_ready.borrow_mut().take() {
             let _ = ready.send(());
         }
