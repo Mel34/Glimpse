@@ -553,12 +553,15 @@ impl GlimpseWindow {
         click_gesture.set_button(1); // Left mouse button only
 
         let p_toggle = Rc::clone(&player);
+        let p_toggle_press = Rc::clone(&player);
         let v_toggle = Rc::clone(&video_playback);
+        let v_toggle_press = Rc::clone(&video_playback);
         let win_click = window.clone();
         let click_state_press = Rc::clone(&click_state);
         let scrub_state_press = Rc::clone(&adaptive_scrub_state);
         let marker_position_press = Rc::clone(&bottom_controls.seekbar_marker_position);
         let marker_press = bottom_controls.seekbar_marker.clone();
+        let resume_from_scrub_press = Rc::clone(&resume_from_scrub);
         let scrub_click_interrupted = Rc::new(Cell::new(false));
         let scrub_click_interrupted_press = Rc::clone(&scrub_click_interrupted);
 
@@ -574,7 +577,7 @@ impl GlimpseWindow {
                         | AdaptiveScrubState::Dragging { was_playing: true, .. }
                 )
             {
-                if let Some(ref p) = *p_toggle.borrow() {
+                if let Some(ref p) = *p_toggle_press.borrow() {
                     if p.state() == PlayerState::Playing {
                         let position = p.position();
                         cancel_adaptive_scrub(
@@ -585,10 +588,10 @@ impl GlimpseWindow {
                         );
                         p.pause();
                         p.seek(position);
-                        if let Some(ref mut video) = *v_toggle.borrow_mut() {
+                        if let Some(ref mut video) = *v_toggle_press.borrow_mut() {
                             video.seek(position);
                         }
-                        resume_from_scrub.set(false);
+                        resume_from_scrub_press.set(false);
                         p.play();
                         scrub_click_interrupted_press.set(true);
                     }
