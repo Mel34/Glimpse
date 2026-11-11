@@ -1239,6 +1239,10 @@ fn load_and_play_file(
         .basename()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.to_owned());
+    bottom_controls.screenshot_button.set_sensitive(false);
+    bottom_controls.screenshot_button.set_tooltip_text(Some("Take Screenshot"));
+    picture.set_paintable(None);
+
     let source = match media_source_from_uri(path) {
         Ok(source) => source,
         Err(error) => {
@@ -1248,8 +1252,6 @@ fn load_and_play_file(
     };
 
     ab_loop.set(AbLoopState::Unset);
-    bottom_controls.screenshot_button.set_sensitive(false);
-    bottom_controls.screenshot_button.set_tooltip_text(Some("Take Screenshot"));
     window.set_title(Some(&format!("Glimpse - {}", file_name)));
     bottom_controls.title_label.set_text(&file_name);
 
