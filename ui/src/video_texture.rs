@@ -292,9 +292,11 @@ fn decode_continuously(
         Arc::clone(&frame_queue),
         Arc::new(MasterClock::new()),
     )?;
+    decoder.set_minimum_pts(start_position.as_secs_f64());
     tracing::info!(
         decoder_open_us = decoder_open_started_at.elapsed().as_micros() as u64,
         worker_elapsed_us = worker_started_at.elapsed().as_micros() as u64,
+        target_secs = start_position.as_secs_f64(),
         "Video decode worker opened decoder"
     );
 
@@ -332,9 +334,6 @@ fn decode_continuously(
     });
     tracing::info!(worker_elapsed_us = worker_started_at.elapsed().as_micros() as u64, "Video demux worker spawned");
     let mut first_frame_forwarded = false;
-    let mut pre_target_frames_dropped = 0u64;
-    let mut first_decoded_frame_pts = None;
-    let mut last_pre_target_frame_pts = None;
 
     loop {
         if cancelled.load(Ordering::Acquire) {
@@ -355,9 +354,6 @@ fn decode_continuously(
             start_position.as_secs_f64(),
             cancelled,
             &mut first_frame_forwarded,
-            &mut pre_target_frames_dropped,
-            &mut first_decoded_frame_pts,
-            &mut last_pre_target_frame_pts,
             worker_started_at,
         ) {
             queues.abort();
@@ -403,9 +399,6 @@ fn decode_continuously(
                 start_position.as_secs_f64(),
                 cancelled,
                 &mut first_frame_forwarded,
-                &mut pre_target_frames_dropped,
-                &mut first_decoded_frame_pts,
-                &mut last_pre_target_frame_pts,
                 worker_started_at,
             );
             return Ok(());
@@ -419,29 +412,11 @@ fn forward_decoded_frames(
     minimum_pts: f64,
     cancelled: &AtomicBool,
     first_frame_forwarded: &mut bool,
-    pre_target_frames_dropped: &mut u64,
-    first_decoded_frame_pts: &mut Option<f64>,
-    last_pre_target_frame_pts: &mut Option<f64>,
     worker_started_at: Instant,
 ) -> bool {
     while let Some(frame) = frame_queue.pop_timeout(Duration::ZERO) {
         let frame_pts = frame.item.pts;
-        if first_decoded_frame_pts.is_none() {
-            *first_decoded_frame_pts = Some(frame_pts);
-        }
         if frame_pts + 0.000_001 < minimum_pts {
-            *pre_target_frames_dropped += 1;
-            *last_pre_target_frame_pts = Some(frame_pts);
-            if *pre_target_frames_dropped == 1 || *pre_target_frames_dropped % 60 == 0 {
-                tracing::info!(
-                    dropped_frames = *pre_target_frames_dropped,
-                    first_decoded_pts = first_decoded_frame_pts.unwrap_or(frame_pts),
-                    last_dropped_pts = frame_pts,
-                    target_secs = minimum_pts,
-                    worker_elapsed_us = worker_started_at.elapsed().as_micros() as u64,
-                    "Dropping decoded video frames before seek target"
-                );
-            }
             continue;
         }
 
@@ -450,9 +425,6 @@ fn forward_decoded_frames(
             tracing::info!(
                 frame_pts,
                 target_secs = minimum_pts,
-                pre_target_frames_dropped = *pre_target_frames_dropped,
-                first_decoded_pts = first_decoded_frame_pts.unwrap_or(frame_pts),
-                last_pre_target_frame_pts = *last_pre_target_frame_pts,
                 worker_elapsed_us = worker_started_at.elapsed().as_micros() as u64,
                 "Forwarding first eligible decoded video frame to presentation"
             );
