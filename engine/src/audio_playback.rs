@@ -197,7 +197,7 @@ fn sanitise_volume(volume: f32) -> f32 {
 }
 
 fn sanitise_speed(speed: f32) -> f32 {
-    if speed.is_finite() { speed.clamp(0.5, 4.0) } else { 1.0 }
+    if speed.is_finite() { speed.clamp(0.5, 32.0) } else { 1.0 }
 }
 
 impl AudioPlaybackReport {
@@ -699,7 +699,8 @@ mod tests {
         assert_eq!(sanitise_speed(0.1), 0.5);
         assert_eq!(sanitise_speed(1.25), 1.25);
         assert_eq!(sanitise_speed(3.0), 3.0);
-        assert_eq!(sanitise_speed(8.0), 4.0);
+        assert_eq!(sanitise_speed(8.0), 8.0);
+        assert_eq!(sanitise_speed(40.0), 32.0);
         assert_eq!(sanitise_speed(f32::NAN), 1.0);
     }
 
