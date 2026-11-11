@@ -27,6 +27,26 @@ enum AdaptiveScrubState {
     CatchingUp { target: Duration, original_speed: f32 },
 }
 
+fn cancel_adaptive_scrub(
+    player: &Player,
+    state: &Cell<AdaptiveScrubState>,
+    marker_position: &Cell<Option<f64>>,
+    marker: &gtk4::DrawingArea,
+) {
+    let original_speed = match state.get() {
+        AdaptiveScrubState::Dragging { original_speed, .. }
+        | AdaptiveScrubState::CatchingUp { original_speed, .. } => Some(original_speed),
+        AdaptiveScrubState::Idle => None,
+    };
+    if let Some(speed) = original_speed {
+        player.set_playback_speed(speed);
+    }
+    state.set(AdaptiveScrubState::Idle);
+    if marker_position.take().is_some() {
+        marker.queue_draw();
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AbLoopState {
     Unset,
@@ -552,6 +572,9 @@ impl GlimpseWindow {
         // On release: schedule single-click play/pause unless this is a double-click.
         let click_state_rel = Rc::clone(&click_state);
         let win_rel = window.clone();
+        let scrub_state_click = Rc::clone(&adaptive_scrub_state);
+        let marker_position_click = Rc::clone(&bottom_controls.seekbar_marker_position);
+        let marker_click = bottom_controls.seekbar_marker.clone();
         click_gesture.connect_released(move |_gesture, n_press, x, y| {
             tracing::debug!(n_press, x, y, "Video surface gesture released");
             if n_press == 1 {
@@ -565,8 +588,15 @@ impl GlimpseWindow {
                         if let Some(ref p) = *p_action.borrow() {
                             let was_playing = p.state() == PlayerState::Playing;
                             tracing::debug!(was_playing, "Video-surface play/pause timer fired");
-                            if was_playing { p.pause(); }
-                            else {
+                            if was_playing {
+                                cancel_adaptive_scrub(
+                                    p,
+                                    &scrub_state_click,
+                                    &marker_position_click,
+                                    &marker_click,
+                                );
+                                p.pause();
+                            } else {
                                 if p.state() == PlayerState::Ended {
                                     if let Some(ref mut video) = *v_action.borrow_mut() { video.seek(Duration::ZERO); }
                                 }
@@ -997,12 +1027,21 @@ impl GlimpseWindow {
         space_controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
         let p_space = Rc::clone(&player);
         let video_space = Rc::clone(&video_playback);
+        let scrub_state_space = Rc::clone(&adaptive_scrub_state);
+        let marker_position_space = Rc::clone(&bottom_controls.seekbar_marker_position);
+        let marker_space = bottom_controls.seekbar_marker.clone();
         space_controller.connect_key_pressed(move |_, keyval, _, _| {
             if keyval != gdk4::Key::space {
                 return glib::Propagation::Proceed;
             }
             if let Some(ref p) = *p_space.borrow() {
                 if p.state() == PlayerState::Playing {
+                    cancel_adaptive_scrub(
+                        p,
+                        &scrub_state_space,
+                        &marker_position_space,
+                        &marker_space,
+                    );
                     p.pause();
                 } else {
                     if p.state() == PlayerState::Ended {
