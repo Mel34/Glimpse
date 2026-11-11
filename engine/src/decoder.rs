@@ -355,7 +355,7 @@ impl VideoDecoder {
             let codec = unsafe { ffmpeg::ffi::avcodec_find_decoder(codec_id) };
             if codec.is_null() {
                 tracing::warn!(
-                    codec_id = codec_id as i32,
+                    codec_id = ?codec_id,
                     "FFmpeg could not resolve the video decoder while inspecting VAAPI support"
                 );
             } else {
@@ -381,7 +381,7 @@ impl VideoDecoder {
                 }
                 tracing::info!(
                     codec = %codec_name,
-                    codec_id = codec_id as i32,
+                    codec_id = ?codec_id,
                     hardware_configs = ?hardware_configs,
                     "Video decoder hardware configurations"
                 );
