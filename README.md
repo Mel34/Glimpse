@@ -6,9 +6,9 @@ A Linux media player written in Rust with GTK4, libadwaita, an in-process FFmpeg
 
 ## Glimpse and GNOME Showtime
 
-Glimpse is designed as a practical alternative to [GNOME Showtime (Video Player)](https://apps.gnome.org/Showtime/). The table below compares the user-facing playback features documented by GNOME with the features available in Glimpse 0.4.0.
+Glimpse is designed as a practical alternative to [GNOME Showtime (Video Player)](https://apps.gnome.org/Showtime/). The table below compares the user-facing playback features documented by GNOME with the features available in Glimpse 0.4.1.
 
-| Feature | GNOME Showtime | Glimpse 0.4.0 |
+| Feature | GNOME Showtime | Glimpse 0.4.1 |
 | --- | --- | --- |
 | Distraction-free playback controls | Yes | Yes |
 | Fullscreen playback | Yes | Yes |
@@ -24,7 +24,7 @@ Glimpse is designed as a practical alternative to [GNOME Showtime (Video Player)
 
 The comparison focuses on documented player features rather than implementation quality or codec benchmarks. “Not listed” means the feature is not advertised in GNOME's official feature overview; it does not claim that Showtime cannot support it.
 
-Both applications share the same goal: a straightforward GNOME-native video player that gets out of the way while watching. Glimpse differentiates itself with its in-process FFmpeg engine, direct PipeWire audio output, A–B looping, and volume amplification up to 150%.
+Both applications share the same goal: a straightforward GNOME-native video player that gets out of the way while watching. Glimpse differentiates itself with its in-process FFmpeg engine, direct PipeWire audio output, A–B looping, and volume amplification up to 150%. Version 0.4.1 polishes the playback menus and controls, improves shortcut discoverability, and adds dedicated keyboard shortcuts for screenshots and playback speed.
 
 
 - **Repository:** https://github.com/Mel34/Glimpse
@@ -38,7 +38,7 @@ Both applications share the same goal: a straightforward GNOME-native video play
 - **Audio track selection.** Switch between embedded audio streams or turn audio off.
 - **Subtitle support.** Select embedded text subtitles or load an external `.srt`, `.ass`, `.ssa`, or `.vtt` file. Subtitles are off by default. Available embedded tracks are ordered using the system language preferences, with English as a fallback preference. Bitmap subtitle formats such as PGS and DVD subtitles are not rendered.
 - **Synchronized video playback.** Video frames are scheduled against the audio clock; video-only media uses a monotonic playback clock.
-- **Playback speed.** Adjust playback continuously from 0.5× to 2.0× in the playback menu.
+- **Playback speed.** Adjust playback continuously from 0.5× to 2.0× in the playback menu, or use the keyboard shortcuts to change speed in 0.1× steps, halve or double it, and reset to 1×.
 - **Video rotation.** Rotate the picture 90° clockwise or counterclockwise from the playback menu. Rotation is applied to the displayed video and captured screenshots.
 - **Screenshots.** Capture the current video frame without the playback controls. PNG screenshots are saved automatically to `~/Pictures/Screenshots/`, using unique, timestamped filenames.
 - **Volume control.** Adjust or mute audio, with software volume amplification up to 150%.
@@ -67,6 +67,10 @@ Glimpse uses its in-process `glimpse-engine` for playback.
 | Seek backward / forward | `←` / `→` (5 seconds) |
 | Adjust volume | `↑` / `↓` (5%, up to 150%) |
 | Mute / unmute | `M` |
+| Capture screenshot | `s` |
+| Decrease / increase playback speed | `[` / `]` (0.1× steps) |
+| Halve / double playback speed | `{` / `}` |
+| Reset playback speed | `Backspace` |
 | Set A–B loop point A, then B; press again to clear | `L` |
 | Toggle whole-file looping | `Shift+L` |
 | Open media | `Ctrl+O` |
