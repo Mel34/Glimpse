@@ -170,7 +170,7 @@ pub fn attach_window_volume_wheel<FVol>(
     controller.connect_scroll(move |_, _dx, dy| {
         let current = get_volume();
         let delta = if dy < 0.0 { 0.05 } else { -0.05 };
-        let new_vol = (current + delta).clamp(0.0, 1.0);
+        let new_vol = (current + delta).clamp(0.0, 1.5);
 
         set_volume_cb(new_vol);
         glib::Propagation::Proceed
