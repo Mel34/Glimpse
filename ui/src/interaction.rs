@@ -94,6 +94,29 @@ mod seekbar_wheel_tests {
     use std::time::Duration;
 
     #[test]
+    fn adaptive_scrub_speed_starts_at_the_original_rate() {
+        assert_eq!(super::adaptive_scrub_speed(0.0, 1.5), 1.5);
+    }
+
+    #[test]
+    fn adaptive_scrub_speed_smoothly_reaches_its_internal_ceiling() {
+        assert_eq!(super::adaptive_scrub_speed(2.0, 1.0), 2.5);
+        assert_eq!(super::adaptive_scrub_speed(4.0, 1.0), 4.0);
+        assert_eq!(super::adaptive_scrub_speed(20.0, 1.0), 4.0);
+    }
+
+    #[test]
+    fn adaptive_scrub_speed_preserves_user_speed_as_its_baseline() {
+        assert_eq!(super::adaptive_scrub_speed(2.0, 2.0), 3.0);
+        assert_eq!(super::adaptive_scrub_speed(2.0, 0.5), 2.25);
+    }
+
+    #[test]
+    fn adaptive_scrub_speed_recovers_from_non_finite_baseline() {
+        assert_eq!(super::adaptive_scrub_speed(0.0, f32::NAN), 1.0);
+    }
+
+    #[test]
     fn downward_scroll_advances_and_stops_at_end() {
         let duration = Duration::from_secs(120);
         assert_eq!(
@@ -131,6 +154,19 @@ mod seekbar_wheel_tests {
             None
         );
     }
+}
+
+/// Map remaining forward-seek distance to a smooth temporary catch-up rate.
+/// Normal playback remains capped at 2×; adaptive scrubbing may reach 4×.
+pub fn adaptive_scrub_speed(distance_secs: f64, baseline_speed: f32) -> f32 {
+    let baseline = if baseline_speed.is_finite() {
+        baseline_speed.clamp(0.5, 2.0)
+    } else {
+        1.0
+    };
+    let progress = (distance_secs.max(0.0) / 4.0).clamp(0.0, 1.0);
+    let eased = progress * progress * (3.0 - 2.0 * progress);
+    baseline + (4.0 - baseline) * eased as f32
 }
 
 pub fn attach_seekbar_wheel<FSeek>(
