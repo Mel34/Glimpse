@@ -13,7 +13,7 @@ use gtk4::{
 
 use glimpse_engine::{Event, Player, PlayerState};
 use crate::controls::{create_floating_bottom_bar, ControlBarWidgets};
-use crate::interaction::{adaptive_scrub_speed, attach_popover_scroll_guard, attach_seekbar_wheel, attach_window_volume_wheel, VideoClickStateMachine};
+use crate::interaction::{adaptive_scrub_approach_distance, adaptive_scrub_speed, attach_popover_scroll_guard, attach_seekbar_wheel, attach_window_volume_wheel, VideoClickStateMachine};
 use crate::track_menu::create_track_popover;
 use crate::video_texture::{bind_subtitle_scaling, VideoPlaybackHandle};
 use crate::rotatable_picture::RotatablePicture;
@@ -376,9 +376,16 @@ impl GlimpseWindow {
                             && current_player.state() == PlayerState::Playing
                             && target.saturating_sub(position) > SCRUB_TARGET_TOLERANCE
                         {
+                            let final_approach = current_player.duration()
+                                .map(|duration| adaptive_scrub_approach_distance(
+                                    duration.as_secs_f64(),
+                                    timeline_seekbar.width(),
+                                ))
+                                .unwrap_or(0.5);
                             current_player.set_scrub_speed(adaptive_scrub_speed(
                                 target.saturating_sub(position).as_secs_f64(),
                                 original_speed,
+                                final_approach,
                             ));
                         } else {
                             current_player.set_playback_speed(original_speed);
@@ -395,9 +402,16 @@ impl GlimpseWindow {
                             }
                             timeline_scrub_state.set(AdaptiveScrubState::Idle);
                         } else if current_player.state() == PlayerState::Playing {
+                            let final_approach = current_player.duration()
+                                .map(|duration| adaptive_scrub_approach_distance(
+                                    duration.as_secs_f64(),
+                                    timeline_seekbar.width(),
+                                ))
+                                .unwrap_or(0.5);
                             current_player.set_scrub_speed(adaptive_scrub_speed(
                                 target.saturating_sub(position).as_secs_f64(),
                                 original_speed,
+                                final_approach,
                             ));
                         } else {
                             current_player.set_playback_speed(original_speed);
