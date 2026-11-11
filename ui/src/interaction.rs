@@ -28,6 +28,8 @@ impl VideoClickStateMachine {
     }
 
     pub fn cancel(&mut self) {
+        let had_pending = self.pending_timer.is_some();
+        tracing::info!(had_pending, "Video click timer cancellation requested");
         if let Some(source) = self.pending_timer.take() {
             source.remove();
         }
@@ -44,18 +46,23 @@ impl VideoClickStateMachine {
     {
         let mut st = state.borrow_mut();
 
+        let replacing_pending = st.pending_timer.is_some();
+        tracing::info!(n_press, replacing_pending, "Video click state machine received click");
         if let Some(source) = st.pending_timer.take() {
             source.remove();
         }
 
         if n_press >= 2 {
+            tracing::info!("Video click state machine: double-click action");
             on_toggle_fullscreen();
         } else if n_press == 1 {
             let state_clone = Rc::clone(&state);
             let delay_ms = st.double_click_time_ms;
+            tracing::info!(delay_ms, "Video click state machine: scheduling single-click action");
 
             let source = glib::timeout_add_local_once(Duration::from_millis(delay_ms as u64), move || {
                 state_clone.borrow_mut().pending_timer = None;
+                tracing::info!("Video click state machine: single-click timer fired");
                 on_toggle_play();
             });
 
