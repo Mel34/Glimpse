@@ -307,82 +307,131 @@ impl VideoDecoder {
         }
     }
 
-    /// Consumes at most one compressed packet and queues every frame made
-    /// available by that packet. Call repeatedly from a decoder worker thread.
+    /// Feeds a small packet batch before draining decoded frames. This keeps
+    /// asynchronous hardware decoders supplied with work instead of forcing a
+    /// receive/synchronisation round-trip after every compressed packet.
     #[cfg(feature = "ffmpeg-system")]
     pub fn decode_step(&mut self, target_serial: Serial) -> Result<bool, String> {
         use ffmpeg_the_third as ffmpeg;
 
-        let Some(tagged_packet) = self.packet_queue.pop_timeout(Duration::from_millis(20)) else {
+        const MAX_PACKETS_PER_BATCH: usize = 8;
+
+        let Some(first_packet) = self.packet_queue.pop_timeout(Duration::from_millis(20)) else {
             return Ok(false);
         };
-        if tagged_packet.serial != target_serial {
+        if first_packet.serial != target_serial {
             return Ok(true);
         }
 
         let backend = self.backend.as_mut().ok_or_else(|| {
             "VideoDecoder was not initialised with VideoDecoder::open_ffmpeg".to_string()
         })?;
-        let first_packet = backend.packets_submitted == 0;
-        let packet_pts = tagged_packet.item.pts_secs();
-        let packet_keyframe = tagged_packet.item.is_keyframe;
-        let packet_bytes = tagged_packet.item.data.len();
-        let packet_started_at = Instant::now();
-        let mut packet = ffmpeg::Packet::copy(&tagged_packet.item.data);
-        packet.set_pts(tagged_packet.item.pts);
-        packet.set_dts(tagged_packet.item.dts);
-        packet.set_duration(tagged_packet.item.duration);
-        packet.set_stream(tagged_packet.item.stream_index);
-        if let Err(error) = backend.decoder.send_packet(&packet) {
-            if backend.vaapi_enabled && backend.packets_submitted == 0 {
-                tracing::warn!(
-                    %error,
-                    "VAAPI rejected the first compressed video packet; retrying with software decoding"
-                );
-                let software_decoder =
-                    open_software_video_decoder(&backend.path, backend.stream_index)?;
-                backend.decoder = software_decoder;
-                backend.vaapi_enabled = false;
-                backend.scaler = None;
-                backend
-                    .decoder
-                    .send_packet(&packet)
-                    .map_err(|software_error| {
-                        format!(
-                            "VAAPI rejected the first packet ({error}); software fallback also failed: {software_error}"
-                        )
-                    })?;
-            } else {
-                return Err(format!("Could not submit compressed video packet: {error}"));
+        let mut packets_in_batch = 0;
+        let mut tagged_packet = Some(first_packet);
+
+        while let Some(tagged) = tagged_packet.take() {
+            let first_packet = backend.packets_submitted == 0;
+            let packet_pts = tagged.item.pts_secs();
+            let packet_keyframe = tagged.item.is_keyframe;
+            let packet_bytes = tagged.item.data.len();
+            let packet_started_at = Instant::now();
+            let mut packet = ffmpeg::Packet::copy(&tagged.item.data);
+            packet.set_pts(tagged.item.pts);
+            packet.set_dts(tagged.item.dts);
+            packet.set_duration(tagged.item.duration);
+            packet.set_stream(tagged.item.stream_index);
+
+            let mut vaapi_error = None;
+            loop {
+                match backend.decoder.send_packet(&packet) {
+                    Ok(()) => break,
+                    Err(ffmpeg::Error::Other { errno }) if errno == libc::EAGAIN => {
+                        let drained = Self::drain_frames(
+                            backend,
+                            &self.frame_queue,
+                            tagged.serial,
+                        )?;
+                        if drained == 0 {
+                            return Err(
+                                "Video decoder requested output draining but produced no frames"
+                                    .to_string(),
+                            );
+                        }
+                    }
+                    Err(error) if backend.vaapi_enabled && backend.packets_submitted == 0 => {
+                        let error_message = error.to_string();
+                        tracing::warn!(
+                            %error,
+                            "VAAPI rejected the first compressed video packet; retrying with software decoding"
+                        );
+                        backend.decoder =
+                            open_software_video_decoder(&backend.path, backend.stream_index)?;
+                        backend.vaapi_enabled = false;
+                        backend.scaler = None;
+                        vaapi_error = Some(error_message);
+                    }
+                    Err(error) => {
+                        return Err(match vaapi_error {
+                            Some(vaapi_error) => format!(
+                                "VAAPI rejected the first packet ({vaapi_error}); software fallback also failed: {error}"
+                            ),
+                            None => format!("Could not submit compressed video packet: {error}"),
+                        });
+                    }
+                }
             }
-        }
-        backend.packets_submitted += 1;
-        if first_packet {
-            backend.first_packet_submitted_at = Some(Instant::now());
-            tracing::info!(
-                packet_pts_secs = packet_pts,
-                keyframe = packet_keyframe,
-                packet_bytes,
-                send_us = packet_started_at.elapsed().as_micros() as u64,
-                "Submitted first video packet to decoder"
-            );
+
+            backend.packets_submitted += 1;
+            packets_in_batch += 1;
+            if first_packet {
+                backend.first_packet_submitted_at = Some(Instant::now());
+                tracing::info!(
+                    packet_pts_secs = packet_pts,
+                    keyframe = packet_keyframe,
+                    packet_bytes,
+                    send_us = packet_started_at.elapsed().as_micros() as u64,
+                    "Submitted first video packet to decoder"
+                );
+            }
+
+            if packets_in_batch >= MAX_PACKETS_PER_BATCH {
+                break;
+            }
+            tagged_packet = self.packet_queue.pop_timeout(Duration::ZERO)
+                .filter(|next| next.serial == target_serial);
         }
 
-        Self::drain_frames(backend, &self.frame_queue, tagged_packet.serial)?;
+        Self::drain_frames(backend, &self.frame_queue, target_serial)?;
         Ok(true)
     }
 
     /// Signals end-of-stream and emits delayed frames still held by the codec.
     #[cfg(feature = "ffmpeg-system")]
     pub fn finish(&mut self, serial: Serial) -> Result<(), String> {
+        use ffmpeg_the_third as ffmpeg;
+
         let backend = self.backend.as_mut().ok_or_else(|| {
             "VideoDecoder was not initialised with VideoDecoder::open_ffmpeg".to_string()
         })?;
-        backend
-            .decoder
-            .send_eof()
-            .map_err(|error| format!("Could not flush video decoder: {error}"))?;
-        Self::drain_frames(backend, &self.frame_queue, serial)
+        loop {
+            match backend.decoder.send_eof() {
+                Ok(()) => break,
+                Err(ffmpeg::Error::Other { errno }) if errno == libc::EAGAIN => {
+                    let drained = Self::drain_frames(backend, &self.frame_queue, serial)?;
+                    if drained == 0 {
+                        return Err(
+                            "Video decoder requested output draining while flushing but produced no frames"
+                                .to_string(),
+                        );
+                    }
+                }
+                Err(error) => {
+                    return Err(format!("Could not flush video decoder: {error}"));
+                }
+            }
+        }
+        Self::drain_frames(backend, &self.frame_queue, serial)?;
+        Ok(())
     }
 
     #[cfg(feature = "ffmpeg-system")]
@@ -390,13 +439,14 @@ impl VideoDecoder {
         backend: &mut FfmpegDecoderState,
         frame_queue: &VideoFrameQueue,
         serial: Serial,
-    ) -> Result<(), String> {
+    ) -> Result<usize, String> {
         use ffmpeg_the_third as ffmpeg;
 
+        let mut frames_received = 0;
         loop {
             let mut decoded = ffmpeg::frame::Video::empty();
             match backend.decoder.receive_frame(&mut decoded) {
-                Ok(()) => {}
+                Ok(()) => frames_received += 1
                 Err(ffmpeg::Error::Eof) => break,
                 Err(ffmpeg::Error::Other { errno }) if errno == libc::EAGAIN => break,
                 Err(error) => return Err(format!("Video frame decoding failed: {error}")),
@@ -524,7 +574,7 @@ impl VideoDecoder {
                 .push(frame, serial, stride * height as usize)
                 .map_err(|_| "Decoded frame queue was aborted".to_string())?;
         }
-        Ok(())
+        Ok(frames_received)
     }
 
     #[cfg(not(feature = "ffmpeg-system"))]
