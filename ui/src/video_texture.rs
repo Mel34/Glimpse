@@ -58,10 +58,16 @@ pub struct VideoPlaybackHandle {
     external_subtitle_path: Option<String>,
     clock: Arc<MasterClock>,
     window_active: bool,
+    drop_stale_until_current: Arc<AtomicBool>,
     run: Option<PlaybackRun>,
 }
 
 impl VideoPlaybackHandle {
+    /// Drop queued video frames until presentation reaches the current media clock.
+    pub fn drop_stale_frames(&self) {
+        self.drop_stale_until_current.store(true, Ordering::Release);
+    }
+
     pub fn seek(&mut self, target: Duration) {
         self.subtitle_label.set_text("");
         self.subtitle_label.set_visible(false);
@@ -185,6 +191,7 @@ impl VideoPlaybackHandle {
             Arc::clone(&cancelled),
             first_frame_ready,
             first_frame_pending,
+            Arc::clone(&self.drop_stale_until_current),
         ) {
             Ok(worker) => worker,
             Err(error) => {
@@ -224,7 +231,11 @@ pub fn present_continuous_frames(
     }
     let mut handle = VideoPlaybackHandle {
         path: path.to_owned(), tracks, picture: picture.clone(), subtitle_label: subtitle_label.clone(),
-        external_subtitle_path: None, clock, window_active, run: None,
+        external_subtitle_path: None,
+        clock,
+        window_active,
+        drop_stale_until_current: Arc::new(AtomicBool::new(false)),
+        run: None,
     };
     if let Err(error) = handle.start_run(Duration::ZERO, None) {
         tracing::error!(%error, "Could not start engine video playback");
