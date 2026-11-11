@@ -241,7 +241,7 @@ impl GlimpseWindow {
         bottom_controls.screenshot_button.connect_clicked(move |button| {
             match screenshot_picture.save_screenshot() {
                 Ok(path) => {
-                    tracing::info!(path = %path.display(), "Screenshot saved");
+                    tracing::debug!(path = %path.display(), "Screenshot saved");
                     button.set_tooltip_text(Some(&format!("Saved: {}", path.display())));
                 }
                 Err(error) => {
