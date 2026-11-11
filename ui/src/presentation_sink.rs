@@ -291,26 +291,6 @@ fn forward_frames(
     }
 }
 
-fn should_present_video(window_active: Option<bool>) -> bool {
-    window_active != Some(false)
-}
-
-#[cfg(test)]
-mod focus_policy_tests {
-    use super::should_present_video;
-
-    #[test]
-    fn inactive_window_skips_video_presentation() {
-        assert!(!should_present_video(Some(false)));
-    }
-
-    #[test]
-    fn active_or_unavailable_window_state_does_not_block_presentation() {
-        assert!(should_present_video(Some(true)));
-        assert!(should_present_video(None));
-    }
-}
-
 fn schedule_frames(
     receiver: Receiver<Result<VideoFrameData, String>>,
     subtitle_receiver: Receiver<Result<SubtitleCue, String>>,
@@ -412,7 +392,6 @@ fn schedule_frames(
     let ingest_receiver = receiver.clone();
     let ingest_clock = Arc::clone(&media_clock);
     let ingest_cancelled = Arc::clone(&cancelled);
-    let ingest_first_frame_pending = Arc::clone(&first_frame_pending);
     let ingest_picture = picture.downgrade();
     glib::timeout_add_local(Duration::from_millis(5), move || {
         if ingest_cancelled.load(Ordering::Acquire) {
@@ -422,16 +401,7 @@ fn schedule_frames(
             return glib::ControlFlow::Break;
         };
 
-        let window_active = picture.root()
-            .and_then(|root| root.downcast::<gtk4::Window>().ok())
-            .map(|window| window.is_active());
         let mut state = ingest_state.borrow_mut();
-        if !should_present_video(window_active) {
-            // If focus is lost before the startup frame is presented, don't pin
-            // that old frame; resume by selecting the newest frame for current PTS.
-            state.present_first_frame = false;
-            ingest_first_frame_pending.store(false, Ordering::Release);
-        }
         if state.stream_finished {
             return glib::ControlFlow::Break;
         }
@@ -648,15 +618,8 @@ fn schedule_frames(
                 }
             }
         }
-        // Focus is presentation policy, never playback policy. Continue draining
-        // decoded frames and subtitle cues, but avoid GTK updates, frame selection,
-        // and GPU import while this window is on an inactive workspace.
-        if !should_present_video(window_active) {
-            state.borrow_mut().present_first_frame = false;
-            first_frame_pending.store(false, Ordering::Release);
-            return glib::ControlFlow::Continue;
-        }
-
+        // Keyboard focus does not determine whether a mapped, visible video
+        // surface should present frames. Continue presentation while inactive.
         if let Some(cue) = subtitle_state.active.as_ref() {
             subtitle_label.set_markup(&subtitle_cue_markup(cue));
             apply_subtitle_font_size(&subtitle_label, picture.width());
