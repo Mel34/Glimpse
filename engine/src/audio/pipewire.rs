@@ -110,7 +110,11 @@ impl PipeWireAudioSink {
     ///
     /// The PipeWire loop and stream are owned by a dedicated control thread.
     /// The process callback runs on PipeWire's real-time thread.
-    pub fn new(speed: Arc<AtomicU32>) -> Result<Self, String> {
+    pub fn new() -> Result<Self, String> {
+        Self::new_with_speed(Arc::new(AtomicU32::new(1.0f32.to_bits())))
+    }
+
+    pub fn new_with_speed(speed: Arc<AtomicU32>) -> Result<Self, String> {
         let (producer, consumer) = RingBuffer::new(PCM_RING_CAPACITY_FRAMES);
         let shared = Arc::new(SharedState::new(speed));
         let worker_shared = Arc::clone(&shared);
