@@ -18,6 +18,7 @@ struct PlaybackRun {
     queues: PacketQueues,
     cancelled: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
+    presentation_worker: Option<JoinHandle<()>>,
 }
 
 /// Keep subtitle text proportional to the available video display width.
@@ -145,6 +146,9 @@ impl VideoPlaybackHandle {
             if let Some(worker) = run.worker.take() {
                 let _ = worker.join();
             }
+            if let Some(worker) = run.presentation_worker.take() {
+                let _ = worker.join();
+            }
         }
     }
 
@@ -170,7 +174,8 @@ impl VideoPlaybackHandle {
             subtitle_sender,
             start_position,
         )?;
-        GtkPresentationSink::start(
+        let first_frame_pending = Arc::new(AtomicBool::new(true));
+        let presentation_worker = match GtkPresentationSink::start(
             receiver,
             subtitle_receiver,
             self.picture.clone(),
@@ -178,8 +183,22 @@ impl VideoPlaybackHandle {
             Arc::clone(&self.clock),
             Arc::clone(&cancelled),
             first_frame_ready,
-        );
-        self.run = Some(PlaybackRun { queues, cancelled, worker: Some(worker) });
+            first_frame_pending,
+        ) {
+            Ok(worker) => worker,
+            Err(error) => {
+                cancelled.store(true, Ordering::Release);
+                queues.abort();
+                let _ = worker.join();
+                return Err(error);
+            }
+        };
+        self.run = Some(PlaybackRun {
+            queues,
+            cancelled,
+            worker: Some(worker),
+            presentation_worker: Some(presentation_worker),
+        });
         Ok(())
     }
 }
