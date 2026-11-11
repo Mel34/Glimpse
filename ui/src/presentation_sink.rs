@@ -30,6 +30,7 @@ struct FrameSchedulerState {
     dropped_late_presentation: u64,
     dropped_superseded: u64,
     presentation_failures: u64,
+    vaapi_import_disabled: bool,
     ingest_tick_count: u64,
     tick_count: u64,
     last_gdk_tick_at: Option<Instant>,
@@ -335,6 +336,7 @@ fn schedule_frames(
         dropped_late_presentation: 0,
         dropped_superseded: 0,
         presentation_failures: 0,
+        vaapi_import_disabled: false,
         ingest_tick_count: 0,
         tick_count: 0,
         last_gdk_tick_at: None,
@@ -758,17 +760,45 @@ fn schedule_frames(
             Some(vaapi_frame) => {
                 #[cfg(feature = "vaapi-dmabuf")]
                 {
-                    match crate::vaapi_texture::create_texture(vaapi_frame) {
-                        Ok(texture) => texture,
-                        Err(error) => {
-                            state.presentation_failures += 1;
-                            tracing::error!(
-                                %error,
-                                pts = frame.pts,
-                                presentation_failures = state.presentation_failures,
-                                "Could not import VAAPI frame into GTK"
-                            );
-                            return glib::ControlFlow::Break;
+                    if !state.vaapi_import_disabled {
+                        match crate::vaapi_texture::create_texture(vaapi_frame) {
+                            Ok(texture) => texture,
+                            Err(error) => {
+                                state.vaapi_import_disabled = true;
+                                tracing::warn!(
+                                    %error,
+                                    pts = frame.pts,
+                                    "DMA-BUF presentation failed; switching this playback run to RGBA fallback"
+                                );
+                                match crate::vaapi_texture::create_rgba_fallback_texture(vaapi_frame) {
+                                    Ok(texture) => texture,
+                                    Err(fallback_error) => {
+                                        state.presentation_failures += 1;
+                                        tracing::error!(
+                                            %fallback_error,
+                                            import_error = %error,
+                                            pts = frame.pts,
+                                            presentation_failures = state.presentation_failures,
+                                            "VAAPI DMA-BUF import and RGBA fallback both failed"
+                                        );
+                                        return glib::ControlFlow::Break;
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        match crate::vaapi_texture::create_rgba_fallback_texture(vaapi_frame) {
+                            Ok(texture) => texture,
+                            Err(error) => {
+                                state.presentation_failures += 1;
+                                tracing::error!(
+                                    %error,
+                                    pts = frame.pts,
+                                    presentation_failures = state.presentation_failures,
+                                    "Could not convert VAAPI frame for RGBA fallback"
+                                );
+                                return glib::ControlFlow::Break;
+                            }
                         }
                     }
                 }
@@ -776,7 +806,7 @@ fn schedule_frames(
                 {
                     let _ = vaapi_frame;
                     tracing::error!(
-                        "A VAAPI frame reached the presenter, but Glimpse was built without the vaapi-hdr feature"
+                        "A VAAPI frame reached the presenter, but Glimpse was built without the vaapi-dmabuf feature"
                     );
                     return glib::ControlFlow::Break;
                 }
