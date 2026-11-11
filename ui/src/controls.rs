@@ -126,7 +126,7 @@ pub fn create_floating_bottom_bar() -> ControlBarWidgets {
     // Draw the adaptive-scrub destination above the normal progress trough.
     let seekbar_overlay = Overlay::new();
     seekbar_overlay.set_child(Some(&seekbar));
-    let seekbar_marker_position = Rc::new(Cell::new(None));
+    let seekbar_marker_position: Rc<Cell<Option<f64>>> = Rc::new(Cell::new(None));
     let seekbar_marker = DrawingArea::new();
     seekbar_marker.set_hexpand(true);
     seekbar_marker.set_vexpand(true);
