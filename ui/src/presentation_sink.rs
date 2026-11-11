@@ -142,6 +142,7 @@ impl GtkPresentationSink {
         cancelled: Arc<AtomicBool>,
         first_frame_ready: Option<Sender<()>>,
         first_frame_pending: Arc<AtomicBool>,
+        drop_stale_until_current: Arc<AtomicBool>,
     ) -> Result<JoinHandle<()>, String> {
         let (presentation_sender, presentation_receiver) =
             bounded::<Result<VideoFrameData, String>>(1);
@@ -149,6 +150,7 @@ impl GtkPresentationSink {
         let worker_clock = Arc::clone(&media_clock);
         let worker_cancelled = Arc::clone(&cancelled);
         let worker_first_frame_pending = Arc::clone(&first_frame_pending);
+        let worker_drop_stale_until_current = Arc::clone(&drop_stale_until_current);
         let worker = thread::Builder::new()
             .name("glimpse-video-ingest".to_string())
             .spawn(move || {
@@ -159,6 +161,7 @@ impl GtkPresentationSink {
                     worker_clock,
                     worker_cancelled,
                     worker_first_frame_pending,
+                    worker_drop_stale_until_current,
                 );
             })
             .map_err(|error| format!("Could not start video ingestion worker: {error}"))?;
@@ -172,6 +175,7 @@ impl GtkPresentationSink {
             cancelled,
             first_frame_ready,
             first_frame_pending,
+            drop_stale_until_current,
         );
         Ok(worker)
     }
@@ -184,6 +188,7 @@ fn forward_frames(
     media_clock: Arc<MasterClock>,
     cancelled: Arc<AtomicBool>,
     first_frame_pending: Arc<AtomicBool>,
+    drop_stale_until_current: Arc<AtomicBool>,
 ) {
     let video_debug = std::env::var_os("GLIMPSE_VIDEO_DEBUG").is_some();
     let mut forwarded = 0_u64;
@@ -232,7 +237,11 @@ fn forward_frames(
                         Ok(Ok(queued_frame)) => {
                             let master_pts = media_clock.get_pts();
                             let lateness = master_pts - queued_frame.pts;
-                            if lateness > 0.040 {
+                            if should_drop_stale_frame(
+                                queued_frame.pts,
+                                master_pts,
+                                drop_stale_until_current.load(Ordering::Acquire),
+                            ) || lateness > 0.040 {
                                 dropped_stale += 1;
                                 if video_debug
                                     && (dropped_stale == 1 || dropped_stale % 120 == 0)
@@ -284,6 +293,7 @@ fn schedule_frames(
     cancelled: Arc<AtomicBool>,
     first_frame_ready: Option<Sender<()>>,
     first_frame_pending: Arc<AtomicBool>,
+    drop_stale_until_current: Arc<AtomicBool>,
 ) {
     let first_frame_ready = Rc::new(RefCell::new(first_frame_ready));
     // The sink reads engine media time but never adjusts it. PipeWire remains
@@ -630,6 +640,15 @@ fn schedule_frames(
                     }
                 };
 
+                if should_drop_stale_frame(
+                    frame.pts,
+                    master_pts,
+                    drop_stale_until_current.load(Ordering::Acquire),
+                ) {
+                    state.dropped_late_presentation += 1;
+                    continue;
+                }
+
                 let lateness = presentation_deadline_pts - frame.pts;
                 if lateness > 0.040 {
                     // Retain the newest late frame as a fallback. If another
@@ -702,6 +721,12 @@ fn schedule_frames(
             }
             return glib::ControlFlow::Continue;
         };
+
+        if drop_stale_until_current.load(Ordering::Acquire)
+            && frame.pts + 0.000_001 >= master_pts
+        {
+            drop_stale_until_current.store(false, Ordering::Release);
+        }
 
         let texture_import_started = Instant::now();
         let texture: gdk4::Texture = match frame.vaapi_frame.as_ref() {
@@ -779,6 +804,10 @@ fn schedule_frames(
     });
 }
 
+fn should_drop_stale_frame(frame_pts: f64, master_pts: f64, catch_up: bool) -> bool {
+    catch_up && frame_pts + 0.000_001 < master_pts
+}
+
 /// Map the next display opportunity's wall-clock lead into media time.
 /// Audio and video use the same playback rate, so a 16 ms display lead at 32×
 /// represents roughly 512 ms of media time, not 16 ms.
@@ -789,6 +818,27 @@ fn presentation_deadline_pts(master_pts: f64, wall_lead_secs: f64, playback_spee
         1.0
     };
     master_pts + wall_lead_secs.max(0.0) * speed
+}
+
+#[cfg(test)]
+mod stale_frame_policy_tests {
+    use super::should_drop_stale_frame;
+
+    #[test]
+    fn catch_up_mode_drops_frames_behind_the_media_clock() {
+        assert!(should_drop_stale_frame(4.950, 5.000, true));
+    }
+
+    #[test]
+    fn catch_up_mode_keeps_current_and_future_frames() {
+        assert!(!should_drop_stale_frame(5.000, 5.000, true));
+        assert!(!should_drop_stale_frame(5.033, 5.000, true));
+    }
+
+    #[test]
+    fn normal_playback_keeps_the_existing_late_frame_fallback() {
+        assert!(!should_drop_stale_frame(4.950, 5.000, false));
+    }
 }
 
 #[cfg(test)]
