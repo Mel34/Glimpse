@@ -894,6 +894,30 @@ impl GlimpseWindow {
 
         key_controller.connect_key_pressed(move |_, keyval, _keycode, modifier| {
             match keyval {
+                // mpv-style screenshot capture: save the clean video frame without subtitles or OSD.
+                gdk4::Key::s => {
+                    if btm_open_k.screenshot_button.is_sensitive() {
+                        match pic_open_k.save_screenshot() {
+                            Ok(path) => {
+                                tracing::debug!(path = %path.display(), "Screenshot saved");
+                                btm_open_k.screenshot_button.set_tooltip_text(
+                                    Some(&format!("Saved: {}", path.display())),
+                                );
+                            }
+                            Err(error) => {
+                                tracing::error!(%error, "Could not save screenshot");
+                                let dialog = gtk4::AlertDialog::builder()
+                                    .modal(true)
+                                    .message("Could not save screenshot")
+                                    .detail(&error)
+                                    .buttons(["Close"])
+                                    .build();
+                                dialog.show(Some(&win_open_k));
+                            }
+                        }
+                    }
+                    glib::Propagation::Stop
+                }
                 // mpv-style playback speed controls.
                 gdk4::Key::bracketleft
                 | gdk4::Key::bracketright
@@ -1510,7 +1534,7 @@ fn show_shortcuts_dialog(parent: &ApplicationWindow) {
         .transient_for(parent)
         .modal(true)
         .default_width(380)
-        .default_height(420)
+        .default_height(560)
         .build();
 
     dialog.add_css_class("glimpse-window");
@@ -1525,35 +1549,60 @@ fn show_shortcuts_dialog(parent: &ApplicationWindow) {
     title.add_css_class("title-2");
     vbox.append(&title);
 
-    let shortcuts = [
-        ("Space", "Play / Pause video"),
-        ("[ / ]", "Decrease / increase speed by 0.1×"),
-        ("{ / }", "Halve / double playback speed"),
-        ("Backspace", "Reset playback speed to 1×"),
-        ("F", "Toggle Fullscreen"),
-        ("Escape", "Leave Fullscreen"),
-        ("Ctrl + O", "Open file"),
-        ("Ctrl + N", "New window"),
-        ("Left / Right", "Seek ±5 seconds"),
-        ("Up / Down", "Volume ±5%"),
-        ("M", "Toggle Mute"),
-        ("Shift + L", "Toggle Loop"),
-        ("L", "Set A / B loop points or clear loop"),
+    let sections: [(&str, &[(&str, &str)]); 5] = [
+        ("Playback", &[
+            ("Space", "Play / Pause video"),
+            ("[ / ]", "Decrease / increase speed by 0.1×"),
+            ("{ / }", "Halve / double playback speed"),
+            ("Backspace", "Reset playback speed to 1×"),
+        ]),
+        ("Video", &[
+            ("s", "Save screenshot (video only)"),
+            ("F", "Toggle Fullscreen"),
+            ("Escape", "Leave Fullscreen"),
+        ]),
+        ("Navigation", &[
+            ("Ctrl + O", "Open file"),
+            ("Ctrl + N", "New window"),
+            ("Left / Right", "Seek ±5 seconds"),
+        ]),
+        ("Audio", &[
+            ("Up / Down", "Volume ±5%"),
+            ("M", "Toggle Mute"),
+        ]),
+        ("Looping", &[
+            ("Shift + L", "Toggle Loop"),
+            ("L", "Set A / B loop points or clear loop"),
+        ]),
     ];
 
-    for (key, desc) in shortcuts {
-        let row = GtkBox::new(Orientation::Horizontal, 12);
-        let l_desc = Label::new(Some(desc));
-        l_desc.set_hexpand(true);
-        l_desc.set_halign(Align::Start);
+    for (section_index, (section, shortcuts)) in sections.iter().enumerate() {
+        let heading = Label::new(Some(section));
+        heading.add_css_class("heading");
+        heading.set_halign(Align::Start);
+        vbox.append(&heading);
 
-        let l_key = Label::new(Some(key));
-        l_key.add_css_class("dim-label");
-        l_key.set_halign(Align::End);
+        for &(key, desc) in *shortcuts {
+            let row = GtkBox::new(Orientation::Horizontal, 12);
+            let l_desc = Label::new(Some(desc));
+            l_desc.set_hexpand(true);
+            l_desc.set_halign(Align::Start);
 
-        row.append(&l_desc);
-        row.append(&l_key);
-        vbox.append(&row);
+            let l_key = Label::new(Some(key));
+            l_key.add_css_class("dim-label");
+            l_key.set_halign(Align::End);
+
+            row.append(&l_desc);
+            row.append(&l_key);
+            vbox.append(&row);
+        }
+
+        if section_index + 1 < sections.len() {
+            let separator = Separator::new(Orientation::Horizontal);
+            separator.set_margin_top(2);
+            separator.set_margin_bottom(2);
+            vbox.append(&separator);
+        }
     }
 
     let close_btn = Button::with_label("Close");
