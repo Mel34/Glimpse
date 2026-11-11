@@ -253,7 +253,7 @@ impl Drop for PipeWireAudioSink {
 }
 
 fn run_pipewire_thread(
-    consumer: Consumer<f32>,
+    consumer: Consumer<[f32; AUDIO_OUTPUT_CHANNELS]>,
     shared: Arc<SharedState>,
     ready_sender: SyncSender<Result<(), String>>,
     stop_receiver: Receiver<()>,
