@@ -11,9 +11,6 @@ use serde_json::Value;
 use crate::queue::BoundedQueue;
 use crate::types::{Serial, TrackId, TrackInfo, TrackList, TrackType};
 
-#[cfg(feature = "ffmpeg-system")]
-const MAX_FORWARD_SEEK_DISTANCE: Duration = Duration::from_secs(1);
-
 #[derive(Clone, Debug)]
 pub struct DemuxPacket {
     pub stream_index: usize,
@@ -107,12 +104,11 @@ pub fn demux_file(
     queues: &PacketQueues,
     serial: Serial,
 ) -> Result<DemuxStats, String> {
-    demux_file_from(path, tracks, queues, serial, Duration::ZERO, false)
+    demux_file_from(path, tracks, queues, serial, Duration::ZERO)
 }
 
-/// Demuxes from a nearby forward video keyframe only when explicitly requested
-/// for a fast user seek. Other restarts use the preceding keyframe. Audio and
-/// subtitle packets are aligned to the selected video keyframe.
+/// Demuxes from the preceding video keyframe and aligns audio and subtitle
+/// packets to that same keyframe. The decoder discards frames before the target.
 #[cfg(feature = "ffmpeg-system")]
 pub fn demux_file_from(
     path: &str,
@@ -120,7 +116,6 @@ pub fn demux_file_from(
     queues: &PacketQueues,
     serial: Serial,
     start_position: Duration,
-    prefer_forward_keyframe: bool,
 ) -> Result<DemuxStats, String> {
     use ffmpeg_the_third as ffmpeg;
 
@@ -132,7 +127,6 @@ pub fn demux_file_from(
         .map_err(|error| format!("Could not open media with libavformat: {error}"))?;
     tracing::info!(open_us = open_started_at.elapsed().as_micros() as u64, "Video demux input opened");
     let video_stream_index = tracks.video_tracks.first().map(|track| track.id.0);
-    let mut forward_seek_selected = false;
     if !start_position.is_zero() {
         let seek_started_at = Instant::now();
         if let Some(stream_index) = video_stream_index {
@@ -155,44 +149,22 @@ pub fn demux_file_from(
             } else {
                 relative_timestamp.saturating_add(start_time)
             };
-            let forward_window_ticks = (MAX_FORWARD_SEEK_DISTANCE.as_secs_f64()
-                * time_base.denominator() as f64
-                / time_base.numerator() as f64)
-                .ceil()
-                .clamp(1.0, i64::MAX as f64) as i64;
-            let forward_limit = target_timestamp.saturating_add(forward_window_ticks);
             let stream_index = i32::try_from(stream_index)
                 .map_err(|_| "Video stream index exceeds FFmpeg's limit".to_string())?;
 
-            // Match mpv's fast-seek policy: prefer a later video keyframe.
-            // Keep the forward window bounded to avoid surprising jumps.
+            // Constrain the seek's upper bound to the requested timestamp so
+            // FFmpeg must select a preceding keyframe, never a future one.
             let context = unsafe { input.as_mut_ptr() };
-            let forward_result = if prefer_forward_keyframe {
-                unsafe {
-                    ffmpeg::ffi::avformat_seek_file(
-                        context, stream_index, target_timestamp, target_timestamp, forward_limit, 0,
-                    )
-                }
-            } else {
-                // Initial playback and recovery restarts must not skip ahead.
-                -1
+            let seek_result = unsafe {
+                ffmpeg::ffi::avformat_seek_file(
+                    context, stream_index, i64::MIN, target_timestamp, target_timestamp, 0,
+                )
             };
-            if forward_result >= 0 {
-                forward_seek_selected = true;
-            } else {
-                // No keyframe within the fast-seek window: retain accurate backward
-                // recovery rather than jumping a long distance forward.
-                let backward_result = unsafe {
-                    ffmpeg::ffi::avformat_seek_file(
-                        context, stream_index, i64::MIN, target_timestamp, target_timestamp, 0,
-                    )
-                };
-                if backward_result < 0 {
-                    return Err(format!(
-                        "Could not seek video stream {stream_index} to {:.3}s (forward seek error {}; backward seek error {})",
-                        start_position.as_secs_f64(), forward_result, backward_result,
-                    ));
-                }
+            if seek_result < 0 {
+                return Err(format!(
+                    "Could not seek video stream {stream_index} backward to {:.3}s (FFmpeg error {})",
+                    start_position.as_secs_f64(), seek_result,
+                ));
             }
         } else {
             let timestamp = i64::try_from(start_position.as_micros()).unwrap_or(i64::MAX);
@@ -203,8 +175,6 @@ pub fn demux_file_from(
 
         tracing::info!(
             target_secs = start_position.as_secs_f64(),
-            forward_keyframe_preferred = prefer_forward_keyframe && forward_seek_selected,
-            max_forward_distance_secs = MAX_FORWARD_SEEK_DISTANCE.as_secs_f64(),
             seek_us = seek_started_at.elapsed().as_micros() as u64,
             elapsed_us = demux_started_at.elapsed().as_micros() as u64,
             "Video demux seek completed"
