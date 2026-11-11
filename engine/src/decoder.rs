@@ -3,6 +3,8 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 #[cfg(feature = "ffmpeg-system")]
+use std::time::Instant;
+#[cfg(feature = "ffmpeg-system")]
 use std::time::Duration;
 
 use crate::clock::MasterClock;
@@ -50,6 +52,8 @@ struct FfmpegDecoderState {
     scaler: Option<ffmpeg_the_third::software::scaling::Context>,
     vaapi_enabled: bool,
     packets_submitted: u64,
+    first_packet_submitted_at: Option<Instant>,
+    first_frame_logged: bool,
     path: String,
     stream_index: usize,
     time_base_num: i32,
@@ -151,6 +155,8 @@ impl VideoDecoder {
     ) -> Result<Self, String> {
         use ffmpeg_the_third as ffmpeg;
 
+        let decoder_open_started_at = Instant::now();
+        tracing::info!(stream_index, "Opening video decoder");
         ffmpeg::init().map_err(|error| format!("Could not initialise FFmpeg: {error}"))?;
         let input = ffmpeg::format::input(path)
             .map_err(|error| format!("Could not open video stream: {error}"))?;
@@ -265,12 +271,20 @@ impl VideoDecoder {
             scaler: None,
             vaapi_enabled,
             packets_submitted: 0,
+            first_packet_submitted_at: None,
+            first_frame_logged: false,
             path: path.to_owned(),
             stream_index,
             time_base_num: time_base.numerator(),
             time_base_den: time_base.denominator(),
             frame_duration,
         });
+        tracing::info!(
+            stream_index,
+            vaapi_enabled,
+            open_us = decoder_open_started_at.elapsed().as_micros() as u64,
+            "Video decoder opened"
+        );
         Ok(result)
     }
 
@@ -290,6 +304,11 @@ impl VideoDecoder {
         let backend = self.backend.as_mut().ok_or_else(|| {
             "VideoDecoder was not initialised with VideoDecoder::open_ffmpeg".to_string()
         })?;
+        let first_packet = backend.packets_submitted == 0;
+        let packet_pts = tagged_packet.item.pts_secs();
+        let packet_keyframe = tagged_packet.item.is_keyframe;
+        let packet_bytes = tagged_packet.item.data.len();
+        let packet_started_at = Instant::now();
         let mut packet = ffmpeg::Packet::copy(&tagged_packet.item.data);
         packet.set_pts(tagged_packet.item.pts);
         packet.set_dts(tagged_packet.item.dts);
@@ -319,6 +338,16 @@ impl VideoDecoder {
             }
         }
         backend.packets_submitted += 1;
+        if first_packet {
+            backend.first_packet_submitted_at = Some(Instant::now());
+            tracing::info!(
+                packet_pts_secs = packet_pts,
+                keyframe = packet_keyframe,
+                packet_bytes,
+                send_us = packet_started_at.elapsed().as_micros() as u64,
+                "Submitted first video packet to decoder"
+            );
+        }
 
         Self::drain_frames(backend, &self.frame_queue, tagged_packet.serial)?;
         Ok(true)
@@ -352,6 +381,20 @@ impl VideoDecoder {
                 Err(ffmpeg::Error::Eof) => break,
                 Err(ffmpeg::Error::Other { errno }) if errno == libc::EAGAIN => break,
                 Err(error) => return Err(format!("Video frame decoding failed: {error}")),
+            }
+
+            if !backend.first_frame_logged {
+                backend.first_frame_logged = true;
+                tracing::info!(
+                    frame_pts = decoded.pts(),
+                    best_effort_timestamp = decoded.timestamp(),
+                    elapsed_since_first_packet_us = backend.first_packet_submitted_at
+                        .map(|started| started.elapsed().as_micros() as u64),
+                    pixel_format = ?decoded.format(),
+                    width = decoded.width(),
+                    height = decoded.height(),
+                    "Decoder produced first video frame"
+                );
             }
 
             // timestamp() reads FFmpeg's best_effort_timestamp, so it is
