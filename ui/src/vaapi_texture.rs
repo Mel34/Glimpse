@@ -1,7 +1,7 @@
 //! GTK DMA-BUF texture import for FFmpeg VAAPI frames.
 
 use ffmpeg_the_third::frame::Video;
-use glib::object::ObjectType;
+use glib::object::{Cast, ObjectType};
 use glib::translate::from_glib_full;
 use std::ffi::{CStr, c_char, c_void};
 use std::ptr;
