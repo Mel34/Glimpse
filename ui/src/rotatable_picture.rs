@@ -59,7 +59,11 @@ mod imp {
                 (width / 2.0) as f32,
                 (height / 2.0) as f32,
             ));
-            snapshot.rotate(rotation as f32);
+            // Keep the unrotated path to translations and scaling only so
+            // GtkGraphicsOffload can hand DMA-BUF content to the compositor.
+            if rotation != 0 {
+                snapshot.rotate(rotation as f32);
+            }
             snapshot.translate(&gtk4::graphene::Point::new(
                 (-draw_width / 2.0) as f32,
                 (-draw_height / 2.0) as f32,
