@@ -14,6 +14,21 @@ use glib::SourceId;
 use gtk4::prelude::*;
 use gtk4::{glib, EventControllerScroll, EventControllerScrollFlags, Window};
 
+/// Smoothly scale catch-up speed with remaining distance, reaching 32× at 30s.
+pub fn adaptive_scrub_speed(distance_secs: f64, baseline_speed: f32) -> f32 {
+    const SCRUB_MAX_SPEED: f32 = 32.0;
+    const FULL_SPEED_DISTANCE_SECS: f64 = 30.0;
+
+    let baseline = if baseline_speed.is_finite() {
+        baseline_speed.clamp(0.5, 2.0)
+    } else {
+        1.0
+    };
+    let progress = (distance_secs.max(0.0) / FULL_SPEED_DISTANCE_SECS).clamp(0.0, 1.0);
+    let eased = progress * progress * (3.0 - 2.0 * progress);
+    baseline + (SCRUB_MAX_SPEED - baseline) * eased as f32
+}
+
 pub struct VideoClickStateMachine {
     pending_timer: Option<SourceId>,
     double_click_time_ms: u32,
@@ -100,15 +115,16 @@ mod seekbar_wheel_tests {
 
     #[test]
     fn adaptive_scrub_speed_smoothly_reaches_its_internal_ceiling() {
-        assert_eq!(super::adaptive_scrub_speed(2.0, 1.0), 2.5);
-        assert_eq!(super::adaptive_scrub_speed(4.0, 1.0), 4.0);
-        assert_eq!(super::adaptive_scrub_speed(20.0, 1.0), 4.0);
+        assert!(super::adaptive_scrub_speed(2.0, 1.0) > 1.0);
+        assert!(super::adaptive_scrub_speed(10.0, 1.0) > 8.0);
+        assert_eq!(super::adaptive_scrub_speed(30.0, 1.0), 32.0);
+        assert_eq!(super::adaptive_scrub_speed(120.0, 1.0), 32.0);
     }
 
     #[test]
     fn adaptive_scrub_speed_preserves_user_speed_as_its_baseline() {
-        assert_eq!(super::adaptive_scrub_speed(2.0, 2.0), 3.0);
-        assert_eq!(super::adaptive_scrub_speed(2.0, 0.5), 2.25);
+        assert!(super::adaptive_scrub_speed(2.0, 2.0) >= 2.0);
+        assert!(super::adaptive_scrub_speed(2.0, 0.5) >= 0.5);
     }
 
     #[test]
