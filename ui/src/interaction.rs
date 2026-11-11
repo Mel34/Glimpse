@@ -24,9 +24,17 @@ pub fn adaptive_scrub_speed(distance_secs: f64, baseline_speed: f32) -> f32 {
     } else {
         1.0
     };
-    let progress = (distance_secs.max(0.0) / FULL_SPEED_DISTANCE_SECS).clamp(0.0, 1.0);
+    let distance = distance_secs.max(0.0);
+    let progress = (distance / FULL_SPEED_DISTANCE_SECS).clamp(0.0, 1.0);
     let eased = progress * progress * (3.0 - 2.0 * progress);
-    baseline + (SCRUB_MAX_SPEED - baseline) * eased as f32
+    let adaptive_speed = baseline + (SCRUB_MAX_SPEED - baseline) * eased as f32;
+
+    // Blend down to 1× over the final half-second so the playhead reaches
+    // the destination marker without the 50ms timeline tick stepping past it.
+    const FINAL_APPROACH_SECS: f64 = 0.5;
+    let approach = (distance / FINAL_APPROACH_SECS).clamp(0.0, 1.0);
+    let approach_eased = approach * approach * (3.0 - 2.0 * approach);
+    1.0 + (adaptive_speed - 1.0) * approach_eased as f32
 }
 
 pub struct VideoClickStateMachine {
@@ -119,6 +127,14 @@ mod seekbar_wheel_tests {
         assert!(super::adaptive_scrub_speed(10.0, 1.0) > 8.0);
         assert_eq!(super::adaptive_scrub_speed(30.0, 1.0), 32.0);
         assert_eq!(super::adaptive_scrub_speed(120.0, 1.0), 32.0);
+    }
+
+    #[test]
+    fn adaptive_scrub_speed_reaches_one_x_for_the_final_approach() {
+        assert_eq!(super::adaptive_scrub_speed(0.0, 1.0), 1.0);
+        assert_eq!(super::adaptive_scrub_speed(0.0, 2.0), 1.0);
+        assert!(super::adaptive_scrub_speed(0.25, 2.0) > 1.0);
+        assert!(super::adaptive_scrub_speed(0.25, 2.0) < 2.1);
     }
 
     #[test]
