@@ -209,7 +209,7 @@ impl AudioSink for PipeWireAudioSink {
 
     fn set_volume(&self, volume: f32) {
         let volume = if volume.is_finite() {
-            volume.clamp(0.0, 1.0)
+            volume.clamp(0.0, 1.5)
         } else {
             1.0
         };
