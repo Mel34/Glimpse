@@ -158,6 +158,9 @@ where
         container.append(&btn);
     }
 
+    let audio_subtitle_separator = Separator::new(Orientation::Horizontal);
+    container.append(&audio_subtitle_separator);
+
     let subtitle_label = Label::new(Some("Subtitles"));
     subtitle_label.set_halign(gtk4::Align::Start);
     subtitle_label.add_css_class("heading");
