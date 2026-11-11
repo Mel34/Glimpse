@@ -583,18 +583,20 @@ mod tests {
         let mut resampler = ResamplerState::default();
         push_frames(&mut producer, &[[0.25, -0.5], [0.5, -1.0], [0.75, -1.5]]);
 
-        let mut output = [0xff; 24];
+        let mut output = [0xff; 32];
         let (written, underflow, _) =
-            render_pcm(&mut consumer, &shared, &mut resampler, &mut output, 3);
+            render_pcm(&mut consumer, &shared, &mut resampler, &mut output, 4);
 
-        assert_eq!(written, 24);
+        assert_eq!(written, 32);
         assert_eq!(underflow, 2);
         assert_eq!(sample(&output, 0, 0), 0.25);
         assert_eq!(sample(&output, 0, 1), -0.5);
         assert_eq!(sample(&output, 1, 0), 0.5);
         assert_eq!(sample(&output, 1, 1), -1.0);
-        assert_eq!(sample(&output, 2, 0), 0.0);
-        assert_eq!(sample(&output, 2, 1), 0.0);
+        assert_eq!(sample(&output, 2, 0), 0.75);
+        assert_eq!(sample(&output, 2, 1), -1.5);
+        assert_eq!(sample(&output, 3, 0), 0.0);
+        assert_eq!(sample(&output, 3, 1), 0.0);
     }
 
     #[test]
