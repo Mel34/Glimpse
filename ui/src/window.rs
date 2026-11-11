@@ -581,6 +581,9 @@ impl GlimpseWindow {
                 tracing::debug!("Single video-surface click accepted; scheduling play/pause toggle");
                 let p_action = Rc::clone(&p_toggle);
                 let v_action = Rc::clone(&v_toggle);
+                let scrub_state_action = Rc::clone(&scrub_state_click);
+                let marker_position_action = Rc::clone(&marker_position_click);
+                let marker_action = marker_click.clone();
                 let w_fs = win_rel.clone();
                 VideoClickStateMachine::handle_click(
                     Rc::clone(&click_state_rel), 1,
@@ -591,9 +594,9 @@ impl GlimpseWindow {
                             if was_playing {
                                 cancel_adaptive_scrub(
                                     p,
-                                    &scrub_state_click,
-                                    &marker_position_click,
-                                    &marker_click,
+                                    &scrub_state_action,
+                                    &marker_position_action,
+                                    &marker_action,
                                 );
                                 p.pause();
                             } else {
