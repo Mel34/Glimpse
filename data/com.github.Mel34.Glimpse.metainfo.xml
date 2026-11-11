@@ -20,6 +20,11 @@
     <binary>glimpse</binary>
   </provides>
   <releases>
+    <release version="0.5.0" date="2026-11-11">
+      <description>
+        <p>Prefers VAAPI hardware decoding and adds NV12/P010 DMA-BUF presentation with GTK graphics offload, RGBA compatibility fallback, improved seeking, and expanded playback diagnostics.</p>
+      </description>
+    </release>
     <release version="0.4.1" date="2026-11-11">
       <description>
         <p>Polishes the playback menus and volume controls, improves playback-speed controls, adds keyboard shortcuts for screenshots and speed adjustment, and refines the loading-page and main-menu presentation.</p>
