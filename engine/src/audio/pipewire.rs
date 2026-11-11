@@ -67,6 +67,7 @@ struct ResamplerState {
     current: Option<[f32; AUDIO_OUTPUT_CHANNELS]>,
     next: Option<[f32; AUDIO_OUTPUT_CHANNELS]>,
     phase: f64,
+    eof_last_sample_output: bool,
 }
 
 struct ProcessData {
@@ -503,6 +504,10 @@ fn render_pcm(
 
         if resampler.next.is_none() {
             resampler.next = consumer.pop().ok();
+            if resampler.next.is_none() && end_of_stream && !resampler.eof_last_sample_output {
+                resampler.next = resampler.current;
+                resampler.eof_last_sample_output = resampler.next.is_some();
+            }
         }
 
         let (Some(current), Some(next)) = (resampler.current, resampler.next) else {
