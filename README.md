@@ -1,5 +1,7 @@
 # Glimpse
 
+<img width="770" height="770" alt="Screenshot From 2026-11-11 22-55-54" src="https://github.com/user-attachments/assets/06813dfc-abd9-4e39-a6aa-4e02124916da" />
+
 Glimpse is an independent **Showtime replacement for the GNOME desktop**. It aims to provide the same focused, native GTK4/libadwaita video-player experience, while building on a different playback engine and adding a few extra controls.
 
 A Linux media player written in Rust with GTK4, libadwaita, an in-process FFmpeg playback engine, and native PipeWire audio output.
