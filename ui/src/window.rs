@@ -638,7 +638,7 @@ impl GlimpseWindow {
         let v_pct_sl = bottom_controls.volume_percent_label.clone();
         let last_volume_sl = Rc::clone(&bottom_controls.last_nonzero_volume);
         bottom_controls.volume_slider.connect_change_value(move |_, _, new_val| {
-            let val = new_val.clamp(0.0, 1.0);
+            let val = new_val.clamp(0.0, 1.5);
             if let Some(ref p) = *p_vol_slider.borrow() {
                 p.set_volume(val as f32);
             }
@@ -983,7 +983,7 @@ impl GlimpseWindow {
                         let v = p_keys
                             .borrow()
                             .as_ref()
-                            .map(|p| (p.volume() + 0.05).min(1.0) as f64)
+                            .map(|p| (p.volume() + 0.05).min(1.5) as f64)
                             .unwrap_or(1.0);
                         if let Some(ref p) = *p_keys.borrow() {
                             p.set_volume(v as f32);
