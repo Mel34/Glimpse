@@ -804,6 +804,7 @@ impl GlimpseWindow {
         let p_seekbar_release = Rc::clone(&player);
         let v_seekbar_release = Rc::clone(&video_playback);
         let scrub_state_for_events = Rc::clone(&adaptive_scrub_state);
+        let speed_held_for_events = Rc::clone(&bottom_controls.speed_button_held);
         seekbar_events.connect_event(move |_, event| {
             match event.event_type() {
                 gdk4::EventType::ButtonPress => {
@@ -812,7 +813,9 @@ impl GlimpseWindow {
                     {
                         if let Some(p) = p_seekbar_release.borrow().as_ref() {
                             if let AdaptiveScrubState::CatchingUp { original_speed, .. } = scrub_state_for_events.get() {
-                                p.set_playback_speed(original_speed);
+                                if !speed_held_for_events.get() {
+                                    p.set_playback_speed(original_speed);
+                                }
                             }
                             scrub_state_for_events.set(AdaptiveScrubState::Dragging {
                                 original_speed: p.playback_speed(),
@@ -858,14 +861,18 @@ impl GlimpseWindow {
                                         target,
                                         original_speed,
                                     });
-                                    p.set_scrub_speed(adaptive_scrub_speed(
-                                        distance,
-                                        original_speed,
-                                    ));
+                                    if !speed_held_for_events.get() {
+                                        p.set_scrub_speed(adaptive_scrub_speed(
+                                            distance,
+                                            original_speed,
+                                        ));
+                                    }
                                 }
                                 AdaptiveScrubState::Dragging { original_speed, .. } => {
                                     scrub_state_for_events.set(AdaptiveScrubState::Idle);
-                                    p.set_playback_speed(original_speed);
+                                    if !speed_held_for_events.get() {
+                                        p.set_playback_speed(original_speed);
+                                    }
                                     p.seek(target);
                                     if let Some(video) = v_seekbar_release.borrow_mut().as_mut() {
                                         video.seek(target);
