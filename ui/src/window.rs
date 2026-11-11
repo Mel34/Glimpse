@@ -1310,6 +1310,9 @@ fn load_and_play_file(
                 let window_external = window.clone();
                 let video_external = Rc::clone(video_playback);
                 let player_external = Rc::clone(player);
+                let player_speed = Rc::clone(player);
+                let initial_speed = player.borrow().as_ref()
+                    .map_or(1.0, |active_player| active_player.playback_speed() as f64);
                 let popover = create_track_popover(
                     &tracks,
                     move |aid| {
@@ -1347,6 +1350,12 @@ fn load_and_play_file(
                             &button,
                             &off_button,
                         );
+                    },
+                    initial_speed,
+                    move |speed| {
+                        if let Some(ref active_player) = *player_speed.borrow() {
+                            active_player.set_playback_speed(speed as f32);
+                        }
                     },
                     &bottom_controls.loop_enabled,
                     &bottom_controls.loop_menu_buttons,
