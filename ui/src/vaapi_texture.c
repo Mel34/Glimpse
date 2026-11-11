@@ -43,7 +43,6 @@ static int map_transfer_function(enum AVColorTransferCharacteristic value, guint
     case AVCOL_TRC_GAMMA22: *mapped = 4; return 0;
     case AVCOL_TRC_GAMMA28: *mapped = 5; return 0;
     case AVCOL_TRC_SMPTE170M: *mapped = 6; return 0;
-    case AVCOL_TRC_SMPTE240M: *mapped = 7; return 0;
     case AVCOL_TRC_LINEAR: *mapped = 8; return 0;
     case AVCOL_TRC_IEC61966_2_1: *mapped = 13; return 0;
     case AVCOL_TRC_BT2020_10: *mapped = 14; return 0;
@@ -213,10 +212,9 @@ GdkTexture *glimpse_vaapi_texture_from_frame(
         y_format = DRM_FORMAT_R8;
         uv_format = DRM_FORMAT_GR88;
         bytes_per_sample = 1;
-        color_state = make_frame_color_state(decoded, NULL);
+        GError *error = NULL;
+        color_state = make_frame_color_state(decoded, &error);
         if (!color_state) {
-            GError *error = NULL;
-            color_state = make_frame_color_state(decoded, &error);
             set_error_message(error_message,
                 error ? error->message : "Could not determine NV12 color state");
             g_clear_error(&error);
