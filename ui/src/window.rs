@@ -354,6 +354,8 @@ impl GlimpseWindow {
         let timeline_loop_resume = Rc::clone(&loop_resume);
         let timeline_seekbar = bottom_controls.seekbar.clone();
         let timeline_elapsed = bottom_controls.elapsed_label.clone();
+        let timeline_marker = bottom_controls.seekbar_marker.clone();
+        let timeline_marker_position = Rc::clone(&bottom_controls.seekbar_marker_position);
         let timeline_dragging = Rc::clone(&bottom_controls.seekbar_dragging);
         let timeline_drag_moved = Rc::clone(&seekbar_drag_moved);
         let timeline_window = window.downgrade();
@@ -448,6 +450,22 @@ impl GlimpseWindow {
                     );
                 }
             }
+
+            let marker_fraction = match timeline_scrub_state.get() {
+                AdaptiveScrubState::CatchingUp { target, .. } => timeline_player
+                    .borrow()
+                    .as_ref()
+                    .and_then(Player::duration)
+                    .map(|duration| {
+                        (target.as_secs_f64() / duration.as_secs_f64().max(0.001))
+                            .clamp(0.0, 1.0)
+                    }),
+                _ => None,
+            };
+            if timeline_marker_position.replace(marker_fraction) != marker_fraction {
+                timeline_marker.queue_draw();
+            }
+
             glib::ControlFlow::Continue
         });
 
