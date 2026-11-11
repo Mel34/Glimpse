@@ -305,9 +305,9 @@ impl Player {
         self.set_speed_internal(speed);
     }
 
-    /// Sets the temporary adaptive-scrub rate, with a separate 4× ceiling.
+    /// Sets the temporary adaptive-scrub rate, with a separate 32× ceiling.
     pub fn set_scrub_speed(&self, speed: f32) {
-        let speed = if speed.is_finite() { speed.clamp(0.5, 4.0) } else { 1.0 };
+        let speed = if speed.is_finite() { speed.clamp(0.5, 32.0) } else { 1.0 };
         self.set_speed_internal(speed);
     }
 
@@ -469,7 +469,9 @@ mod tests {
         player.set_scrub_speed(4.0);
         assert_eq!(player.playback_speed(), 4.0);
         player.set_scrub_speed(8.0);
-        assert_eq!(player.playback_speed(), 4.0);
+        assert_eq!(player.playback_speed(), 8.0);
+        player.set_scrub_speed(40.0);
+        assert_eq!(player.playback_speed(), 32.0);
         player.set_playback_speed(f32::NAN);
         assert_eq!(player.playback_speed(), 1.0);
     }
