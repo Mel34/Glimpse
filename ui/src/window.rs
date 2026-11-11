@@ -394,7 +394,10 @@ impl GlimpseWindow {
                 } else {
                     if let AdaptiveScrubState::CatchingUp { target, original_speed } = timeline_scrub_state.get() {
                         let position = current_player.position();
-                        if target.saturating_sub(position) <= SCRUB_TARGET_TOLERANCE {
+                        if position >= target {
+                            // The seekbar thumb's centre has reached the marker. The adaptive
+                            // rate already reached 1× when its leading edge touched the marker;
+                            // keep the marker visible until the centre catches up.
                             // Restore the requested rate before seek() starts a replacement
                             // audio session; otherwise it can briefly prebuffer and render at
                             // the adaptive scrub rate.
