@@ -13,10 +13,40 @@ use gtk4::{
 
 use glimpse_engine::{Event, Player, PlayerState};
 use crate::controls::{create_floating_bottom_bar, ControlBarWidgets};
-use crate::interaction::{attach_popover_scroll_guard, attach_seekbar_wheel, attach_window_volume_wheel, VideoClickStateMachine};
+use crate::interaction::{adaptive_scrub_speed, attach_popover_scroll_guard, attach_seekbar_wheel, attach_window_volume_wheel, VideoClickStateMachine};
 use crate::track_menu::create_track_popover;
 use crate::video_texture::{bind_subtitle_scaling, VideoPlaybackHandle};
 use crate::rotatable_picture::RotatablePicture;
+
+const SCRUB_TARGET_TOLERANCE: Duration = Duration::from_millis(120);
+
+#[derive(Clone, Copy, Debug)]
+enum AdaptiveScrubState {
+    Idle,
+    Dragging { original_speed: f32, was_playing: bool },
+    CatchingUp { target: Duration, original_speed: f32 },
+}
+
+fn cancel_adaptive_scrub(
+    player: &Player,
+    state: &Cell<AdaptiveScrubState>,
+    marker_position: &Cell<Option<f64>>,
+    marker: &gtk4::DrawingArea,
+) -> bool {
+    let original_speed = match state.get() {
+        AdaptiveScrubState::Dragging { original_speed, .. }
+        | AdaptiveScrubState::CatchingUp { original_speed, .. } => Some(original_speed),
+        AdaptiveScrubState::Idle => None,
+    };
+    if let Some(speed) = original_speed {
+        player.set_playback_speed(speed);
+    }
+    state.set(AdaptiveScrubState::Idle);
+    if marker_position.take().is_some() {
+        marker.queue_draw();
+    }
+    original_speed.is_some()
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AbLoopState {
@@ -72,6 +102,7 @@ pub struct GlimpseWindow {
     overlay: Overlay,
     stack: Stack,
     ab_loop: Rc<Cell<AbLoopState>>,
+    adaptive_scrub_state: Rc<Cell<AdaptiveScrubState>>,
     #[allow(dead_code)]
     drop_overlay: GtkBox,
 }
@@ -91,6 +122,9 @@ impl GlimpseWindow {
         let player: Rc<RefCell<Option<Player>>> = Rc::new(RefCell::new(None));
         let video_playback: Rc<RefCell<Option<VideoPlaybackHandle>>> = Rc::new(RefCell::new(None));
         let ab_loop = Rc::new(Cell::new(AbLoopState::Unset));
+        let adaptive_scrub_state = Rc::new(Cell::new(AdaptiveScrubState::Idle));
+        let resume_from_scrub = Rc::new(Cell::new(false));
+        let seekbar_drag_moved = Rc::new(Cell::new(false));
         let video_playback_on_focus = Rc::clone(&video_playback);
         window.connect_is_active_notify(move |window| {
             if let Some(video) = video_playback_on_focus.borrow_mut().as_mut() {
@@ -337,18 +371,66 @@ impl GlimpseWindow {
         let timeline_video = Rc::clone(&video_playback);
         let timeline_loop_enabled = Rc::clone(&loop_enabled);
         let timeline_ab_loop = Rc::clone(&ab_loop);
+        let timeline_scrub_state = Rc::clone(&adaptive_scrub_state);
         let loop_resume: Rc<RefCell<Option<crossbeam_channel::Receiver<()>>>> = Rc::new(RefCell::new(None));
         let timeline_loop_resume = Rc::clone(&loop_resume);
         let timeline_seekbar = bottom_controls.seekbar.clone();
         let timeline_elapsed = bottom_controls.elapsed_label.clone();
+        let timeline_marker = bottom_controls.seekbar_marker.clone();
+        let timeline_marker_position = Rc::clone(&bottom_controls.seekbar_marker_position);
         let timeline_dragging = Rc::clone(&bottom_controls.seekbar_dragging);
+        let timeline_drag_moved = Rc::clone(&seekbar_drag_moved);
         let timeline_window = window.downgrade();
         glib::timeout_add_local(Duration::from_millis(50), move || {
             let Some(_window) = timeline_window.upgrade() else {
                 return glib::ControlFlow::Break;
             };
-            if !timeline_dragging.get() {
-                if let Some(current_player) = timeline_player.borrow().as_ref() {
+            if let Some(current_player) = timeline_player.borrow().as_ref() {
+                if timeline_dragging.get() {
+                    if let AdaptiveScrubState::Dragging { original_speed, was_playing } = timeline_scrub_state.get() {
+                        if !timeline_drag_moved.get() {
+                            current_player.set_playback_speed(original_speed);
+                            return glib::ControlFlow::Continue;
+                        }
+                        let position = current_player.position();
+                        let target = Duration::from_secs_f64(timeline_seekbar.value().max(0.0));
+                        if was_playing
+                            && current_player.state() == PlayerState::Playing
+                            && target.saturating_sub(position) > SCRUB_TARGET_TOLERANCE
+                        {
+                            current_player.set_scrub_speed(adaptive_scrub_speed(
+                                target.saturating_sub(position).as_secs_f64(),
+                                original_speed,
+                            ));
+                        } else {
+                            current_player.set_playback_speed(original_speed);
+                        }
+                    }
+                } else {
+                    if let AdaptiveScrubState::CatchingUp { target, original_speed } = timeline_scrub_state.get() {
+                        let position = current_player.position();
+                        if position >= target {
+                            // The time-based deceleration reaches the original rate at
+                            // the target. Restore it before seek() starts a replacement
+                            // audio session; otherwise it can briefly prebuffer and render at
+                            // the adaptive scrub rate.
+                            current_player.set_playback_speed(original_speed);
+                            current_player.seek(target);
+                            if let Some(video) = timeline_video.borrow_mut().as_mut() {
+                                video.seek(target);
+                            }
+                            timeline_scrub_state.set(AdaptiveScrubState::Idle);
+                        } else if current_player.state() == PlayerState::Playing {
+                            current_player.set_scrub_speed(adaptive_scrub_speed(
+                                target.saturating_sub(position).as_secs_f64(),
+                                original_speed,
+                            ));
+                        } else {
+                            current_player.set_playback_speed(original_speed);
+                            timeline_scrub_state.set(AdaptiveScrubState::Idle);
+                        }
+                    }
+
                     let media_position = current_player.position();
                     let readiness = timeline_loop_resume.borrow().as_ref().map(|ready| ready.try_recv());
                     if let Some(readiness) = readiness {
@@ -394,6 +476,22 @@ impl GlimpseWindow {
                     );
                 }
             }
+
+            let marker_fraction = match timeline_scrub_state.get() {
+                AdaptiveScrubState::CatchingUp { target, .. } => timeline_player
+                    .borrow()
+                    .as_ref()
+                    .and_then(Player::duration)
+                    .map(|duration| {
+                        (target.as_secs_f64() / duration.as_secs_f64().max(0.001))
+                            .clamp(0.0, 1.0)
+                    }),
+                _ => None,
+            };
+            if timeline_marker_position.replace(marker_fraction) != marker_fraction {
+                timeline_marker.queue_draw();
+            }
+
             glib::ControlFlow::Continue
         });
 
@@ -455,13 +553,46 @@ impl GlimpseWindow {
         click_gesture.set_button(1); // Left mouse button only
 
         let p_toggle = Rc::clone(&player);
+        let p_toggle_press = Rc::clone(&player);
         let v_toggle = Rc::clone(&video_playback);
+        let v_recover_press = Rc::clone(&video_playback);
         let win_click = window.clone();
         let click_state_press = Rc::clone(&click_state);
+        let scrub_state_press = Rc::clone(&adaptive_scrub_state);
+        let marker_position_press = Rc::clone(&bottom_controls.seekbar_marker_position);
+        let marker_press = bottom_controls.seekbar_marker.clone();
+        let scrub_click_interrupted = Rc::new(Cell::new(false));
+        let scrub_click_interrupted_press = Rc::clone(&scrub_click_interrupted);
 
-        // On press: if double-click (n_press >= 2), toggle fullscreen immediately and cancel any timer
+        // A click during adaptive scrub returns to normal playback in place.
+        // Keep both streams running; the shared media clock already provides sync.
         click_gesture.connect_pressed(move |_gesture, n_press, x, y| {
             tracing::debug!(n_press, x, y, "Video surface gesture pressed");
+            if n_press == 1
+                && matches!(
+                    scrub_state_press.get(),
+                    AdaptiveScrubState::CatchingUp { .. }
+                        | AdaptiveScrubState::Dragging { was_playing: true, .. }
+                )
+            {
+                if let Some(ref p) = *p_toggle_press.borrow() {
+                    if p.state() == PlayerState::Playing {
+                        let position = p.position();
+                        cancel_adaptive_scrub(
+                            p,
+                            &scrub_state_press,
+                            &marker_position_press,
+                            &marker_press,
+                        );
+                        if let Some(ref mut video) = *v_recover_press.borrow_mut() {
+                            video.drop_stale_frames();
+                            video.seek(position);
+                        }
+                        scrub_click_interrupted_press.set(true);
+                    }
+                }
+            }
+
             if n_press >= 2 {
                 tracing::debug!("Double-click detected; toggling fullscreen");
                 click_state_press.borrow_mut().cancel();
@@ -473,15 +604,28 @@ impl GlimpseWindow {
             }
         });
 
-        // On release: schedule single-click play/pause unless this is a double-click.
+        // On release: schedule single-click play/pause unless this click already
+        // paused adaptive scrub or is part of a double-click.
         let click_state_rel = Rc::clone(&click_state);
         let win_rel = window.clone();
+        let scrub_state_click = Rc::clone(&adaptive_scrub_state);
+        let marker_position_click = Rc::clone(&bottom_controls.seekbar_marker_position);
+        let marker_click = bottom_controls.seekbar_marker.clone();
+        let resume_from_scrub_click = Rc::clone(&resume_from_scrub);
+        let scrub_click_interrupted_rel = Rc::clone(&scrub_click_interrupted);
         click_gesture.connect_released(move |_gesture, n_press, x, y| {
             tracing::debug!(n_press, x, y, "Video surface gesture released");
+            if scrub_click_interrupted_rel.replace(false) {
+                return;
+            }
             if n_press == 1 {
                 tracing::debug!("Single video-surface click accepted; scheduling play/pause toggle");
                 let p_action = Rc::clone(&p_toggle);
                 let v_action = Rc::clone(&v_toggle);
+                let scrub_state_action = Rc::clone(&scrub_state_click);
+                let marker_position_action = Rc::clone(&marker_position_click);
+                let marker_action = marker_click.clone();
+                let resume_from_scrub_action = Rc::clone(&resume_from_scrub_click);
                 let w_fs = win_rel.clone();
                 VideoClickStateMachine::handle_click(
                     Rc::clone(&click_state_rel), 1,
@@ -489,9 +633,23 @@ impl GlimpseWindow {
                         if let Some(ref p) = *p_action.borrow() {
                             let was_playing = p.state() == PlayerState::Playing;
                             tracing::debug!(was_playing, "Video-surface play/pause timer fired");
-                            if was_playing { p.pause(); }
-                            else {
-                                if p.state() == PlayerState::Ended {
+                            if was_playing {
+                                let cancelled_scrub = cancel_adaptive_scrub(
+                                    p,
+                                    &scrub_state_action,
+                                    &marker_position_action,
+                                    &marker_action,
+                                );
+                                resume_from_scrub_action.set(cancelled_scrub);
+                                p.pause();
+                            } else {
+                                if resume_from_scrub_action.replace(false) {
+                                    let position = p.position();
+                                    p.seek(position);
+                                    if let Some(ref mut video) = *v_action.borrow_mut() {
+                                        video.seek(position);
+                                    }
+                                } else if p.state() == PlayerState::Ended {
                                     if let Some(ref mut video) = *v_action.borrow_mut() { video.seek(Duration::ZERO); }
                                 }
                                 p.play();
@@ -543,16 +701,42 @@ impl GlimpseWindow {
         let seekbar_events = gtk4::EventControllerLegacy::new();
         seekbar_events.set_propagation_phase(gtk4::PropagationPhase::Capture);
         let seekbar_drag_state = Rc::clone(&bottom_controls.seekbar_dragging);
+        let seekbar_press_position: Rc<Cell<Option<(f64, f64)>>> = Rc::new(Cell::new(None));
         let seekbar_for_release = bottom_controls.seekbar.clone();
         let p_seekbar_release = Rc::clone(&player);
         let v_seekbar_release = Rc::clone(&video_playback);
+        let scrub_state_for_events = Rc::clone(&adaptive_scrub_state);
         seekbar_events.connect_event(move |_, event| {
             match event.event_type() {
                 gdk4::EventType::ButtonPress => {
                     if event.downcast_ref::<gdk4::ButtonEvent>()
                         .is_some_and(|button| button.button() == 1)
                     {
+                        if let Some(p) = p_seekbar_release.borrow().as_ref() {
+                            if let AdaptiveScrubState::CatchingUp { original_speed, .. } = scrub_state_for_events.get() {
+                                p.set_playback_speed(original_speed);
+                            }
+                            scrub_state_for_events.set(AdaptiveScrubState::Dragging {
+                                original_speed: p.playback_speed(),
+                                was_playing: p.state() == PlayerState::Playing,
+                            });
+                        } else {
+                            scrub_state_for_events.set(AdaptiveScrubState::Idle);
+                        }
+                        seekbar_drag_moved.set(false);
+                        seekbar_press_position.set(event.position());
                         seekbar_drag_state.set(true);
+                    }
+                }
+                gdk4::EventType::MotionNotify => {
+                    const DRAG_THRESHOLD_PX: f64 = 8.0;
+                    if seekbar_drag_state.get()
+                        && event.position().zip(seekbar_press_position.get())
+                            .is_some_and(|((x, y), (start_x, start_y))| {
+                                (x - start_x).hypot(y - start_y) >= DRAG_THRESHOLD_PX
+                            })
+                    {
+                        seekbar_drag_moved.set(true);
                     }
                 }
                 gdk4::EventType::ButtonRelease => {
@@ -561,8 +745,45 @@ impl GlimpseWindow {
                         && seekbar_drag_state.replace(false)
                     {
                         let target = Duration::from_secs_f64(seekbar_for_release.value().max(0.0));
-                        if let Some(ref p) = *p_seekbar_release.borrow() { p.seek(target); }
-                        if let Some(ref mut video) = *v_seekbar_release.borrow_mut() { video.seek(target); }
+                        let did_drag = seekbar_drag_moved.replace(false);
+                        seekbar_press_position.set(None);
+                        if let Some(p) = p_seekbar_release.borrow().as_ref() {
+                            match scrub_state_for_events.get() {
+                                AdaptiveScrubState::Dragging { original_speed, was_playing }
+                                    if did_drag
+                                        && was_playing
+                                        && p.state() == PlayerState::Playing
+                                        && target.saturating_sub(p.position()) > SCRUB_TARGET_TOLERANCE =>
+                                {
+                                    let distance = target.saturating_sub(p.position()).as_secs_f64();
+                                    scrub_state_for_events.set(AdaptiveScrubState::CatchingUp {
+                                        target,
+                                        original_speed,
+                                    });
+                                    p.set_scrub_speed(adaptive_scrub_speed(
+                                        distance,
+                                        original_speed,
+                                    ));
+                                }
+                                AdaptiveScrubState::Dragging { original_speed, .. } => {
+                                    scrub_state_for_events.set(AdaptiveScrubState::Idle);
+                                    p.set_playback_speed(original_speed);
+                                    p.seek(target);
+                                    if let Some(video) = v_seekbar_release.borrow_mut().as_mut() {
+                                        video.seek(target);
+                                    }
+                                }
+                                _ => {
+                                    scrub_state_for_events.set(AdaptiveScrubState::Idle);
+                                    p.seek(target);
+                                    if let Some(video) = v_seekbar_release.borrow_mut().as_mut() {
+                                        video.seek(target);
+                                    }
+                                }
+                            }
+                        } else if let Some(video) = v_seekbar_release.borrow_mut().as_mut() {
+                            video.seek(target);
+                        }
                     }
                 }
                 _ => {}
@@ -717,6 +938,7 @@ impl GlimpseWindow {
         let subtitle_for_drop = subtitle_label.clone();
         let bottom_for_drop = bottom_controls.clone();
         let ab_loop_for_drop = Rc::clone(&ab_loop);
+        let adaptive_scrub_for_drop = Rc::clone(&adaptive_scrub_state);
 
         drop_target.connect_drop(move |_, val, _, _| {
             drop_overlay_drop.set_visible(false);
@@ -732,6 +954,7 @@ impl GlimpseWindow {
                     &subtitle_for_drop,
                     &bottom_for_drop,
                     &ab_loop_for_drop,
+                    &adaptive_scrub_for_drop,
                 );
                 return true;
             }
@@ -748,6 +971,7 @@ impl GlimpseWindow {
         let subtitle_for_dialog = subtitle_label.clone();
         let bottom_for_dialog = bottom_controls.clone();
         let ab_loop_for_dialog = Rc::clone(&ab_loop);
+        let adaptive_scrub_for_dialog = Rc::clone(&adaptive_scrub_state);
 
         open_btn.connect_clicked(move |_| {
             trigger_open_file_dialog(
@@ -759,6 +983,7 @@ impl GlimpseWindow {
                 &subtitle_for_dialog,
                 &bottom_for_dialog,
                 &ab_loop_for_dialog,
+                &adaptive_scrub_for_dialog,
             );
         });
 
@@ -772,6 +997,7 @@ impl GlimpseWindow {
             &subtitle_label,
             &bottom_controls,
             &ab_loop,
+            &adaptive_scrub_state,
         );
         crate::controls::track_popover_visibility(&loader_popover, &bottom_controls.open_popovers);
         loader_menu_btn.set_popover(Some(&loader_popover));
@@ -785,6 +1011,7 @@ impl GlimpseWindow {
             &subtitle_label,
             &bottom_controls,
             &ab_loop,
+            &adaptive_scrub_state,
         );
         crate::controls::track_popover_visibility(&player_popover, &bottom_controls.open_popovers);
         menu_btn.set_popover(Some(&player_popover));
@@ -799,6 +1026,7 @@ impl GlimpseWindow {
         let sub_act = subtitle_label.clone();
         let btm_act = bottom_controls.clone();
         let ab_loop_act = Rc::clone(&ab_loop);
+        let adaptive_scrub_act = Rc::clone(&adaptive_scrub_state);
         action_open.connect_activate(move |_, _| {
             trigger_open_file_dialog(
                 &win_act,
@@ -809,6 +1037,7 @@ impl GlimpseWindow {
                 &sub_act,
                 &btm_act,
                 &ab_loop_act,
+                &adaptive_scrub_act,
             );
         });
         window.add_action(&action_open);
@@ -850,15 +1079,32 @@ impl GlimpseWindow {
         space_controller.set_propagation_phase(gtk4::PropagationPhase::Capture);
         let p_space = Rc::clone(&player);
         let video_space = Rc::clone(&video_playback);
+        let scrub_state_space = Rc::clone(&adaptive_scrub_state);
+        let marker_position_space = Rc::clone(&bottom_controls.seekbar_marker_position);
+        let marker_space = bottom_controls.seekbar_marker.clone();
+        let resume_from_scrub_space = Rc::clone(&resume_from_scrub);
         space_controller.connect_key_pressed(move |_, keyval, _, _| {
             if keyval != gdk4::Key::space {
                 return glib::Propagation::Proceed;
             }
             if let Some(ref p) = *p_space.borrow() {
                 if p.state() == PlayerState::Playing {
+                    let cancelled_scrub = cancel_adaptive_scrub(
+                        p,
+                        &scrub_state_space,
+                        &marker_position_space,
+                        &marker_space,
+                    );
+                    resume_from_scrub_space.set(cancelled_scrub);
                     p.pause();
                 } else {
-                    if p.state() == PlayerState::Ended {
+                    if resume_from_scrub_space.replace(false) {
+                        let position = p.position();
+                        p.seek(position);
+                        if let Some(ref mut video) = *video_space.borrow_mut() {
+                            video.seek(position);
+                        }
+                    } else if p.state() == PlayerState::Ended {
                         if let Some(ref mut video) = *video_space.borrow_mut() {
                             video.seek(Duration::ZERO);
                         }
@@ -886,6 +1132,7 @@ impl GlimpseWindow {
         let sub_open_k = subtitle_label.clone();
         let btm_open_k = bottom_controls.clone();
         let ab_loop_open_k = Rc::clone(&ab_loop);
+        let adaptive_scrub_open_k = Rc::clone(&adaptive_scrub_state);
         let top_keys = top_controls.clone();
         let bottom_keys = bottom_controls.container.clone();
         let timer_keys = Rc::clone(&hide_timer);
@@ -994,6 +1241,7 @@ impl GlimpseWindow {
                         &sub_open_k,
                         &btm_open_k,
                         &ab_loop_open_k,
+                        &adaptive_scrub_open_k,
                     );
                     glib::Propagation::Stop
                 }
@@ -1105,6 +1353,7 @@ impl GlimpseWindow {
             overlay: player_overlay,
             stack,
             ab_loop,
+            adaptive_scrub_state,
             drop_overlay,
         }
     }
@@ -1121,6 +1370,7 @@ impl GlimpseWindow {
             &self.subtitle_label,
             &self.bottom_controls,
             &self.ab_loop,
+            &self.adaptive_scrub_state,
         );
     }
 
@@ -1139,6 +1389,7 @@ fn trigger_open_file_dialog(
     subtitle_label: &Label,
     bottom_controls: &ControlBarWidgets,
     ab_loop: &Rc<Cell<AbLoopState>>,
+    adaptive_scrub_state: &Rc<Cell<AdaptiveScrubState>>,
 ) {
     let file_dialog = FileDialog::builder()
         .title("Open Video")
@@ -1158,6 +1409,7 @@ fn trigger_open_file_dialog(
     let sub_cb = subtitle_label.clone();
     let bottom_cb = bottom_controls.clone();
     let ab_loop_cb = Rc::clone(ab_loop);
+    let adaptive_scrub_cb = Rc::clone(adaptive_scrub_state);
 
     file_dialog.open(Some(window), gio::Cancellable::NONE, move |result| {
         if let Ok(file) = result {
@@ -1172,6 +1424,7 @@ fn trigger_open_file_dialog(
                 &sub_cb,
                 &bottom_cb,
                 &ab_loop_cb,
+                &adaptive_scrub_cb,
             );
         }
     });
@@ -1276,6 +1529,7 @@ fn load_and_play_file(
     subtitle_label: &Label,
     bottom_controls: &ControlBarWidgets,
     ab_loop: &Rc<Cell<AbLoopState>>,
+    adaptive_scrub_state: &Rc<Cell<AdaptiveScrubState>>,
 ) {
     let file_name = gio::File::for_uri(path)
         .basename()
@@ -1293,6 +1547,16 @@ fn load_and_play_file(
         }
     };
 
+    if let Some(current_player) = player.borrow().as_ref() {
+        match adaptive_scrub_state.get() {
+            AdaptiveScrubState::Dragging { original_speed, .. }
+            | AdaptiveScrubState::CatchingUp { original_speed, .. } => {
+                current_player.set_playback_speed(original_speed);
+            }
+            AdaptiveScrubState::Idle => {}
+        }
+    }
+    adaptive_scrub_state.set(AdaptiveScrubState::Idle);
     ab_loop.set(AbLoopState::Unset);
     window.set_title(Some(&format!("Glimpse - {}", file_name)));
     bottom_controls.title_label.set_text(&file_name);
@@ -1627,6 +1891,7 @@ fn create_main_menu_popover(
     subtitle_label: &Label,
     bottom_controls: &ControlBarWidgets,
     ab_loop: &Rc<Cell<AbLoopState>>,
+    adaptive_scrub_state: &Rc<Cell<AdaptiveScrubState>>,
 ) -> gtk4::Popover {
     let popover = gtk4::Popover::new();
     popover.add_css_class("menu-popover");
@@ -1760,9 +2025,10 @@ fn create_main_menu_popover(
     let sub_op = subtitle_label.clone();
     let btm_op = bottom_controls.clone();
     let ab_loop_op = Rc::clone(ab_loop);
+    let adaptive_scrub_op = Rc::clone(adaptive_scrub_state);
     btn_open.connect_clicked(move |_| {
         pop_close2.popdown();
-        trigger_open_file_dialog(&win_op, &stack_op, &p_op, &video_op, &pic_op, &sub_op, &btm_op, &ab_loop_op);
+        trigger_open_file_dialog(&win_op, &stack_op, &p_op, &video_op, &pic_op, &sub_op, &btm_op, &ab_loop_op, &adaptive_scrub_op);
     });
     vbox.append(&btn_open);
 

@@ -36,6 +36,7 @@ pub struct Player {
     tracks: Arc<Mutex<TrackList>>,
     volume: Arc<Mutex<f32>>,
     audio_enabled: AtomicBool,
+    scrub_muted: AtomicBool,
     current_serial: Arc<Mutex<Serial>>,
     event_sender: Sender<Event>,
     #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
@@ -77,6 +78,7 @@ impl Player {
             tracks,
             volume,
             audio_enabled: AtomicBool::new(discovered_tracks.active_audio.is_some()),
+            scrub_muted: AtomicBool::new(false),
             current_serial,
             event_sender: event_tx,
             #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
@@ -103,11 +105,7 @@ impl Player {
                 self.clock.resume();
                 let _ = self.event_sender.send(Event::StateChanged(PlayerState::Playing));
             } else {
-                let initial_volume = if self.audio_enabled.load(Ordering::Acquire) {
-                    self.volume()
-                } else {
-                    0.0
-                };
+                let initial_volume = self.effective_audio_volume();
                 let mut start_position = *self.seek_position.lock();
                 let selected_audio = self.tracks.lock().active_audio.map(|track| track.0);
                 let mut reset_position = false;
@@ -221,7 +219,7 @@ impl Player {
 
         #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
         {
-            let initial_volume = if self.audio_enabled.load(Ordering::Acquire) { self.volume() } else { 0.0 };
+            let initial_volume = self.effective_audio_volume();
             let mut session = self.audio_session.lock();
             if let Some(mut previous) = session.take() {
                 let restart = was_playing && !previous.is_finished();
@@ -283,8 +281,7 @@ impl Player {
         }
         #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
         if let Some(handle) = self.audio_session.lock().as_ref() {
-            let effective = if self.audio_enabled.load(Ordering::Acquire) { clamped } else { 0.0 };
-            handle.set_volume(effective);
+            handle.set_volume(self.effective_audio_volume());
         }
     }
 
@@ -292,12 +289,42 @@ impl Player {
         *self.volume.lock()
     }
 
-    /// Sets the playback rate, including the audio output and shared video clock.
+    fn effective_audio_volume(&self) -> f32 {
+        if self.audio_enabled.load(Ordering::Acquire)
+            && !self.scrub_muted.load(Ordering::Acquire)
+        {
+            self.volume()
+        } else {
+            0.0
+        }
+    }
+
+    /// Sets the user-visible playback rate, which remains limited to 2×.
     pub fn set_playback_speed(&self, speed: f32) {
+        let speed = if speed.is_finite() { speed.clamp(0.5, 2.0) } else { 1.0 };
+        self.set_speed_internal(speed);
+    }
+
+    /// Sets the temporary adaptive-scrub rate, with a separate 32× ceiling.
+    pub fn set_scrub_speed(&self, speed: f32) {
+        let speed = if speed.is_finite() { speed.clamp(0.5, 32.0) } else { 1.0 };
+        self.set_speed_internal(speed);
+    }
+
+    fn set_speed_internal(&self, speed: f32) {
         self.clock.set_speed(speed as f64);
         #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
         if let Some(handle) = self.audio_session.lock().as_ref() {
             handle.set_speed(self.clock.speed() as f32);
+        }
+    }
+
+    /// Temporarily silence the audio output without changing the saved volume.
+    pub fn set_scrub_muted(&self, muted: bool) {
+        self.scrub_muted.store(muted, Ordering::Release);
+        #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
+        if let Some(handle) = self.audio_session.lock().as_ref() {
+            handle.set_volume(self.effective_audio_volume());
         }
     }
 
@@ -348,7 +375,7 @@ impl Player {
                 let playback = AudioPlaybackSession::new(Arc::clone(&self.clock));
                 match playback.spawn_from(
                     self.path.clone(),
-                    self.volume(),
+                    self.effective_audio_volume(),
                     position,
                     Some(selected_track.0),
                     self.event_sender.clone(),
@@ -430,6 +457,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn scrub_mute_is_independent_of_the_saved_volume_and_audio_selection() {
+        let (player, _events) = test_player(Some(Duration::from_secs(120)));
+        player.audio_enabled.store(true, Ordering::Release);
+        assert_eq!(player.effective_audio_volume(), 1.0);
+
+        player.set_scrub_muted(true);
+        assert_eq!(player.effective_audio_volume(), 0.0);
+        assert_eq!(player.volume(), 1.0);
+
+        player.set_volume(0.6);
+        assert_eq!(player.effective_audio_volume(), 0.0);
+        assert_eq!(player.volume(), 0.6);
+
+        player.set_scrub_muted(false);
+        assert_eq!(player.effective_audio_volume(), 0.6);
+    }
+
+    #[test]
     fn player_playback_speed_is_clamped_and_persisted_in_the_clock() {
         let (player, _events) = test_player(Some(Duration::from_secs(120)));
 
@@ -438,6 +483,15 @@ mod tests {
 
         player.set_playback_speed(4.0);
         assert_eq!(player.playback_speed(), 2.0);
+
+        player.set_scrub_speed(4.0);
+        assert_eq!(player.playback_speed(), 4.0);
+        player.set_scrub_speed(8.0);
+        assert_eq!(player.playback_speed(), 8.0);
+        player.set_scrub_speed(40.0);
+        assert_eq!(player.playback_speed(), 32.0);
+        player.set_playback_speed(f32::NAN);
+        assert_eq!(player.playback_speed(), 1.0);
     }
 
     #[test]
@@ -483,6 +537,7 @@ mod tests {
                 tracks: Arc::new(Mutex::new(tracks)),
                 volume: Arc::new(Mutex::new(1.0)),
                 audio_enabled: AtomicBool::new(false),
+                scrub_muted: AtomicBool::new(false),
                 current_serial: Arc::new(Mutex::new(Serial(0))),
                 event_sender,
                 #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]

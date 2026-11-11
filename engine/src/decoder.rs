@@ -140,6 +140,14 @@ impl VideoDecoder {
             .is_ok_and(|value| value.eq_ignore_ascii_case("vaapi"));
         let mut context = ffmpeg::codec::context::Context::from_parameters(stream.parameters())
             .map_err(|error| format!("Could not create video decoder context: {error}"))?;
+        // Packet timestamps are expressed in the demuxed stream time base.
+        // FFmpeg needs this explicitly for decoder-side timestamp adjustment.
+        unsafe {
+            (*context.as_mut_ptr()).pkt_timebase = ffmpeg::ffi::AVRational {
+                num: time_base.numerator(),
+                den: time_base.denominator(),
+            };
+        }
 
         if use_vaapi {
             let render_node = std::env::var("GLIMPSE_DRM_RENDER_NODE").ok();
@@ -762,8 +770,16 @@ impl AudioDecoder {
             return Err("Audio stream has an invalid time base".to_string());
         }
 
-        let context = ffmpeg::codec::context::Context::from_parameters(stream.parameters())
+        let mut context = ffmpeg::codec::context::Context::from_parameters(stream.parameters())
             .map_err(|error| format!("Could not create audio decoder context: {error}"))?;
+        // In particular, AC3 skip-sample side data needs pkt_timebase so
+        // FFmpeg can adjust decoded timestamps when samples are discarded.
+        unsafe {
+            (*context.as_mut_ptr()).pkt_timebase = ffmpeg::ffi::AVRational {
+                num: time_base.numerator(),
+                den: time_base.denominator(),
+            };
+        }
         let decoder = context
             .decoder()
             .audio()

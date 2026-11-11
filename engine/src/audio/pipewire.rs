@@ -1,8 +1,8 @@
 //! Native PipeWire output with a real-time-safe SPSC PCM handoff.
 //!
-//! Decoding, resampling, and producer-side queueing happen outside PipeWire's
-//! process callback. The callback only dequeues a PipeWire buffer, reads from
-//! the lock-free SPSC ring, applies an atomic volume value, and copies samples.
+//! Decoding and producer-side queueing happen outside PipeWire's process
+//! callback. The callback performs allocation-free variable-rate interpolation,
+//! applies atomic volume, and copies samples from the lock-free SPSC ring.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
@@ -18,7 +18,7 @@ use rtrb::{Consumer, Producer, RingBuffer};
 use super::AudioSink;
 use crate::decoder::{AUDIO_OUTPUT_CHANNELS, AUDIO_OUTPUT_RATE};
 
-const PCM_RING_CAPACITY: usize = AUDIO_OUTPUT_RATE as usize * AUDIO_OUTPUT_CHANNELS / 2;
+const PCM_RING_CAPACITY_FRAMES: usize = AUDIO_OUTPUT_RATE as usize * 2;
 const STREAM_UNCONNECTED: u8 = 0;
 const STREAM_CONNECTING: u8 = 1;
 const STREAM_PAUSED: u8 = 2;
@@ -39,10 +39,11 @@ struct SharedState {
     resampler_buffered_frames: AtomicU64,
     time_query_failures: AtomicU64,
     stream_state: AtomicU8,
+    speed: Arc<AtomicU32>,
 }
 
 impl SharedState {
-    fn new() -> Self {
+    fn new(speed: Arc<AtomicU32>) -> Self {
         Self {
             paused: AtomicBool::new(false),
             volume: AtomicU32::new(1.0f32.to_bits()),
@@ -56,13 +57,22 @@ impl SharedState {
             resampler_buffered_frames: AtomicU64::new(0),
             time_query_failures: AtomicU64::new(0),
             stream_state: AtomicU8::new(STREAM_UNCONNECTED),
+            speed,
         }
     }
 }
 
+#[derive(Default)]
+struct ResamplerState {
+    current: Option<[f32; AUDIO_OUTPUT_CHANNELS]>,
+    next: Option<[f32; AUDIO_OUTPUT_CHANNELS]>,
+    phase: f64,
+}
+
 struct ProcessData {
-    consumer: Consumer<f32>,
+    consumer: Consumer<[f32; AUDIO_OUTPUT_CHANNELS]>,
     shared: Arc<SharedState>,
+    resampler: ResamplerState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -88,7 +98,7 @@ pub struct PipeWireAudioSinkStats {
 }
 
 pub struct PipeWireAudioSink {
-    producer: Mutex<Producer<f32>>,
+    producer: Mutex<Producer<[f32; AUDIO_OUTPUT_CHANNELS]>>,
     shared: Arc<SharedState>,
     stop_sender: mpsc::Sender<()>,
     worker: Option<JoinHandle<()>>,
@@ -100,8 +110,13 @@ impl PipeWireAudioSink {
     /// The PipeWire loop and stream are owned by a dedicated control thread.
     /// The process callback runs on PipeWire's real-time thread.
     pub fn new() -> Result<Self, String> {
-        let (producer, consumer) = RingBuffer::new(PCM_RING_CAPACITY);
-        let shared = Arc::new(SharedState::new());
+        Self::new_with_speed(Arc::new(AtomicU32::new(1.0f32.to_bits())))
+    }
+
+    pub fn new_with_speed(speed: Arc<AtomicU32>) -> Result<Self, String> {
+        let (producer, consumer) =
+            RingBuffer::<[f32; AUDIO_OUTPUT_CHANNELS]>::new(PCM_RING_CAPACITY_FRAMES);
+        let shared = Arc::new(SharedState::new(speed));
         let worker_shared = Arc::clone(&shared);
         let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
         let (stop_sender, stop_receiver) = mpsc::channel();
@@ -152,7 +167,11 @@ impl PipeWireAudioSink {
     /// This is a producer-side diagnostic used for non-real-time buffer pacing.
     pub fn buffered_sample_frames(&self) -> usize {
         let producer = self.producer.lock();
-        (PCM_RING_CAPACITY - producer.slots()) / AUDIO_OUTPUT_CHANNELS
+        PCM_RING_CAPACITY_FRAMES - producer.slots()
+    }
+
+    pub fn buffer_capacity_frames(&self) -> usize {
+        PCM_RING_CAPACITY_FRAMES
     }
 
     /// Marks that no more PCM will be submitted, so subsequent empty-ring
@@ -186,9 +205,10 @@ impl AudioSink for PipeWireAudioSink {
 
         let mut producer = self.producer.lock();
         let mut dropped = 0u64;
-        for &value in &samples[..sample_count] {
-            if producer.push(value).is_err() {
-                dropped += 1;
+        for frame in samples[..sample_count].chunks_exact(AUDIO_OUTPUT_CHANNELS) {
+            let stereo = [frame[0], frame[1]];
+            if producer.push(stereo).is_err() {
+                dropped += AUDIO_OUTPUT_CHANNELS as u64;
             }
         }
         if dropped != 0 {
@@ -233,7 +253,7 @@ impl Drop for PipeWireAudioSink {
 }
 
 fn run_pipewire_thread(
-    consumer: Consumer<f32>,
+    consumer: Consumer<[f32; AUDIO_OUTPUT_CHANNELS]>,
     shared: Arc<SharedState>,
     ready_sender: SyncSender<Result<(), String>>,
     stop_receiver: Receiver<()>,
@@ -267,6 +287,7 @@ fn run_pipewire_thread(
     let process_data = ProcessData {
         consumer,
         shared: Arc::clone(&shared),
+        resampler: ResamplerState::default(),
     };
     let _listener = stream
         .add_local_listener_with_user_data(process_data)
@@ -310,6 +331,7 @@ fn run_pipewire_thread(
                 let (written, underflow, eof_silence) = render_pcm(
                     &mut process_data.consumer,
                     &process_data.shared,
+                    &mut process_data.resampler,
                     bytes,
                     requested_frames,
                 );
@@ -444,8 +466,9 @@ fn stream_state_code(state: &pw::stream::StreamState) -> u8 {
 /// Fills one PipeWire F32LE buffer. This function is deliberately independent
 /// of PipeWire objects so its bounded, allocation-free behavior can be tested.
 fn render_pcm(
-    consumer: &mut Consumer<f32>,
+    consumer: &mut Consumer<[f32; AUDIO_OUTPUT_CHANNELS]>,
     shared: &SharedState,
+    resampler: &mut ResamplerState,
     output: &mut [u8],
     requested_frames: usize,
 ) -> (usize, usize, usize) {
@@ -456,31 +479,80 @@ fn render_pcm(
     } else {
         requested_frames.min(frame_capacity)
     };
-    let sample_count = frame_count * AUDIO_OUTPUT_CHANNELS;
-    let written_bytes = sample_count * std::mem::size_of::<f32>();
+    let written_bytes = frame_count * bytes_per_frame;
     output[..written_bytes].fill(0);
-    if sample_count == 0 || shared.paused.load(Ordering::Acquire) {
+    if frame_count == 0 || shared.paused.load(Ordering::Acquire) {
         return (written_bytes, 0, 0);
     }
 
     let end_of_stream = shared.end_of_stream.load(Ordering::Acquire);
     let volume = f32::from_bits(shared.volume.load(Ordering::Relaxed));
+    let speed = f32::from_bits(shared.speed.load(Ordering::Acquire));
+    let speed = if speed.is_finite() { speed.clamp(0.5, 32.0) as f64 } else { 1.0 };
     let mut underflow_samples = 0usize;
     let mut eof_silence_samples = 0usize;
 
-    for (index, destination) in output[..written_bytes].chunks_exact_mut(4).enumerate() {
-        let value = match consumer.pop() {
-            Ok(sample) => sample * volume,
-            Err(_) => {
+    for output_index in 0..frame_count {
+        if resampler.current.is_none() {
+            resampler.current = consumer.pop().ok();
+            resampler.phase = 0.0;
+        }
+
+        // Advance through source frames according to media-time playback speed.
+        // This happens in the PipeWire callback, so changing speed affects PCM
+        // already queued in the ring instead of leaving stale pre-resampled audio.
+        while resampler.phase >= 1.0 {
+            let next = resampler.next.take().or_else(|| consumer.pop().ok());
+            let Some(next) = next else {
+                break;
+            };
+            resampler.current = Some(next);
+            resampler.phase -= 1.0;
+        }
+
+        if resampler.next.is_none() {
+            resampler.next = consumer.pop().ok();
+        }
+
+        let Some(current) = resampler.current else {
+            let remaining_samples = (frame_count - output_index) * AUDIO_OUTPUT_CHANNELS;
+            if end_of_stream {
+                eof_silence_samples = remaining_samples;
+            } else {
+                underflow_samples = remaining_samples;
+            }
+            break;
+        };
+        if resampler.phase >= 1.0 {
+            let remaining_samples = (frame_count - output_index) * AUDIO_OUTPUT_CHANNELS;
+            if end_of_stream {
+                eof_silence_samples = remaining_samples;
+            } else {
+                underflow_samples = remaining_samples;
+            }
+            break;
+        }
+        let next = match resampler.next {
+            Some(next) => next,
+            None if resampler.phase == 0.0 => current,
+            None => {
+                let remaining_samples = (frame_count - output_index) * AUDIO_OUTPUT_CHANNELS;
                 if end_of_stream {
-                    eof_silence_samples = sample_count - index;
+                    eof_silence_samples = remaining_samples;
                 } else {
-                    underflow_samples = sample_count - index;
+                    underflow_samples = remaining_samples;
                 }
                 break;
             }
         };
-        destination.copy_from_slice(&value.to_le_bytes());
+
+        let fraction = resampler.phase as f32;
+        let left = (current[0] + (next[0] - current[0]) * fraction) * volume;
+        let right = (current[1] + (next[1] - current[1]) * fraction) * volume;
+        let byte_offset = output_index * bytes_per_frame;
+        output[byte_offset..byte_offset + 4].copy_from_slice(&left.to_le_bytes());
+        output[byte_offset + 4..byte_offset + 8].copy_from_slice(&right.to_le_bytes());
+        resampler.phase += speed;
     }
 
     (written_bytes, underflow_samples, eof_silence_samples)
@@ -491,81 +563,96 @@ mod tests {
     use super::*;
 
     fn shared_state() -> SharedState {
-        SharedState::new()
+        SharedState::new(Arc::new(AtomicU32::new(1.0f32.to_bits())))
+    }
+
+    fn push_frames(producer: &mut Producer<[f32; AUDIO_OUTPUT_CHANNELS]>, frames: &[[f32; 2]]) {
+        for frame in frames {
+            producer.push(*frame).unwrap();
+        }
+    }
+
+    fn sample(output: &[u8], frame: usize, channel: usize) -> f32 {
+        let offset = (frame * AUDIO_OUTPUT_CHANNELS + channel) * 4;
+        f32::from_le_bytes(output[offset..offset + 4].try_into().unwrap())
     }
 
     #[test]
-    fn renders_interleaved_float_samples_and_silences_underflow() {
+    fn renders_interpolated_stereo_samples_and_counts_underflow() {
         let (mut producer, mut consumer) = RingBuffer::new(8);
         let shared = shared_state();
-        producer.push(0.25).unwrap();
-        producer.push(-0.5).unwrap();
+        let mut resampler = ResamplerState::default();
+        push_frames(&mut producer, &[[0.25, -0.5], [0.5, -1.0], [0.75, -1.5]]);
 
-        let mut output = [0xff; 16];
+        let mut output = [0xff; 32];
         let (written, underflow, _) =
-            render_pcm(&mut consumer, &shared, &mut output, 2);
+            render_pcm(&mut consumer, &shared, &mut resampler, &mut output, 4);
 
-        assert_eq!(written, 16);
+        assert_eq!(written, 32);
         assert_eq!(underflow, 2);
-        assert_eq!(f32::from_le_bytes(output[0..4].try_into().unwrap()), 0.25);
-        assert_eq!(f32::from_le_bytes(output[4..8].try_into().unwrap()), -0.5);
-        assert_eq!(&output[8..], &[0; 8]);
+        assert_eq!(sample(&output, 0, 0), 0.25);
+        assert_eq!(sample(&output, 0, 1), -0.5);
+        assert_eq!(sample(&output, 1, 0), 0.5);
+        assert_eq!(sample(&output, 1, 1), -1.0);
+        assert_eq!(sample(&output, 2, 0), 0.75);
+        assert_eq!(sample(&output, 2, 1), -1.5);
+        assert_eq!(sample(&output, 3, 0), 0.0);
+        assert_eq!(sample(&output, 3, 1), 0.0);
     }
 
     #[test]
     fn applies_volume_amplification_above_unity() {
         let (mut producer, mut consumer) = RingBuffer::new(8);
         let shared = shared_state();
+        let mut resampler = ResamplerState::default();
         shared.volume.store(1.5f32.to_bits(), Ordering::Relaxed);
-        producer.push(0.75).unwrap();
-        producer.push(-0.5).unwrap();
+        push_frames(&mut producer, &[[0.75, -0.5], [0.5, -0.25]]);
 
         let mut output = [0xff; 8];
         let (written, underflow, _) =
-            render_pcm(&mut consumer, &shared, &mut output, 1);
+            render_pcm(&mut consumer, &shared, &mut resampler, &mut output, 1);
 
         assert_eq!(written, 8);
         assert_eq!(underflow, 0);
-        assert!((f32::from_le_bytes(output[0..4].try_into().unwrap()) - 1.125).abs() < f32::EPSILON);
-        assert_eq!(f32::from_le_bytes(output[4..8].try_into().unwrap()), -0.75);
+        assert!((sample(&output, 0, 0) - 1.125).abs() < f32::EPSILON);
+        assert_eq!(sample(&output, 0, 1), -0.75);
     }
 
     #[test]
-    fn eof_empty_ring_is_counted_separately_from_active_starvation() {
+    fn eof_silence_is_counted_separately_from_active_starvation() {
         let (mut producer, mut consumer) = RingBuffer::new(8);
         let shared = shared_state();
-        producer.push(0.25).unwrap();
-        producer.push(-0.5).unwrap();
+        let mut resampler = ResamplerState::default();
+        push_frames(&mut producer, &[[0.25, -0.5], [0.5, -1.0]]);
         shared.end_of_stream.store(true, Ordering::Release);
 
-        let mut output = [0xff; 16];
+        let mut output = [0xff; 24];
         let (written, underflow, eof_silence) =
-            render_pcm(&mut consumer, &shared, &mut output, 2);
+            render_pcm(&mut consumer, &shared, &mut resampler, &mut output, 3);
 
-        assert_eq!(written, 16);
+        assert_eq!(written, 24);
         assert_eq!(underflow, 0);
         assert_eq!(eof_silence, 2);
-        assert_eq!(f32::from_le_bytes(output[0..4].try_into().unwrap()), 0.25);
-        assert_eq!(f32::from_le_bytes(output[4..8].try_into().unwrap()), -0.5);
-        assert_eq!(&output[8..], &[0; 8]);
+        assert_eq!(sample(&output, 0, 0), 0.25);
+        assert_eq!(sample(&output, 1, 0), 0.5);
+        assert_eq!(sample(&output, 2, 0), 0.0);
     }
 
     #[test]
-    fn renders_only_the_requested_frames_and_preserves_remaining_pcm() {
+    fn renders_only_requested_frames_and_preserves_remaining_pcm() {
         let (mut producer, mut consumer) = RingBuffer::new(8);
         let shared = shared_state();
-        for value in [0.1, 0.2, 0.3, 0.4] {
-            producer.push(value).unwrap();
-        }
+        let mut resampler = ResamplerState::default();
+        push_frames(&mut producer, &[[0.1, 0.2], [0.3, 0.4], [0.5, 0.6], [0.7, 0.8]]);
 
         let mut output = [0xff; 16];
         let (written, underflow, _) =
-            render_pcm(&mut consumer, &shared, &mut output, 1);
+            render_pcm(&mut consumer, &shared, &mut resampler, &mut output, 1);
 
         assert_eq!(written, 8);
         assert_eq!(underflow, 0);
-        assert_eq!(f32::from_le_bytes(output[0..4].try_into().unwrap()), 0.1);
-        assert_eq!(f32::from_le_bytes(output[4..8].try_into().unwrap()), 0.2);
+        assert_eq!(sample(&output, 0, 0), 0.1);
+        assert_eq!(sample(&output, 0, 1), 0.2);
         assert_eq!(&output[8..], &[0xff; 8]);
         assert_eq!(consumer.slots(), 2);
     }
@@ -574,16 +661,56 @@ mod tests {
     fn pause_outputs_silence_without_consuming_queued_samples() {
         let (mut producer, mut consumer) = RingBuffer::new(8);
         let shared = shared_state();
-        producer.push(0.5).unwrap();
+        let mut resampler = ResamplerState::default();
+        push_frames(&mut producer, &[[0.5, 0.5]]);
         shared.paused.store(true, Ordering::Release);
 
         let mut output = [0xff; 8];
         let (written, underflow, _) =
-            render_pcm(&mut consumer, &shared, &mut output, 1);
+            render_pcm(&mut consumer, &shared, &mut resampler, &mut output, 1);
 
         assert_eq!(written, 8);
         assert_eq!(underflow, 0);
         assert_eq!(output, [0; 8]);
         assert_eq!(consumer.slots(), 1);
+    }
+
+    #[test]
+    fn half_speed_interpolates_between_source_frames() {
+        let (mut producer, mut consumer) = RingBuffer::new(8);
+        let shared = shared_state();
+        let mut resampler = ResamplerState::default();
+        push_frames(&mut producer, &[[0.0, 0.0], [1.0, 1.0], [2.0, 2.0]]);
+        shared.speed.store(0.5f32.to_bits(), Ordering::Release);
+
+        let mut output = [0; 16];
+        let (written, underflow, _) =
+            render_pcm(&mut consumer, &shared, &mut resampler, &mut output, 2);
+
+        assert_eq!(written, 16);
+        assert_eq!(underflow, 0);
+        assert_eq!(sample(&output, 0, 0), 0.0);
+        assert_eq!(sample(&output, 1, 0), 0.5);
+    }
+
+    #[test]
+    fn playback_speed_changes_apply_to_pcm_already_in_the_ring() {
+        let (mut producer, mut consumer) = RingBuffer::new(8);
+        let shared = shared_state();
+        let mut resampler = ResamplerState::default();
+        push_frames(
+            &mut producer,
+            &[[0.0, 0.0], [1.0, 1.0], [2.0, 2.0], [3.0, 3.0], [4.0, 4.0]],
+        );
+
+        shared.speed.store(2.0f32.to_bits(), Ordering::Release);
+        let mut first = [0; 8];
+        render_pcm(&mut consumer, &shared, &mut resampler, &mut first, 1);
+        assert_eq!(sample(&first, 0, 0), 0.0);
+
+        shared.speed.store(1.0f32.to_bits(), Ordering::Release);
+        let mut second = [0; 8];
+        render_pcm(&mut consumer, &shared, &mut resampler, &mut second, 1);
+        assert_eq!(sample(&second, 0, 0), 2.0);
     }
 }

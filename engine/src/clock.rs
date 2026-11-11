@@ -73,7 +73,7 @@ impl MasterClock {
 
     /// Changes playback rate while preserving the current media position.
     pub fn set_speed(&self, speed: f64) {
-        let speed = if speed.is_finite() { speed.clamp(0.5, 2.0) } else { 1.0 };
+        let speed = if speed.is_finite() { speed.clamp(0.5, 32.0) } else { 1.0 };
         let mut state = self.inner.lock();
         if !state.paused {
             state.pts = self.get_pts_locked(&state);
@@ -132,7 +132,11 @@ mod tests {
     fn playback_speed_is_clamped_and_non_finite_values_reset_to_normal() {
         let clock = MasterClock::new();
         clock.set_speed(3.0);
-        assert_eq!(clock.speed(), 2.0);
+        assert_eq!(clock.speed(), 3.0);
+        clock.set_speed(8.0);
+        assert_eq!(clock.speed(), 8.0);
+        clock.set_speed(40.0);
+        assert_eq!(clock.speed(), 32.0);
         clock.set_speed(0.1);
         assert_eq!(clock.speed(), 0.5);
         clock.set_speed(f64::NAN);

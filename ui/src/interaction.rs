@@ -14,6 +14,28 @@ use glib::SourceId;
 use gtk4::prelude::*;
 use gtk4::{glib, EventControllerScroll, EventControllerScrollFlags, Window};
 
+/// Decelerate adaptive catch-up over the final 2.5 seconds before its target.
+/// The calculation uses media timestamps only; it is independent of widget geometry.
+pub fn adaptive_scrub_speed(distance_secs: f64, baseline_speed: f32) -> f32 {
+    const SCRUB_MAX_SPEED: f32 = 32.0;
+    const FULL_SPEED_DISTANCE_SECS: f64 = 30.0;
+    const FINAL_APPROACH_SECS: f64 = 2.5;
+
+    let baseline = if baseline_speed.is_finite() {
+        baseline_speed.clamp(0.5, 2.0)
+    } else {
+        1.0
+    };
+    let distance = distance_secs.max(0.0);
+    let progress = (distance / FULL_SPEED_DISTANCE_SECS).clamp(0.0, 1.0);
+    let eased = progress * progress * (3.0 - 2.0 * progress);
+    let adaptive_speed = baseline + (SCRUB_MAX_SPEED - baseline) * eased as f32;
+
+    let approach = (distance / FINAL_APPROACH_SECS).clamp(0.0, 1.0);
+    let approach_eased = approach * approach * (3.0 - 2.0 * approach);
+    baseline + (adaptive_speed - baseline) * approach_eased as f32
+}
+
 pub struct VideoClickStateMachine {
     pending_timer: Option<SourceId>,
     double_click_time_ms: u32,
@@ -92,6 +114,44 @@ fn seekbar_wheel_target(
 mod seekbar_wheel_tests {
     use super::seekbar_wheel_target;
     use std::time::Duration;
+
+    #[test]
+    fn adaptive_scrub_speed_restores_the_original_rate_at_the_destination() {
+        assert_eq!(super::adaptive_scrub_speed(0.0, 1.0), 1.0);
+        assert_eq!(super::adaptive_scrub_speed(0.0, 1.5), 1.5);
+    }
+
+    #[test]
+    fn adaptive_scrub_speed_smoothly_reaches_its_internal_ceiling() {
+        assert!(super::adaptive_scrub_speed(2.0, 1.0) > 1.0);
+        assert!(super::adaptive_scrub_speed(10.0, 1.0) > 8.0);
+        assert_eq!(super::adaptive_scrub_speed(30.0, 1.0), 32.0);
+        assert_eq!(super::adaptive_scrub_speed(120.0, 1.0), 32.0);
+    }
+
+    #[test]
+    fn adaptive_scrub_decelerates_over_the_final_two_and_a_half_seconds() {
+        let at_target = super::adaptive_scrub_speed(0.0, 2.0);
+        let halfway_through_window = super::adaptive_scrub_speed(1.25, 2.0);
+        let at_window_start = super::adaptive_scrub_speed(2.5, 2.0);
+        let just_outside_window = super::adaptive_scrub_speed(2.500001, 2.0);
+
+        assert_eq!(at_target, 2.0);
+        assert!(halfway_through_window > at_target);
+        assert!(halfway_through_window < at_window_start);
+        assert!((at_window_start - just_outside_window).abs() < 0.001);
+    }
+
+    #[test]
+    fn adaptive_scrub_speed_preserves_user_speed_as_its_baseline() {
+        assert!(super::adaptive_scrub_speed(2.0, 2.0) >= 2.0);
+        assert!(super::adaptive_scrub_speed(2.0, 0.5) >= 0.5);
+    }
+
+    #[test]
+    fn adaptive_scrub_speed_recovers_from_non_finite_baseline() {
+        assert_eq!(super::adaptive_scrub_speed(0.0, f32::NAN), 1.0);
+    }
 
     #[test]
     fn downward_scroll_advances_and_stops_at_end() {
