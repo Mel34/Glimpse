@@ -553,13 +553,43 @@ impl GlimpseWindow {
         click_gesture.set_button(1); // Left mouse button only
 
         let p_toggle = Rc::clone(&player);
+        let p_toggle_press = Rc::clone(&player);
         let v_toggle = Rc::clone(&video_playback);
         let win_click = window.clone();
         let click_state_press = Rc::clone(&click_state);
+        let scrub_state_press = Rc::clone(&adaptive_scrub_state);
+        let marker_position_press = Rc::clone(&bottom_controls.seekbar_marker_position);
+        let marker_press = bottom_controls.seekbar_marker.clone();
+        let resume_from_scrub_press = Rc::clone(&resume_from_scrub);
+        let scrub_click_interrupted = Rc::new(Cell::new(false));
+        let scrub_click_interrupted_press = Rc::clone(&scrub_click_interrupted);
 
-        // On press: if double-click (n_press >= 2), toggle fullscreen immediately and cancel any timer
+        // Pause immediately on press when adaptive catch-up is active. The release
+        // must not schedule the delayed single-click toggle as well.
         click_gesture.connect_pressed(move |_gesture, n_press, x, y| {
             tracing::debug!(n_press, x, y, "Video surface gesture pressed");
+            if n_press == 1
+                && matches!(
+                    scrub_state_press.get(),
+                    AdaptiveScrubState::CatchingUp { .. }
+                        | AdaptiveScrubState::Dragging { was_playing: true, .. }
+                )
+            {
+                if let Some(ref p) = *p_toggle_press.borrow() {
+                    if p.state() == PlayerState::Playing {
+                        let cancelled_scrub = cancel_adaptive_scrub(
+                            p,
+                            &scrub_state_press,
+                            &marker_position_press,
+                            &marker_press,
+                        );
+                        resume_from_scrub_press.set(cancelled_scrub);
+                        p.pause();
+                        scrub_click_interrupted_press.set(true);
+                    }
+                }
+            }
+
             if n_press >= 2 {
                 tracing::debug!("Double-click detected; toggling fullscreen");
                 click_state_press.borrow_mut().cancel();
@@ -571,31 +601,18 @@ impl GlimpseWindow {
             }
         });
 
-        // On release: schedule single-click play/pause unless this is a double-click.
+        // On release: schedule single-click play/pause unless this click already
+        // paused adaptive scrub or is part of a double-click.
         let click_state_rel = Rc::clone(&click_state);
         let win_rel = window.clone();
         let scrub_state_click = Rc::clone(&adaptive_scrub_state);
         let marker_position_click = Rc::clone(&bottom_controls.seekbar_marker_position);
         let marker_click = bottom_controls.seekbar_marker.clone();
         let resume_from_scrub_click = Rc::clone(&resume_from_scrub);
+        let scrub_click_interrupted_rel = Rc::clone(&scrub_click_interrupted);
         click_gesture.connect_released(move |_gesture, n_press, x, y| {
             tracing::debug!(n_press, x, y, "Video surface gesture released");
-            let scrub_is_active = matches!(
-                scrub_state_click.get(),
-                AdaptiveScrubState::CatchingUp { .. }
-                    | AdaptiveScrubState::Dragging { was_playing: true, .. }
-            );
-            if n_press == 1 && scrub_is_active {
-                if let Some(ref p) = *p_toggle.borrow() {
-                    let cancelled_scrub = cancel_adaptive_scrub(
-                        p,
-                        &scrub_state_click,
-                        &marker_position_click,
-                        &marker_click,
-                    );
-                    resume_from_scrub_click.set(cancelled_scrub);
-                    p.pause();
-                }
+            if scrub_click_interrupted_rel.replace(false) {
                 return;
             }
             if n_press == 1 {
