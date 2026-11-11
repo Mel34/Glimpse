@@ -316,7 +316,7 @@ impl Player {
     pub fn set_scrub_muted(&self, muted: bool) {
         #[cfg(all(feature = "audio-pipewire", feature = "ffmpeg-system"))]
         if let Some(handle) = self.audio_session.lock().as_ref() {
-            let volume = if muted && self.audio_enabled.load(Ordering::Acquire) {
+            let volume = if muted || !self.audio_enabled.load(Ordering::Acquire) {
                 0.0
             } else {
                 self.volume()
