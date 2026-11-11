@@ -67,8 +67,8 @@ pub fn create_floating_bottom_bar() -> ControlBarWidgets {
     volume_popover.add_css_class("menu-popover");
 
     let vol_vbox = GtkBox::new(Orientation::Vertical, 8);
-    vol_vbox.set_margin_start(10);
-    vol_vbox.set_margin_end(10);
+    vol_vbox.set_margin_start(6);
+    vol_vbox.set_margin_end(6);
     vol_vbox.set_margin_top(12);
     vol_vbox.set_margin_bottom(12);
     vol_vbox.set_halign(gtk4::Align::Center);
@@ -79,7 +79,8 @@ pub fn create_floating_bottom_bar() -> ControlBarWidgets {
 
     let volume_slider = Scale::with_range(Orientation::Vertical, 0.0, 1.5, 0.02);
     volume_slider.set_inverted(true); // 1.0 at the top, 0.0 at the bottom
-    volume_slider.set_size_request(24, 140);
+    volume_slider.set_size_request(16, 140);
+    volume_slider.set_margin_start(8);
     volume_slider.set_value(1.0);
     volume_slider.set_draw_value(false);
     volume_slider.add_mark(1.0, gtk4::PositionType::Right, None);
