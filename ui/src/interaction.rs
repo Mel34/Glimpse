@@ -43,7 +43,8 @@ pub fn adaptive_scrub_speed(
     let eased = progress * progress * (3.0 - 2.0 * progress);
     let adaptive_speed = baseline + (SCRUB_MAX_SPEED - baseline) * eased as f32;
 
-    let approach = (distance / final_approach_secs.max(0.001)).clamp(0.0, 1.0);
+    let approach_distance = final_approach_secs.max(0.001);
+    let approach = ((distance - approach_distance) / approach_distance).clamp(0.0, 1.0);
     let approach_eased = approach * approach * (3.0 - 2.0 * approach);
     1.0 + (adaptive_speed - 1.0) * approach_eased as f32
 }
