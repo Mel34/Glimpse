@@ -11,7 +11,8 @@ path = "src/main.rs"
 
 [features]
 default = []
-vaapi-hdr = ["dep:ffmpeg-the-third"]
+vaapi-dmabuf = ["dep:ffmpeg-the-third"]
+vaapi-hdr = ["vaapi-dmabuf"]
 
 [dependencies]
 ffmpeg-the-third = { version = "6.0.0", optional = true }

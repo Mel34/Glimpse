@@ -1,13 +1,13 @@
 fn main() {
     println!("cargo:rerun-if-changed=src/vaapi_texture.c");
-    if std::env::var_os("CARGO_FEATURE_VAAPI_HDR").is_none() {
+    if std::env::var_os("CARGO_FEATURE_VAAPI_DMABUF").is_none() {
         return;
     }
 
     let gtk = pkg_config::Config::new()
-        .atleast_version("4.24")
+        .atleast_version("4.16")
         .probe("gtk4")
-        .expect("GTK 4.24 or newer is required for the VAAPI DMA-BUF renderer");
+        .expect("GTK 4.16 or newer is required for the VAAPI DMA-BUF renderer");
     let avutil = pkg_config::Config::new()
         .probe("libavutil")
         .expect("libavutil development files are required");

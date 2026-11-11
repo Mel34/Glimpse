@@ -756,7 +756,7 @@ fn schedule_frames(
         let texture_import_started = Instant::now();
         let texture: gdk4::Texture = match frame.vaapi_frame.as_ref() {
             Some(vaapi_frame) => {
-                #[cfg(feature = "vaapi-hdr")]
+                #[cfg(feature = "vaapi-dmabuf")]
                 {
                     match crate::vaapi_texture::create_texture(vaapi_frame) {
                         Ok(texture) => texture,
@@ -772,7 +772,7 @@ fn schedule_frames(
                         }
                     }
                 }
-                #[cfg(not(feature = "vaapi-hdr"))]
+                #[cfg(not(feature = "vaapi-dmabuf"))]
                 {
                     let _ = vaapi_frame;
                     tracing::error!(

@@ -8,7 +8,7 @@ mod window;
 mod presentation_sink;
 mod video_texture;
 mod rotatable_picture;
-#[cfg(feature = "vaapi-hdr")]
+#[cfg(feature = "vaapi-dmabuf")]
 mod vaapi_texture;
 
 use adw::prelude::*;
