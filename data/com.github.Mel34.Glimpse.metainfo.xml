@@ -11,7 +11,7 @@
       an in-process FFmpeg playback engine, and native PipeWire audio output.
       It supports embedded audio-track selection, embedded and external text
       subtitles, synchronized playback, whole-file and A-B looping, seeking,
-      volume control, and fullscreen playback.
+      volume control, playback speed, video rotation, screenshots, and fullscreen playback.
     </p>
   </description>
   <launchable type="desktop-id">com.github.Mel34.Glimpse.desktop</launchable>
@@ -20,6 +20,11 @@
     <binary>glimpse</binary>
   </provides>
   <releases>
+    <release version="0.4.0" date="2026-11-11">
+      <description>
+        <p>Adds adjustable playback speed, video rotation, screenshot capture, and software volume amplification up to 150%. Also refines the volume control and positions Glimpse as a GNOME Showtime alternative.</p>
+      </description>
+    </release>
     <release version="0.3.0" date="2026-11-10">
       <description>
         <p>Adds embedded and external text subtitle support, whole-file and A-B playback looping, improved seekbar navigation, and more robust seeking at the end of media. Also reduces repetitive FFmpeg metadata warnings.</p>
