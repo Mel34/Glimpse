@@ -71,6 +71,21 @@ impl MasterClock {
         self.get_pts_locked(&state)
     }
 
+    /// Changes playback rate while preserving the current media position.
+    pub fn set_speed(&self, speed: f64) {
+        let speed = if speed.is_finite() { speed.clamp(0.5, 2.0) } else { 1.0 };
+        let mut state = self.inner.lock();
+        if !state.paused {
+            state.pts = self.get_pts_locked(&state);
+        }
+        state.last_updated = Instant::now();
+        state.speed = speed;
+    }
+
+    pub fn speed(&self) -> f64 {
+        self.inner.lock().speed
+    }
+
     fn get_pts_locked(&self, state: &ClockState) -> f64 {
         if state.paused {
             return state.pts;
@@ -96,6 +111,33 @@ impl MasterClock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn changing_speed_preserves_position_and_changes_clock_rate() {
+        let clock = MasterClock::new();
+        clock.resume();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let before = clock.get_pts();
+
+        clock.set_speed(2.0);
+        let after_change = clock.get_pts();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        assert!((after_change - before).abs() < 0.01);
+        assert!(clock.get_pts() - after_change >= 0.035);
+        assert_eq!(clock.speed(), 2.0);
+    }
+
+    #[test]
+    fn playback_speed_is_clamped_and_non_finite_values_reset_to_normal() {
+        let clock = MasterClock::new();
+        clock.set_speed(3.0);
+        assert_eq!(clock.speed(), 2.0);
+        clock.set_speed(0.1);
+        assert_eq!(clock.speed(), 0.5);
+        clock.set_speed(f64::NAN);
+        assert_eq!(clock.speed(), 1.0);
+    }
 
     #[test]
     fn audio_clock_readiness_is_cleared_by_reset() {
