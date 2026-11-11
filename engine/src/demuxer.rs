@@ -107,12 +107,12 @@ pub fn demux_file(
     queues: &PacketQueues,
     serial: Serial,
 ) -> Result<DemuxStats, String> {
-    demux_file_from(path, tracks, queues, serial, Duration::ZERO)
+    demux_file_from(path, tracks, queues, serial, Duration::ZERO, false)
 }
 
-/// Demuxes from a nearby forward video keyframe when one exists within the
-/// fast-seek window, otherwise from the preceding keyframe. Audio and subtitle
-/// packets are aligned to the selected video keyframe.
+/// Demuxes from a nearby forward video keyframe only when explicitly requested
+/// for a fast user seek. Other restarts use the preceding keyframe. Audio and
+/// subtitle packets are aligned to the selected video keyframe.
 #[cfg(feature = "ffmpeg-system")]
 pub fn demux_file_from(
     path: &str,
@@ -120,6 +120,7 @@ pub fn demux_file_from(
     queues: &PacketQueues,
     serial: Serial,
     start_position: Duration,
+    prefer_forward_keyframe: bool,
 ) -> Result<DemuxStats, String> {
     use ffmpeg_the_third as ffmpeg;
 
@@ -166,10 +167,15 @@ pub fn demux_file_from(
             // Match mpv's fast-seek policy: prefer a later video keyframe.
             // Keep the forward window bounded to avoid surprising jumps.
             let context = unsafe { input.as_mut_ptr() };
-            let forward_result = unsafe {
-                ffmpeg::ffi::avformat_seek_file(
-                    context, stream_index, target_timestamp, target_timestamp, forward_limit, 0,
-                )
+            let forward_result = if prefer_forward_keyframe {
+                unsafe {
+                    ffmpeg::ffi::avformat_seek_file(
+                        context, stream_index, target_timestamp, target_timestamp, forward_limit, 0,
+                    )
+                }
+            } else {
+                // Initial playback and recovery restarts must not skip ahead.
+                -1
             };
             if forward_result >= 0 {
                 forward_seek_selected = true;
@@ -197,7 +203,7 @@ pub fn demux_file_from(
 
         tracing::info!(
             target_secs = start_position.as_secs_f64(),
-            forward_keyframe_preferred = forward_seek_selected,
+            forward_keyframe_preferred = prefer_forward_keyframe && forward_seek_selected,
             max_forward_distance_secs = MAX_FORWARD_SEEK_DISTANCE.as_secs_f64(),
             seek_us = seek_started_at.elapsed().as_micros() as u64,
             elapsed_us = demux_started_at.elapsed().as_micros() as u64,
