@@ -78,11 +78,11 @@ window.glimpse-window {
 }
 
 /* Shared circular OSD button geometry for every playback action. */
-.osd-icon-button,
-.osd-icon-button > button,
+button.osd-icon-button,
+menubutton.osd-icon-button,
 menubutton.osd-icon-button > button {
-    min-width: 36px;
-    min-height: 36px;
+    min-width: 40px;
+    min-height: 40px;
     padding: 0;
     margin: 0;
     border-radius: 50%;
@@ -92,17 +92,16 @@ menubutton.osd-icon-button > button {
     box-shadow: none;
 }
 
-.osd-icon-button:hover,
-.osd-icon-button > button:hover,
+button.osd-icon-button:hover,
+menubutton.osd-icon-button:hover,
 menubutton.osd-icon-button > button:hover {
     background-color: alpha(@window_fg_color, 0.16);
     color: @window_fg_color;
 }
 
-.osd-icon-button:active,
-.osd-icon-button:checked,
-.osd-icon-button > button:active,
-.osd-icon-button > button:checked,
+button.osd-icon-button:active,
+menubutton.osd-icon-button:active,
+menubutton.osd-icon-button:checked,
 menubutton.osd-icon-button > button:active,
 menubutton.osd-icon-button > button:checked {
     background-color: alpha(@window_fg_color, 0.24);
