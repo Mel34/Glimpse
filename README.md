@@ -1,64 +1,75 @@
 # Glimpse
 
-A Linux media player written in Rust using GTK4, libadwaita, FFmpeg, and native PipeWire audio output.
+A Linux media player written in Rust with GTK4, libadwaita, an in-process FFmpeg playback engine, and native PipeWire audio output.
 
 - **Repository:** https://github.com/Mel34/Glimpse
 - **Application ID:** `com.github.Mel34.Glimpse`
 - **License:** LGPL-2.1-or-later
-- **Current release:** [0.2.0](https://github.com/Mel34/Glimpse/releases/tag/v0.2.0)
+- **Current release:** [0.3.0](https://github.com/Mel34/Glimpse/releases/tag/v0.3.0)
 
 ## Features
 
-- In-process FFmpeg demuxing and decoding; GTK `MediaFile` is not used for playback.
-- Native PipeWire audio output.
-- Audio-track selection, including the option to turn audio off.
-- Audio-master-clock video scheduling, with a monotonic clock for video-only media.
-- Seeking, pause/resume, fullscreen playback, and playback controls that auto-hide after inactivity.
-- Multiple media files and URI sources.
-- Persistent System, Light, and Dark color-scheme preferences.
-- GTK4/libadwaita interface with mouse and keyboard interaction.
-
-Subtitle playback is not implemented yet.
+- **Native playback engine.** Demuxing and decoding are handled in-process through FFmpeg's `libav*` libraries; playback does not rely on GStreamer, GTK `MediaFile`, or libmpv.
+- **Native PipeWire audio.** Decoded audio is sent directly to PipeWire, which provides the audio master clock for playback.
+- **Audio track selection.** Switch between embedded audio streams or turn audio off.
+- **Subtitle support.** Select embedded text subtitles or load an external `.srt`, `.ass`, `.ssa`, or `.vtt` file. Subtitles are off by default. Available embedded tracks are ordered using the system language preferences, with English as a fallback preference. Bitmap subtitle formats such as PGS and DVD subtitles are not rendered.
+- **Synchronized video playback.** Video frames are scheduled against the audio clock; video-only media uses a monotonic playback clock.
+- **Playback controls.** Seek, pause and resume, adjust or mute volume, and toggle fullscreen. Controls automatically hide after inactivity.
+- **Looping.** Loop the entire file or define an A–B section.
+- **Flexible input.** Open media through the file chooser, drag and drop a file, or launch Glimpse with a media path or URI. Multiple windows are supported.
+- **GTK4 and libadwaita interface.** Includes persistent System, Light, and Dark appearance preferences.
 
 ## Playback architecture
 
 Glimpse uses its in-process `glimpse-engine` for playback.
 
 - FFmpeg/libavformat demuxes media and routes timestamped packets into bounded audio, video, and subtitle queues.
-- FFmpeg/libavcodec decodes video in a worker thread. Decoded frames are presented as GTK memory textures and scheduled against the audio master clock.
-- Audio is decoded and sent directly to PipeWire. Video-only files use the monotonic playback clock.
-- Seeking restarts the video demux/decode run at the target while the audio engine seeks its master timeline. Paused seeks remain paused.
-- Audio track selection is supported. Subtitle playback is not available yet.
+- FFmpeg/libavcodec decodes media. Video decoding runs independently from the GTK interface, and decoded frames are handed to the presentation path.
+- Audio is decoded and written directly to PipeWire. The audio clock is authoritative when an audio stream is active; video-only playback uses a monotonic clock.
+- Seeking coordinates the audio and video playback paths. Paused seeks remain paused.
+- Embedded and external text subtitles are rendered over the video. Subtitle selection is independent of audio-track selection.
 
-## Interaction
+## Interaction and keyboard shortcuts
 
-1. Single click toggles playback; double click toggles fullscreen.
-2. Dragging the video surface moves the window without toggling playback.
-3. The seekbar wheel seeks in five-second steps.
-4. The window wheel changes volume in five-percent steps.
-5. Playback controls appear on pointer movement and hide after three seconds of inactivity in windowed and fullscreen modes.
+| Action | Control |
+| --- | --- |
+| Play / pause | `Space` or single-click the video |
+| Toggle fullscreen | `F` or double-click the video |
+| Leave fullscreen | `Esc` |
+| Seek backward / forward | `←` / `→` (5 seconds) |
+| Adjust volume | `↑` / `↓` (5%) |
+| Mute / unmute | `M` |
+| Set A–B loop point A, then B; press again to clear | `L` |
+| Toggle whole-file looping | `Shift+L` |
+| Open media | `Ctrl+O` |
+| New window | `Ctrl+N` |
+
+Additional pointer controls:
+
+- Scroll over the seekbar to seek in five-second steps. Scroll down to advance and up to rewind; seeking stops at the media boundaries.
+- Scroll over the window to adjust volume in five-percent steps.
+- Drag the video surface to move the window when it is not fullscreen.
+- Playback controls appear when the pointer moves and hide after three seconds of inactivity. Open popovers remain available while in use.
 
 ## Rendering roadmap
 
-The current video output path presents decoded frames through GTK memory textures. The longer-term goal is a GPU-native rendering pipeline built around [libplacebo](https://github.com/haasn/libplacebo), with Vulkan as the eventual video output backend.
-
-The current FFmpeg `swscale` conversion does not yet explicitly apply each decoded frame's color-matrix and range metadata. This can affect color accuracy for sources that rely on non-default conversion settings. Complete color management—including transfer characteristics and HDR handling—is part of the planned libplacebo rendering work.
+The current video presentation path uses GTK textures. The longer-term goal is a GPU-native rendering pipeline built around [libplacebo](https://github.com/haasn/libplacebo), with Vulkan as the eventual video output backend.
 
 The work is expected to progress in stages:
 
 1. **Complete hardware-frame interoperability.** Build on the VAAPI and DRM PRIME diagnostics to establish reliable frame export/import, format and modifier handling, synchronization, and resource lifetime across supported hardware and drivers.
-2. **Integrate libplacebo.** Use libplacebo for GPU video processing and presentation, including correct color-space, range, transfer-function, and HDR handling. Preserve the existing FFmpeg decode and PipeWire audio pipeline while the rendering backend evolves.
+2. **Integrate libplacebo.** Use libplacebo for GPU video processing and presentation, including color-space, range, transfer-function, and HDR handling. Preserve the existing FFmpeg decode and PipeWire audio pipeline while the rendering backend evolves.
 3. **Introduce Vulkan video output.** Add a Vulkan-backed renderer using libplacebo, importing hardware-decoded frames where the platform supports it. Prefer direct GPU resource sharing to avoid unnecessary CPU readbacks and copies.
 4. **Harden and retain fallbacks.** Validate synchronization, seeking, resizing, high-bit-depth formats, and sustained playback across different GPUs and drivers. Keep a compatible fallback path for systems where the preferred hardware or Vulkan interop is unavailable.
 
-The VAAPI → DRM PRIME → EGL/OpenGL work under `tools/diagnostics/vaapi-egl/` is exploratory validation, not the production renderer. Its successful format-import and sample-preservation tests are useful groundwork, but do not yet constitute libplacebo integration, Vulkan output, complete color management, or a finished zero-copy playback path. These milestones remain future work; the GTK texture renderer remains the current presentation path.
+The VAAPI → DRM PRIME → EGL/OpenGL work under `tools/diagnostics/vaapi-egl/` is exploratory validation, not the production renderer. Its successful format-import and sample-preservation tests are useful groundwork, but do not yet constitute libplacebo integration, Vulkan output, or a universally available zero-copy playback path. The GTK texture presentation path remains the current renderer.
 
 ## Build
 
 Arch Linux prerequisites:
 
 ```bash
-sudo pacman -S --needed ffmpeg gtk4 libadwaita cargo clang pkgconf alsa-lib libpulse pipewire
+sudo pacman -S --needed ffmpeg gtk4 libadwaita cargo rust clang pkgconf alsa-lib libpulse pipewire
 ```
 
 Build and test:
@@ -70,10 +81,10 @@ cargo test --workspace --all-features
 cargo run -p glimpse -- sample.mp4
 ```
 
-Build and install the Arch package from the repository checkout:
+Build the Arch package from the repository checkout:
 
 ```bash
-makepkg -si
+makepkg -if
 ```
 
-For hardware-decoding and rendering experiments, see `tools/diagnostics/vaapi-egl/README.md`.
+For hardware-decoding and rendering experiments, see [the VAAPI/EGL diagnostic README](tools/diagnostics/vaapi-egl/README.md).
