@@ -25,6 +25,8 @@ pub fn adaptive_scrub_approach_distance(duration_secs: f64, seekbar_width_px: i3
 }
 
 /// Smoothly scale catch-up speed with remaining distance, reaching 32× at 30s.
+/// Begin decelerating when the thumb's leading edge reaches the marker, and
+/// reach 1× exactly when the thumb's centre reaches it.
 pub fn adaptive_scrub_speed(
     distance_secs: f64,
     baseline_speed: f32,
@@ -44,7 +46,7 @@ pub fn adaptive_scrub_speed(
     let adaptive_speed = baseline + (SCRUB_MAX_SPEED - baseline) * eased as f32;
 
     let approach_distance = final_approach_secs.max(0.001);
-    let approach = ((distance - approach_distance) / approach_distance).clamp(0.0, 1.0);
+    let approach = (distance / approach_distance).clamp(0.0, 1.0);
     let approach_eased = approach * approach * (3.0 - 2.0 * approach);
     1.0 + (adaptive_speed - 1.0) * approach_eased as f32
 }
@@ -143,10 +145,14 @@ mod seekbar_wheel_tests {
     }
 
     #[test]
-    fn adaptive_scrub_speed_reaches_one_x_when_thumb_edge_reaches_marker() {
-        assert_eq!(super::adaptive_scrub_speed(0.5, 2.0, 0.5), 1.0);
-        assert!(super::adaptive_scrub_speed(0.75, 2.0, 0.5) > 1.0);
-        assert!(super::adaptive_scrub_speed(0.75, 2.0, 0.5) < 2.1);
+    fn adaptive_scrub_speed_reaches_one_x_when_thumb_center_reaches_marker() {
+        let at_center = super::adaptive_scrub_speed(0.0, 2.0, 0.5);
+        let halfway_to_center = super::adaptive_scrub_speed(0.25, 2.0, 0.5);
+        let at_leading_edge = super::adaptive_scrub_speed(0.5, 2.0, 0.5);
+
+        assert_eq!(at_center, 1.0);
+        assert!(halfway_to_center > 1.0);
+        assert!(halfway_to_center < at_leading_edge);
     }
 
     #[test]
