@@ -446,8 +446,10 @@ impl GlimpseWindow {
         let is_dragging_press = Rc::clone(&is_dragging);
 
         // On press: if double-click (n_press >= 2), toggle fullscreen immediately and cancel any timer
-        click_gesture.connect_pressed(move |_gesture, n_press, _x, _y| {
+        click_gesture.connect_pressed(move |_gesture, n_press, x, y| {
+            tracing::info!(n_press, x, y, "Video surface gesture pressed");
             if n_press >= 2 {
+                tracing::info!("Double-click detected; toggling fullscreen");
                 click_state_press.borrow_mut().cancel();
                 *is_dragging_press.borrow_mut() = false;
                 if win_click.is_fullscreen() {
@@ -464,7 +466,9 @@ impl GlimpseWindow {
         let click_state_rel = Rc::clone(&click_state);
         let is_dragging_rel = Rc::clone(&is_dragging);
         let win_rel = window.clone();
-        click_gesture.connect_released(move |_gesture, n_press, _x, _y| {
+        click_gesture.connect_released(move |_gesture, n_press, x, y| {
+            let dragging = *is_dragging_rel.borrow();
+            tracing::info!(n_press, x, y, dragging, "Video surface gesture released");
             if *is_dragging_rel.borrow() {
                 // Dragging occurred: do not play/pause
                 *is_dragging_rel.borrow_mut() = false;
@@ -472,6 +476,7 @@ impl GlimpseWindow {
             }
 
             if n_press == 1 {
+                tracing::info!("Single video-surface click accepted; scheduling play/pause toggle");
                 let p_action = Rc::clone(&p_toggle);
                 let v_action = Rc::clone(&v_toggle);
                 let w_fs = win_rel.clone();
@@ -479,13 +484,17 @@ impl GlimpseWindow {
                     Rc::clone(&click_state_rel), 1,
                     move || {
                         if let Some(ref p) = *p_action.borrow() {
-                            if p.state() == PlayerState::Playing { p.pause(); }
+                            let was_playing = p.state() == PlayerState::Playing;
+                            tracing::info!(was_playing, "Video-surface play/pause timer fired");
+                            if was_playing { p.pause(); }
                             else {
                                 if p.state() == PlayerState::Ended {
                                     if let Some(ref mut video) = *v_action.borrow_mut() { video.seek(Duration::ZERO); }
                                 }
                                 p.play();
                             }
+                        } else {
+                            tracing::info!("Video-surface play/pause timer fired without an active player");
                         }
                     },
                     move || {
@@ -502,6 +511,7 @@ impl GlimpseWindow {
         // If gesture was stopped or cancelled by GTK/compositor, cancel pending timer
         let click_state_stop = Rc::clone(&click_state);
         click_gesture.connect_stopped(move |_| {
+            tracing::info!("Video surface click gesture stopped by GTK");
             click_state_stop.borrow_mut().cancel();
         });
 
@@ -513,7 +523,8 @@ impl GlimpseWindow {
         let win_drag_p = window.clone();
         let click_state_drag_begin = Rc::clone(&click_state);
 
-        drag_gesture.connect_drag_begin(move |_gesture, _start_x, _start_y| {
+        drag_gesture.connect_drag_begin(move |_gesture, start_x, start_y| {
+            tracing::info!(start_x, start_y, "Video surface drag gesture began");
             click_state_drag_begin.borrow_mut().cancel();
         });
 
@@ -524,6 +535,7 @@ impl GlimpseWindow {
                 return;
             }
             if offset_x.hypot(offset_y) > 4.0 {
+                tracing::info!(offset_x, offset_y, "Video surface drag threshold crossed");
                 *is_dragging_upd.borrow_mut() = true;
                 click_state_upd.borrow_mut().cancel();
 
@@ -538,7 +550,8 @@ impl GlimpseWindow {
         });
 
         let is_dragging_end = Rc::clone(&is_dragging);
-        drag_gesture.connect_drag_end(move |_gesture, _offset_x, _offset_y| {
+        drag_gesture.connect_drag_end(move |_gesture, offset_x, offset_y| {
+            tracing::info!(offset_x, offset_y, "Video surface drag gesture ended");
             let is_d = Rc::clone(&is_dragging_end);
             glib::timeout_add_local_once(Duration::from_millis(50), move || {
                 *is_d.borrow_mut() = false;
