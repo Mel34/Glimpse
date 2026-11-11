@@ -534,7 +534,10 @@ impl GlimpseWindow {
             if win_drag_p.is_fullscreen() {
                 return;
             }
-            if offset_x.hypot(offset_y) > 4.0 {
+            if offset_x.hypot(offset_y) > 4.0 && !*is_dragging_upd.borrow() {
+                // Start the compositor move once per gesture. Reissuing
+                // begin_move() on every drag update can disrupt the Wayland
+                // interactive-move loop and starve GTK's main context.
                 tracing::info!(offset_x, offset_y, "Video surface drag threshold crossed");
                 *is_dragging_upd.borrow_mut() = true;
                 click_state_upd.borrow_mut().cancel();
