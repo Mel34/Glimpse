@@ -168,25 +168,62 @@ impl SeekDecodeDiagnostics {
 
 #[cfg(feature = "ffmpeg-system")]
 unsafe extern "C" fn select_vaapi_pixel_format(
-    _context: *mut ffmpeg_the_third::ffi::AVCodecContext,
+    context: *mut ffmpeg_the_third::ffi::AVCodecContext,
     formats: *const ffmpeg_the_third::ffi::AVPixelFormat,
 ) -> ffmpeg_the_third::ffi::AVPixelFormat {
     use ffmpeg_the_third::ffi::AVPixelFormat;
     if formats.is_null() {
+        tracing::error!("FFmpeg supplied a null pixel-format list during VAAPI negotiation");
         return AVPixelFormat::NONE;
     }
+
+    let codec_name = if context.is_null() {
+        "unknown".to_string()
+    } else {
+        let name = unsafe { ffmpeg_the_third::ffi::avcodec_get_name((*context).codec_id) };
+        if name.is_null() {
+            "unknown".to_string()
+        } else {
+            unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy().into_owned()
+        }
+    };
+
+    let mut offered = Vec::new();
+    let mut selected = AVPixelFormat::NONE;
     let mut current = formats;
     loop {
         let format = unsafe { *current };
         if format == AVPixelFormat::NONE {
             break;
         }
+        let name = unsafe { ffmpeg_the_third::ffi::av_get_pix_fmt_name(format) };
+        offered.push(if name.is_null() {
+            format!("{format:?}")
+        } else {
+            unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy().into_owned()
+        });
         if format == AVPixelFormat::VAAPI {
-            return format;
+            selected = format;
         }
         current = unsafe { current.add(1) };
     }
-    AVPixelFormat::NONE
+
+    tracing::info!(
+        codec = %codec_name,
+        offered_formats = ?offered,
+        vaapi_offered = selected == AVPixelFormat::VAAPI,
+        "VAAPI pixel-format negotiation"
+    );
+    if selected == AVPixelFormat::VAAPI {
+        selected
+    } else {
+        tracing::error!(
+            codec = %codec_name,
+            offered_formats = ?offered,
+            "FFmpeg did not offer AV_PIX_FMT_VAAPI; hardware decoding cannot proceed"
+        );
+        AVPixelFormat::NONE
+    }
 }
 
 #[cfg(feature = "ffmpeg-system")]
@@ -313,6 +350,42 @@ impl VideoDecoder {
 
         let mut vaapi_enabled = use_vaapi;
         if use_vaapi {
+            let context_ptr = unsafe { context.as_mut_ptr() };
+            let codec = unsafe { ffmpeg::ffi::avcodec_find_decoder((*context_ptr).codec_id) };
+            if codec.is_null() {
+                tracing::warn!(
+                    codec_id = (*context_ptr).codec_id as i32,
+                    "FFmpeg could not resolve the video decoder while inspecting VAAPI support"
+                );
+            } else {
+                let codec_name = unsafe { ffmpeg::ffi::avcodec_get_name((*context_ptr).codec_id) };
+                let codec_name = if codec_name.is_null() {
+                    "unknown".to_string()
+                } else {
+                    unsafe { std::ffi::CStr::from_ptr(codec_name) }.to_string_lossy().into_owned()
+                };
+                let mut hardware_configs = Vec::new();
+                let mut config_index = 0;
+                loop {
+                    let config = unsafe { ffmpeg::ffi::avcodec_get_hw_config(codec, config_index) };
+                    if config.is_null() {
+                        break;
+                    }
+                    let config = unsafe { &*config };
+                    hardware_configs.push(format!(
+                        "device={:?}, pixel_format={:?}, methods=0x{:x}",
+                        config.device_type, config.pix_fmt, config.methods
+                    ));
+                    config_index += 1;
+                }
+                tracing::info!(
+                    codec = %codec_name,
+                    codec_id = (*context_ptr).codec_id as i32,
+                    hardware_configs = ?hardware_configs,
+                    "Video decoder hardware configurations"
+                );
+            }
+
             let setup_result = (|| -> Result<(), String> {
                 let render_node = std::env::var("GLIMPSE_DRM_RENDER_NODE").ok();
                 let render_node = render_node
